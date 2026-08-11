@@ -33,6 +33,22 @@ Every task's requirements implicitly include this section.
   | Qt | `find_package(Qt5 COMPONENTS Widgets Svg REQUIRED)` | `Qt5::Widgets` `Qt5::Svg` |
 - **Commit after every task.** Conventional commit prefixes (`feat:`, `test:`, `build:`, `docs:`).
 
+## Fidelity of this plan, by task
+
+Be aware of where this plan hands you finished code and where it hands you a
+specification you must still write code against.
+
+| Tasks | Fidelity |
+|---|---|
+| **1–10, 14 (Step 1–3)** | **Complete.** Every test and every implementation is given in full. Type it in and it compiles. |
+| **11** (Fast DDS binding) | **Specified, not transcribed.** The QoS table, the class structure and the codec mapping are exact, but the `TopicDataType` virtuals are *deliberately* not reproduced — Fast DDS 3.x renamed them relative to 2.x, and a wrong signature written from memory costs more than reading the installed header. Step 1 tells you which header to open. |
+| **12 (Step 7), 13 (Steps 4–6), 14 (Steps 4–8)** | **Specified, not transcribed.** Widget and window construction is described precisely — every class, signal, QoS, threading rule and interaction — but without full `.cpp` bodies. These are conventional Qt Widgets layouts; the decisions that are easy to get wrong (stable model ordering, coalescing, queued connections, `closeEvent` semantics) are all stated explicitly. |
+
+The tested logic — the two pure `lm_core` functions, the codecs, the registry, the
+model and the coalescer — is given in full, because that is where correctness is hard
+and where regressions are invisible. The Qt layout code is where it is cheapest to
+iterate visually, which is exactly what the user asked to do after the first build.
+
 ## File Structure
 
 | Path | Responsibility |
@@ -3572,6 +3588,7 @@ git commit -m "feat: add Windows and Linux resource probes"
 ```cpp
 #include <gtest/gtest.h>
 
+#include "lm/core/json.hpp"  // serialise_bundle, parse_bundle, content_hash
 #include "lm/transport/in_memory_transport.hpp"
 
 using namespace lm::core;
@@ -4708,12 +4725,1201 @@ git commit -m "feat: add Fast DDS transport with spec QoS and loopback tests"
 
 ---
 
-## Remaining tasks
+## Task 12: `lm_ui` — theme, widgets and the coalescing fleet model
 
-Tasks 12–14 follow the same structure. They are being written in sequence:
+**Files:**
+- Create: `libs/ui/CMakeLists.txt`
+- Create: `libs/ui/include/lm/ui/theme.hpp`, `libs/ui/src/theme.cpp`, `libs/ui/resources/theme.qss`, `libs/ui/resources/lm_ui.qrc`
+- Create: `libs/ui/include/lm/ui/status_pill.hpp`, `libs/ui/src/status_pill.cpp`
+- Create: `libs/ui/include/lm/ui/sparkline.hpp`, `libs/ui/src/sparkline.cpp`
+- Create: `libs/ui/include/lm/ui/meter_bar.hpp`, `libs/ui/src/meter_bar.cpp`
+- Create: `libs/ui/include/lm/ui/fleet_model.hpp`, `libs/ui/src/fleet_model.cpp`
+- Create: `libs/ui/include/lm/ui/sample_coalescer.hpp`, `libs/ui/src/sample_coalescer.cpp`
+- Modify: `CMakeLists.txt`, `cmake/LabMonitorTesting.cmake`
+- Test: `libs/ui/tests/main.cpp`, `libs/ui/tests/test_fleet_model.cpp`, `libs/ui/tests/test_sample_coalescer.cpp`
 
-| # | Task | Deliverable |
-|---|---|---|
-| 12 | `lm_ui` widgets | Theme, status pill, sparkline, meter bar, coalescing fleet model |
-| 13 | Client application | Tray icon, hidden startup, detail window |
-| 14 | Server application | Status ribbon, host sidebar, live detail |
+**Interfaces:**
+- Consumes: `core::FleetView`, `core::FleetEntry`, `core::HostState` (Task 6); `transport::ResourceSampleMessage` (Task 9).
+- Produces: `Theme::apply(QApplication&)`, `Theme::color_for(core::HostState)`, `Theme::glyph_for(core::HostState)`; `StatusPill`, `Sparkline`, `MeterBar`; `FleetModel` with `apply(const core::FleetView&)` and `apply_sample(const transport::ResourceSampleMessage&)`, roles `HostIdRole`/`SeverityRole`/`StateRole`; `SampleCoalescer` with `push()` and the `flushed(QVector<transport::ResourceSampleMessage>)` signal.
+
+**Three decisions that carry the "snappy" requirement:**
+
+1. **`FleetModel` keeps rows in a stable order — sorted by host id — and never reorders
+   itself.** Severity sorting is done by a `QSortFilterProxyModel` reading `SeverityRole`.
+   This is the crucial one: if the model reordered on every state change, a host going
+   offline would move rows and force the view to repaint everything. With a stable model,
+   `apply()` only ever inserts, removes, or emits `dataChanged` on the cells that changed.
+2. **`apply_sample()` emits `dataChanged` for the three resource columns only** — not the
+   whole row, and never `beginResetModel()`.
+3. **`SampleCoalescer` keeps the latest sample per host** behind a mutex and flushes on a
+   100 ms timer, so a burst of DDS traffic produces one repaint rather than dozens.
+   Latest-wins per host mirrors the `KEEP_LAST(1)` QoS exactly.
+
+Widgets are verified by running the applications; the **tests here cover the model and
+the coalescer**, which is where the logic is. They need only `QCoreApplication`, so they
+run headless in CI.
+
+- [ ] **Step 1: Add a `NO_GTEST_MAIN` option to `cmake/LabMonitorTesting.cmake`**
+
+Qt tests supply their own `main()` so they can construct a `QCoreApplication` before the
+tests run. Linking `GTest::gtest_main` as well would give two `main` symbols.
+
+```cmake
+function(lm_add_test target)
+  cmake_parse_arguments(ARG "NO_GTEST_MAIN" "" "SOURCES;LINK" ${ARGN})
+  add_executable(${target} ${ARG_SOURCES})
+  target_link_libraries(${target} PRIVATE ${ARG_LINK} GTest::gtest GTest::gmock lm_warnings)
+  if(NOT ARG_NO_GTEST_MAIN)
+    target_link_libraries(${target} PRIVATE GTest::gtest_main)
+  endif()
+  add_test(NAME ${target} COMMAND ${target})
+  copy_runtime_dependencies(${target})
+endfunction()
+```
+
+- [ ] **Step 2: Write the failing test `libs/ui/tests/test_fleet_model.cpp`**
+
+```cpp
+#include <gtest/gtest.h>
+
+#include <QSignalSpy>
+
+#include "lm/ui/fleet_model.hpp"
+
+using namespace lm::core;
+using namespace lm::ui;
+using namespace std::chrono_literals;
+
+namespace {
+
+const TimePoint kNow = Clock::time_point{} + 1'000'000s;
+
+FleetView view_with(std::vector<std::pair<HostId, HostState>> hosts) {
+    FleetView view;
+    for (auto& [id, state] : hosts) {
+        FleetEntry entry;
+        entry.host_id = id;
+        entry.state = state;
+        entry.last_seen = kNow;
+        view.entries.push_back(entry);
+    }
+    return view;
+}
+
+int row_of(const FleetModel& model, const QString& host_id) {
+    for (int row = 0; row < model.rowCount(); ++row) {
+        if (model.data(model.index(row, 0), FleetModel::HostIdRole).toString() == host_id) {
+            return row;
+        }
+    }
+    return -1;
+}
+
+}  // namespace
+
+TEST(FleetModel, StartsEmpty) {
+    FleetModel model;
+    EXPECT_EQ(model.rowCount(), 0);
+    EXPECT_GT(model.columnCount(), 0);
+}
+
+TEST(FleetModel, InsertsRowsWithoutResetting) {
+    FleetModel model;
+    QSignalSpy reset_spy(&model, &QAbstractItemModel::modelReset);
+    QSignalSpy insert_spy(&model, &QAbstractItemModel::rowsInserted);
+
+    model.apply(view_with({{"PC-002", HostState::Online}, {"PC-001", HostState::Online}}));
+
+    EXPECT_EQ(model.rowCount(), 2);
+    EXPECT_EQ(reset_spy.count(), 0);
+    EXPECT_GT(insert_spy.count(), 0);
+}
+
+TEST(FleetModel, KeepsRowsInStableHostIdOrder) {
+    FleetModel model;
+    model.apply(view_with({{"PC-003", HostState::Online},
+                           {"PC-001", HostState::Missing},
+                           {"PC-002", HostState::Offline}}));
+
+    EXPECT_EQ(row_of(model, "PC-001"), 0);
+    EXPECT_EQ(row_of(model, "PC-002"), 1);
+    EXPECT_EQ(row_of(model, "PC-003"), 2);
+}
+
+TEST(FleetModel, StateChangeDoesNotMoveTheRow) {
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}, {"PC-002", HostState::Online}}));
+    const int before = row_of(model, "PC-002");
+
+    QSignalSpy move_spy(&model, &QAbstractItemModel::rowsMoved);
+    QSignalSpy reset_spy(&model, &QAbstractItemModel::modelReset);
+    model.apply(view_with({{"PC-001", HostState::Online}, {"PC-002", HostState::Missing}}));
+
+    EXPECT_EQ(row_of(model, "PC-002"), before);
+    EXPECT_EQ(move_spy.count(), 0);
+    EXPECT_EQ(reset_spy.count(), 0);
+}
+
+TEST(FleetModel, SeverityRoleDrivesProxySorting) {
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}, {"PC-002", HostState::Missing}}));
+
+    const int online = model.data(model.index(row_of(model, "PC-001"), 0),
+                                  FleetModel::SeverityRole).toInt();
+    const int missing = model.data(model.index(row_of(model, "PC-002"), 0),
+                                   FleetModel::SeverityRole).toInt();
+    EXPECT_LT(missing, online);  // lower sorts first: Missing is most urgent
+}
+
+TEST(FleetModel, RemovesHostsThatLeaveTheView) {
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}, {"PC-002", HostState::Unexpected}}));
+
+    QSignalSpy remove_spy(&model, &QAbstractItemModel::rowsRemoved);
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    EXPECT_EQ(model.rowCount(), 1);
+    EXPECT_EQ(row_of(model, "PC-002"), -1);
+    EXPECT_GT(remove_spy.count(), 0);
+}
+
+TEST(FleetModel, UnchangedViewEmitsNoDataChanged) {
+    FleetModel model;
+    const FleetView view = view_with({{"PC-001", HostState::Online}});
+    model.apply(view);
+
+    QSignalSpy changed_spy(&model, &QAbstractItemModel::dataChanged);
+    model.apply(view);
+
+    EXPECT_EQ(changed_spy.count(), 0);
+}
+
+TEST(FleetModel, SampleUpdatesOnlyTheResourceColumns) {
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    QSignalSpy changed_spy(&model, &QAbstractItemModel::dataChanged);
+
+    lm::transport::ResourceSampleMessage sample;
+    sample.host_id = "PC-001";
+    sample.sample.cpu_percent = 55.0;
+    sample.sample.mem_total_bytes = 1000;
+    sample.sample.mem_used_bytes = 500;
+    model.apply_sample(sample);
+
+    ASSERT_GT(changed_spy.count(), 0);
+    const auto arguments = changed_spy.takeFirst();
+    const auto top_left = arguments.at(0).toModelIndex();
+    const auto bottom_right = arguments.at(1).toModelIndex();
+    EXPECT_EQ(top_left.row(), bottom_right.row());
+    // A contiguous resource block, not the whole row.
+    EXPECT_LT(bottom_right.column() - top_left.column() + 1, model.columnCount());
+}
+
+TEST(FleetModel, SampleForAnUnknownHostIsIgnored) {
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    lm::transport::ResourceSampleMessage sample;
+    sample.host_id = "GHOST";
+    EXPECT_NO_THROW(model.apply_sample(sample));
+    EXPECT_EQ(model.rowCount(), 1);
+}
+
+TEST(FleetModel, ProvidesHeadersForEveryColumn) {
+    FleetModel model;
+    for (int column = 0; column < model.columnCount(); ++column) {
+        EXPECT_FALSE(model.headerData(column, Qt::Horizontal, Qt::DisplayRole)
+                         .toString()
+                         .isEmpty());
+    }
+}
+```
+
+- [ ] **Step 3: Write the failing test `libs/ui/tests/test_sample_coalescer.cpp`**
+
+```cpp
+#include <gtest/gtest.h>
+
+#include <QEventLoop>
+#include <QSignalSpy>
+#include <QTimer>
+
+#include "lm/ui/sample_coalescer.hpp"
+
+using namespace lm::transport;
+using namespace lm::ui;
+using namespace std::chrono_literals;
+
+namespace {
+
+ResourceSampleMessage sample_for(const std::string& host, double cpu) {
+    ResourceSampleMessage message;
+    message.host_id = host;
+    message.sample.cpu_percent = cpu;
+    return message;
+}
+
+/// Spins the event loop until the spy sees a signal or the timeout expires.
+bool wait_for_signal(QSignalSpy& spy, int milliseconds = 2000) {
+    return spy.wait(milliseconds);
+}
+
+}  // namespace
+
+TEST(SampleCoalescer, CollapsesABurstForOneHostIntoTheLatestSample) {
+    SampleCoalescer coalescer{50ms};
+    QSignalSpy spy(&coalescer, &SampleCoalescer::flushed);
+
+    for (double cpu : {10.0, 20.0, 30.0, 99.5}) {
+        coalescer.push(sample_for("PC-001", cpu));
+    }
+
+    ASSERT_TRUE(wait_for_signal(spy));
+    const auto batch = spy.takeFirst().at(0).value<QVector<ResourceSampleMessage>>();
+    ASSERT_EQ(batch.size(), 1);
+    EXPECT_DOUBLE_EQ(batch.front().sample.cpu_percent, 99.5);
+}
+
+TEST(SampleCoalescer, KeepsOneEntryPerHost) {
+    SampleCoalescer coalescer{50ms};
+    QSignalSpy spy(&coalescer, &SampleCoalescer::flushed);
+
+    coalescer.push(sample_for("PC-001", 10.0));
+    coalescer.push(sample_for("PC-002", 20.0));
+    coalescer.push(sample_for("PC-001", 30.0));
+
+    ASSERT_TRUE(wait_for_signal(spy));
+    const auto batch = spy.takeFirst().at(0).value<QVector<ResourceSampleMessage>>();
+    EXPECT_EQ(batch.size(), 2);
+}
+
+TEST(SampleCoalescer, DoesNotEmitWhenNothingWasPushed) {
+    SampleCoalescer coalescer{50ms};
+    QSignalSpy spy(&coalescer, &SampleCoalescer::flushed);
+
+    QEventLoop loop;
+    QTimer::singleShot(200, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    EXPECT_EQ(spy.count(), 0);
+}
+
+TEST(SampleCoalescer, ClearsItsBufferBetweenFlushes) {
+    SampleCoalescer coalescer{50ms};
+    QSignalSpy spy(&coalescer, &SampleCoalescer::flushed);
+
+    coalescer.push(sample_for("PC-001", 10.0));
+    ASSERT_TRUE(wait_for_signal(spy));
+    spy.clear();
+
+    QEventLoop loop;
+    QTimer::singleShot(200, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    EXPECT_EQ(spy.count(), 0);
+}
+```
+
+- [ ] **Step 4: Write `libs/ui/tests/main.cpp`**
+
+```cpp
+#include <gtest/gtest.h>
+
+#include <QCoreApplication>
+
+int main(int argc, char** argv) {
+    QCoreApplication app(argc, argv);
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
+}
+```
+
+- [ ] **Step 5: Run the tests to verify they fail**
+
+Expected: FAIL — `lm/ui/fleet_model.hpp` not found.
+
+- [ ] **Step 6: Write `libs/ui/include/lm/ui/theme.hpp` and `src/theme.cpp`**
+
+```cpp
+#pragma once
+
+#include <QColor>
+#include <QString>
+
+#include "lm/core/fleet.hpp"
+#include "lm/core/types.hpp"
+
+class QApplication;
+
+namespace lm::ui {
+
+/// Dark slate with a single cyan accent. Status is always colour *and* glyph,
+/// never colour alone, so it survives greyscale and colour-blindness.
+namespace Theme {
+
+inline constexpr const char* kAccent = "#22d3ee";
+inline constexpr const char* kBackground = "#0f172a";
+inline constexpr const char* kSurface = "#1e293b";
+inline constexpr const char* kText = "#e2e8f0";
+inline constexpr const char* kTextMuted = "#94a3b8";
+
+inline constexpr const char* kOnline = "#34d399";
+inline constexpr const char* kOffline = "#fbbf24";
+inline constexpr const char* kMissing = "#f87171";
+inline constexpr const char* kUnexpected = "#a78bfa";
+inline constexpr const char* kNotApplicable = "#64748b";
+
+void apply(QApplication& app);
+
+[[nodiscard]] QColor color_for(core::HostState state);
+[[nodiscard]] QColor color_for(core::CheckStatus status);
+
+/// A distinct shape per state, so hue is never the only signal.
+[[nodiscard]] QString glyph_for(core::HostState state);
+[[nodiscard]] QString glyph_for(core::CheckStatus status);
+
+}  // namespace Theme
+}  // namespace lm::ui
+```
+
+`apply()` loads `:/lm_ui/theme.qss` from the Qt resource file and calls
+`app.setStyleSheet()`. `glyph_for` returns `"✓"` for Online/Pass, `"!"` for
+Offline/Fail, `"✕"` for Missing, `"?"` for Unexpected, and `"◌"` for
+NotApplicable.
+
+- [ ] **Step 7: Write the three widgets**
+
+- **`StatusPill`** — a `QWidget` painting a rounded rect in `Theme::color_for()`, the
+  glyph, and a caption. Setter `set_state(core::HostState)` calls `update()`.
+- **`Sparkline`** — a `QWidget` holding a fixed-capacity ring buffer (default 60
+  points). `push(double)` appends and calls `update()`. `paintEvent` draws a polyline
+  scaled to the widget rect with antialiasing, plus a subtle filled area under the
+  curve. **No QtCharts dependency.**
+- **`MeterBar`** — a horizontal bar with `set_value(double percent)` animating through
+  `QVariantAnimation` with `QEasingCurve::OutCubic` over 300 ms, so values glide rather
+  than snap.
+
+Each is under 100 lines and takes no dependency beyond `Qt5::Widgets` and `lm_core`.
+
+- [ ] **Step 8: Write `libs/ui/include/lm/ui/fleet_model.hpp` and `src/fleet_model.cpp`**
+
+```cpp
+#pragma once
+
+#include <QAbstractTableModel>
+#include <QVector>
+#include <vector>
+
+#include "lm/core/fleet.hpp"
+#include "lm/transport/messages.hpp"
+
+namespace lm::ui {
+
+/// Rows are held in a stable order (by host id) and are never reordered. Wrap
+/// this in a QSortFilterProxyModel with sortRole == SeverityRole to present the
+/// most-urgent-first order without churning rows in the view.
+class FleetModel : public QAbstractTableModel {
+    Q_OBJECT
+
+public:
+    enum Column {
+        HostColumn = 0,
+        StateColumn,
+        CpuColumn,
+        MemoryColumn,
+        DiskColumn,
+        RevisionColumn,
+        LastSeenColumn,
+        ColumnCount
+    };
+
+    enum Role {
+        HostIdRole = Qt::UserRole + 1,
+        SeverityRole,  ///< lower sorts first
+        StateRole,
+        StaleRole,
+    };
+
+    explicit FleetModel(QObject* parent = nullptr);
+
+    [[nodiscard]] int rowCount(const QModelIndex& parent = {}) const override;
+    [[nodiscard]] int columnCount(const QModelIndex& parent = {}) const override;
+    [[nodiscard]] QVariant data(const QModelIndex& index, int role) const override;
+    [[nodiscard]] QVariant headerData(int section, Qt::Orientation orientation,
+                                      int role) const override;
+
+    /// Merges a reconciled view: inserts new hosts, removes departed ones, and
+    /// emits dataChanged only for cells that actually changed.
+    void apply(const core::FleetView& view);
+
+    /// Updates only the CPU, memory and disk columns for one host.
+    void apply_sample(const transport::ResourceSampleMessage& sample);
+
+private:
+    struct Row {
+        core::FleetEntry entry;
+        core::ResourceSample resources;
+        bool has_resources = false;
+    };
+
+    [[nodiscard]] int index_of(const core::HostId& host_id) const;
+
+    std::vector<Row> rows_;  ///< always sorted by entry.host_id
+};
+
+}  // namespace lm::ui
+```
+
+Implementation notes for `apply()`: build a host-id-sorted copy of `view.entries`, then
+walk both sequences in parallel. Hosts only in the new sequence trigger
+`beginInsertRows`/`endInsertRows`; hosts only in the old trigger
+`beginRemoveRows`/`endRemoveRows`; hosts in both compare `entry` field-by-field and emit
+`dataChanged` for the affected column range only. `apply_sample()` looks up the row, and
+if the sample differs, emits `dataChanged(index(row, CpuColumn), index(row, DiskColumn))`.
+
+- [ ] **Step 9: Write `libs/ui/include/lm/ui/sample_coalescer.hpp` and `src/sample_coalescer.cpp`**
+
+```cpp
+#pragma once
+
+#include <QObject>
+#include <QTimer>
+#include <QVector>
+
+#include <chrono>
+#include <map>
+#include <mutex>
+#include <string>
+
+#include "lm/transport/messages.hpp"
+
+Q_DECLARE_METATYPE(lm::transport::ResourceSampleMessage)
+
+namespace lm::ui {
+
+/// Buffers incoming resource samples and emits them in batches, so a burst of
+/// DDS traffic produces one repaint instead of dozens. push() is safe to call
+/// from a Fast DDS callback thread; flushed() is emitted on the owning thread.
+class SampleCoalescer : public QObject {
+    Q_OBJECT
+
+public:
+    explicit SampleCoalescer(std::chrono::milliseconds interval = std::chrono::milliseconds{100},
+                             QObject* parent = nullptr);
+
+    /// Thread-safe. Later samples for the same host replace earlier ones,
+    /// mirroring the KEEP_LAST(1) QoS on the ResourceSample topic.
+    void push(transport::ResourceSampleMessage sample);
+
+signals:
+    void flushed(QVector<transport::ResourceSampleMessage> batch);
+
+private:
+    void flush();
+
+    QTimer timer_;
+    std::mutex mutex_;
+    std::map<std::string, transport::ResourceSampleMessage> pending_;
+};
+
+}  // namespace lm::ui
+```
+
+`flush()` swaps `pending_` under the lock, returns early if it is empty (so no signal is
+emitted when nothing arrived), and emits the batch outside the lock.
+
+- [ ] **Step 10: Write `libs/ui/CMakeLists.txt`**
+
+```cmake
+find_package(Qt5 COMPONENTS Widgets Svg REQUIRED)
+
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+
+add_library(lm_ui STATIC
+  src/theme.cpp
+  src/status_pill.cpp
+  src/sparkline.cpp
+  src/meter_bar.cpp
+  src/fleet_model.cpp
+  src/sample_coalescer.cpp
+  resources/lm_ui.qrc)
+add_library(lm::ui ALIAS lm_ui)
+
+target_include_directories(lm_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(lm_ui
+  PUBLIC lm_core lm_transport Qt5::Widgets Qt5::Svg
+  PRIVATE lm_warnings)
+
+lm_add_test(lm_ui_tests
+  NO_GTEST_MAIN
+  SOURCES tests/main.cpp tests/test_fleet_model.cpp tests/test_sample_coalescer.cpp
+  LINK lm_ui)
+```
+
+Add to the top-level `CMakeLists.txt`:
+
+```cmake
+if(LM_BUILD_GUI)
+  add_subdirectory(libs/ui)
+endif()
+```
+
+- [ ] **Step 11: Build and run**
+
+```bash
+cmake --build --preset windows-debug
+ctest --preset windows-debug
+```
+
+Expected: all tests pass, including the model and coalescer suites.
+
+- [ ] **Step 12: Commit**
+
+```bash
+git add libs/ui cmake/LabMonitorTesting.cmake CMakeLists.txt
+git commit -m "feat: add lm_ui theme, widgets, stable fleet model and sample coalescer"
+```
+
+---
+
+## Task 13: Client application
+
+**Files:**
+- Create: `apps/client/CMakeLists.txt`, `apps/client/main.cpp`
+- Create: `apps/client/monitor_worker.hpp`, `apps/client/monitor_worker.cpp`
+- Create: `apps/client/tray_controller.hpp`, `apps/client/tray_controller.cpp`
+- Create: `apps/client/detail_window.hpp`, `apps/client/detail_window.cpp`
+- Modify: `CMakeLists.txt`
+- Test: `apps/client/tests/test_monitor_worker.cpp`
+
+**Interfaces:**
+- Consumes: `HostProbes`, `make_platform_probes()`, `local_host_name()` (Tasks 7–8); `IClientTransport`, `make_dds_client`, `make_in_memory_client` (Tasks 9, 11); `Theme`, `Sparkline`, `MeterBar`, `StatusPill` (Task 12); `evaluate()` (Task 5).
+- Produces: `MonitorWorker` with signals `resources_sampled(core::ResourceSample)`, `report_ready(core::ComplianceReport)`, `connection_changed(transport::ConnectionState)`; `TrayController`; `DetailWindow`.
+
+**Threading, restated because it is the whole point:** `MonitorWorker` is moved onto a
+worker `QThread`. It owns the probes and the transport. It communicates with the GUI
+purely through queued signals. **No registry read, service enumeration or DDS call ever
+happens on the GUI thread.**
+
+- [ ] **Step 1: Write the failing test `apps/client/tests/test_monitor_worker.cpp`**
+
+Uses `InMemoryTransport` and the probe fakes, so it needs no DDS domain and no real OS
+probing. Drives the worker synchronously via its slots rather than waiting on timers.
+
+```cpp
+#include <gtest/gtest.h>
+
+#include "lm/core/json.hpp"  // serialise_bundle, content_hash
+#include "lm/platform/fakes.hpp"
+#include "lm/transport/in_memory_transport.hpp"
+#include "monitor_worker.hpp"
+
+using namespace lm::core;
+using namespace lm::platform;
+using namespace lm::transport;
+
+namespace {
+
+struct Fixture {
+    MessageBus bus;
+    FakeResourceProbe* resources = nullptr;
+    FakeProcessProbe* processes = nullptr;
+    std::unique_ptr<MonitorWorker> worker;
+
+    Fixture() {
+        auto resource_probe = std::make_unique<FakeResourceProbe>();
+        auto process_probe = std::make_unique<FakeProcessProbe>();
+        resources = resource_probe.get();
+        processes = process_probe.get();
+
+        ProbeSet set;
+        set.resources = std::move(resource_probe);
+        set.processes = std::move(process_probe);
+
+        auto probes = std::make_unique<HostProbes>(
+            "PC-001", std::move(set),
+            Capabilities{}.add(Capability::Resources).add(Capability::Processes));
+
+        worker = std::make_unique<MonitorWorker>(std::move(probes), make_in_memory_client(bus));
+    }
+};
+
+TemplateBundleMessage bundle_message(std::uint64_t revision, std::vector<Rule> rules) {
+    TemplateBundle bundle;
+    bundle.revision = revision;
+    Template tmpl;
+    tmpl.name = "Lab Workstation";
+    tmpl.rules = std::move(rules);
+    bundle.templates = {tmpl};
+    bundle.assignments["PC-001"] = {"Lab Workstation"};
+
+    TemplateBundleMessage message;
+    message.revision = revision;
+    message.hash = content_hash(bundle);
+    message.json = serialise_bundle(bundle);
+    return message;
+}
+
+Rule process_rule(std::string exe) {
+    Rule rule;
+    rule.id = "p1";
+    rule.expectation = Presence::MustBePresent;
+    rule.payload = ProcessRule{std::move(exe)};
+    return rule;
+}
+
+}  // namespace
+
+TEST(MonitorWorker, AnnouncesItselfOnStart) {
+    Fixture fixture;
+
+    std::vector<ClientAnnounce> announcements;
+    const auto server = make_in_memory_server(fixture.bus);
+    server->on_announce([&](const ClientAnnounce& message) { announcements.push_back(message); });
+
+    fixture.worker->start();
+
+    ASSERT_EQ(announcements.size(), 1u);
+    EXPECT_EQ(announcements.front().host_id, "PC-001");
+    EXPECT_FALSE(announcements.front().agent_version.empty());
+}
+
+TEST(MonitorWorker, PublishesResourceSamplesOnTick) {
+    Fixture fixture;
+    fixture.resources->next.cpu_percent = 44.0;
+
+    std::optional<ResourceSampleMessage> received;
+    const auto server = make_in_memory_server(fixture.bus);
+    server->on_resources([&](const ResourceSampleMessage& message) { received = message; });
+
+    fixture.worker->sample_resources();
+
+    ASSERT_TRUE(received.has_value());
+    EXPECT_EQ(received->host_id, "PC-001");
+    EXPECT_DOUBLE_EQ(received->sample.cpu_percent, 44.0);
+}
+
+TEST(MonitorWorker, WithNoTemplateReportsResourcesOnly) {
+    Fixture fixture;
+
+    std::optional<ComplianceReportMessage> received;
+    const auto server = make_in_memory_server(fixture.bus);
+    server->on_report([&](const ComplianceReportMessage& message) { received = message; });
+
+    fixture.worker->evaluate_compliance();
+
+    ASSERT_TRUE(received.has_value());
+    EXPECT_TRUE(received->report.results.empty());
+    EXPECT_EQ(received->report.applied_revision, 0u);
+    EXPECT_EQ(fixture.processes->calls, 0);  // nothing to probe
+}
+
+TEST(MonitorWorker, AppliesAPublishedTemplateAndReports) {
+    Fixture fixture;
+    fixture.processes->next = {ProcessInfo{"antivirus.exe", std::nullopt}};
+
+    const auto server = make_in_memory_server(fixture.bus);
+    std::optional<ComplianceReportMessage> received;
+    server->on_report([&](const ComplianceReportMessage& message) { received = message; });
+
+    fixture.worker->start();
+    server->publish_bundle(bundle_message(3, {process_rule("antivirus.exe")}));
+
+    ASSERT_TRUE(received.has_value());
+    EXPECT_EQ(received->report.applied_revision, 3u);
+    ASSERT_EQ(received->report.results.size(), 1u);
+    EXPECT_EQ(received->report.results.front().status, CheckStatus::Pass);
+}
+
+TEST(MonitorWorker, ReevaluatesImmediatelyWhenTheTemplateChanges) {
+    Fixture fixture;
+    fixture.processes->next = {ProcessInfo{"antivirus.exe", std::nullopt}};
+
+    const auto server = make_in_memory_server(fixture.bus);
+    int reports = 0;
+    server->on_report([&](const ComplianceReportMessage&) { ++reports; });
+
+    fixture.worker->start();
+    server->publish_bundle(bundle_message(1, {process_rule("antivirus.exe")}));
+    server->publish_bundle(bundle_message(2, {process_rule("other.exe")}));
+
+    EXPECT_EQ(reports, 2);
+}
+
+TEST(MonitorWorker, IgnoresARepublishedIdenticalRevision) {
+    Fixture fixture;
+
+    const auto server = make_in_memory_server(fixture.bus);
+    int reports = 0;
+    server->on_report([&](const ComplianceReportMessage&) { ++reports; });
+
+    fixture.worker->start();
+    const TemplateBundleMessage message = bundle_message(1, {process_rule("a.exe")});
+    server->publish_bundle(message);
+    server->publish_bundle(message);
+
+    EXPECT_EQ(reports, 1);
+}
+
+TEST(MonitorWorker, RejectsAMalformedBundleWithoutCrashing) {
+    Fixture fixture;
+    const auto server = make_in_memory_server(fixture.bus);
+    fixture.worker->start();
+
+    TemplateBundleMessage broken;
+    broken.revision = 9;
+    broken.json = "{ not json";
+
+    EXPECT_NO_THROW(server->publish_bundle(broken));
+    EXPECT_EQ(fixture.worker->applied_revision(), 0u);  // last good state retained
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Expected: FAIL — `monitor_worker.hpp` not found.
+
+- [ ] **Step 3: Write `apps/client/monitor_worker.hpp`**
+
+```cpp
+#pragma once
+
+#include <QObject>
+#include <QTimer>
+
+#include <memory>
+
+#include "lm/platform/probes.hpp"
+#include "lm/transport/transport.hpp"
+
+/// Owns all probing and messaging. Lives on a worker thread; talks to the GUI
+/// only through queued signals.
+class MonitorWorker : public QObject {
+    Q_OBJECT
+
+public:
+    MonitorWorker(std::unique_ptr<lm::platform::HostProbes> probes,
+                  std::unique_ptr<lm::transport::IClientTransport> transport,
+                  QObject* parent = nullptr);
+
+    [[nodiscard]] std::uint64_t applied_revision() const { return bundle_.revision; }
+
+public slots:
+    /// Announces this client and subscribes to template updates.
+    void start();
+    /// Fast tick: samples resources and publishes them.
+    void sample_resources();
+    /// Slow tick: collects facts, evaluates the template, publishes the report.
+    void evaluate_compliance();
+    void set_reporting_paused(bool paused);
+
+signals:
+    void resources_sampled(lm::core::ResourceSample sample);
+    void report_ready(lm::core::ComplianceReport report);
+    void template_applied(quint64 revision);
+    void connection_changed(int state);
+
+private:
+    void on_bundle(const lm::transport::TemplateBundleMessage& message);
+
+    std::unique_ptr<lm::platform::HostProbes> probes_;
+    std::unique_ptr<lm::transport::IClientTransport> transport_;
+    lm::core::TemplateBundle bundle_;
+    bool paused_ = false;
+};
+```
+
+`on_bundle` parses the JSON; on failure it logs via `spdlog` and **keeps the last good
+bundle**, then on success stores it and calls `evaluate_compliance()` immediately. It
+returns early when `message.revision == bundle_.revision`, which is what makes the
+republish test pass.
+
+- [ ] **Step 4: Write `apps/client/tray_controller.hpp/.cpp`**
+
+`QSystemTrayIcon` whose icon is rendered from an SVG template recoloured by state
+(green / amber / red / grey). Context menu: **Open**, **Pause reporting** (checkable),
+**Copy diagnostics**, **Quit**. Activation on `QSystemTrayIcon::Trigger` toggles the
+detail window. Tooltip shows hostname plus current CPU and disk.
+
+- [ ] **Step 5: Write `apps/client/detail_window.hpp/.cpp`**
+
+Three bands as specified: header (hostname, `StatusPill` for connection, applied
+template name and revision); resource strip (`Sparkline` for CPU, `MeterBar` for memory,
+one `MeterBar` per volume); compliance list grouped into Applications / Services /
+Registry with `NotApplicable` rows dimmed. `closeEvent` calls `hide()` and
+`event->ignore()` so closing never quits the app.
+
+- [ ] **Step 6: Write `apps/client/main.cpp`**
+
+```cpp
+// Structure (not the full file):
+//   - QApplication app{argc, argv};
+//   - app.setQuitOnLastWindowClosed(false);        // tray app: closing the window must not exit
+//   - boost::program_options: --domain-id, --config, --offline, --log-level
+//   - spdlog rotating file sink + console sink
+//   - lm::ui::Theme::apply(app);
+//   - auto probes   = std::make_unique<HostProbes>(local_host_name(), make_platform_probes(),
+//                                                  platform_capabilities());
+//   - auto transport = options.offline ? make_in_memory_client(bus) : make_dds_client(config);
+//   - auto* worker = new MonitorWorker{std::move(probes), std::move(transport)};
+//   - QThread* thread = new QThread; worker->moveToThread(thread);
+//   - QTimer* fast = new QTimer{worker}; fast->setInterval(2000);
+//   - QTimer* slow = new QTimer{worker}; slow->setInterval(30000);
+//     (both created on the worker thread inside start(), so they tick there)
+//   - connect worker signals to DetailWindow/TrayController slots (queued by default
+//     across threads — do not use Qt::DirectConnection here)
+//   - thread->start(); QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection);
+//   - The window is NOT shown: the app starts hidden with only a tray icon.
+```
+
+- [ ] **Step 7: Write `apps/client/CMakeLists.txt`**
+
+```cmake
+find_package(Qt5 COMPONENTS Widgets REQUIRED)
+find_package(Boost REQUIRED COMPONENTS program_options)
+find_package(spdlog CONFIG REQUIRED)
+
+set(CMAKE_AUTOMOC ON)
+
+add_executable(lab_monitor_client WIN32
+  main.cpp
+  monitor_worker.cpp
+  tray_controller.cpp
+  detail_window.cpp)
+
+target_include_directories(lab_monitor_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(lab_monitor_client PRIVATE
+  lm_core lm_platform lm_transport lm_ui
+  Qt5::Widgets Boost::program_options spdlog::spdlog lm_warnings)
+
+copy_runtime_dependencies(lab_monitor_client)
+
+lm_add_test(lab_monitor_client_tests
+  NO_GTEST_MAIN
+  SOURCES ${CMAKE_SOURCE_DIR}/libs/ui/tests/main.cpp tests/test_monitor_worker.cpp
+          monitor_worker.cpp
+  LINK lm_core lm_platform lm_transport Qt5::Core)
+target_include_directories(lab_monitor_client_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+```
+
+The `WIN32` keyword makes it a GUI subsystem binary, so no console window appears.
+
+Add to the top-level `CMakeLists.txt` inside `if(LM_BUILD_GUI)`:
+`add_subdirectory(apps/client)`.
+
+- [ ] **Step 8: Build and run the tests**
+
+```bash
+cmake --build --preset windows-debug
+ctest --preset windows-debug
+```
+
+Expected: all tests pass.
+
+- [ ] **Step 9: Run the client manually**
+
+```bash
+./build/windows/Debug/lab_monitor_client.exe --offline
+```
+
+Expected: no window appears; a tray icon shows; clicking it opens the detail window
+with live CPU, memory and disk; closing the window returns to the tray.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add apps/client CMakeLists.txt
+git commit -m "feat: add tray client with threaded monitor worker"
+```
+
+---
+
+## Task 14: Server application
+
+**Files:**
+- Create: `libs/core/include/lm/core/client_registry.hpp`, `libs/core/src/client_registry.cpp`
+- Create: `apps/server/CMakeLists.txt`, `apps/server/main.cpp`
+- Create: `apps/server/server_controller.hpp`, `apps/server/server_controller.cpp`
+- Create: `apps/server/fleet_window.hpp`, `apps/server/fleet_window.cpp`
+- Create: `apps/server/status_ribbon.hpp`, `apps/server/status_ribbon.cpp`
+- Modify: `libs/core/CMakeLists.txt`, `CMakeLists.txt`
+- Test: `libs/core/tests/test_client_registry.cpp`
+
+**Interfaces:**
+- Consumes: `reconcile()`, `FleetView` (Task 6); `IServerTransport` (Tasks 9, 11); `FleetModel`, `SampleCoalescer`, `StatusRibbon` inputs (Task 12).
+- Produces: `core::ClientRegistry` with `record_announce`, `record_sample`, `record_report`, `mark_lost`, `snapshot() -> std::vector<DiscoveredClient>`; `ServerController`; `FleetWindow`; `StatusRibbon`.
+
+> **`ClientRegistry` goes in `lm_core`, not the app.** It is pure bookkeeping over
+> `DiscoveredClient` records with no I/O, which makes it unit-testable and keeps the
+> server application to wiring and widgets.
+
+- [ ] **Step 1: Write the failing test `libs/core/tests/test_client_registry.cpp`**
+
+```cpp
+#include <gtest/gtest.h>
+
+#include "lm/core/client_registry.hpp"
+
+using namespace lm::core;
+using namespace std::chrono_literals;
+
+namespace {
+const TimePoint kNow = Clock::time_point{} + 1'000'000s;
+}
+
+TEST(ClientRegistry, StartsEmpty) {
+    const ClientRegistry registry;
+    EXPECT_TRUE(registry.snapshot().empty());
+}
+
+TEST(ClientRegistry, RecordsAnAnnouncement) {
+    ClientRegistry registry;
+    registry.record_announce("PC-001", Capabilities{}.add(Capability::Resources), kNow);
+
+    const auto clients = registry.snapshot();
+    ASSERT_EQ(clients.size(), 1u);
+    EXPECT_EQ(clients.front().host_id, "PC-001");
+    EXPECT_TRUE(clients.front().caps.has(Capability::Resources));
+    EXPECT_EQ(clients.front().last_seen, kNow);
+}
+
+TEST(ClientRegistry, SamplesRefreshLastSeenWithoutDuplicating) {
+    ClientRegistry registry;
+    registry.record_announce("PC-001", Capabilities{}, kNow);
+    registry.record_sample("PC-001", kNow + 5s);
+
+    const auto clients = registry.snapshot();
+    ASSERT_EQ(clients.size(), 1u);
+    EXPECT_EQ(clients.front().last_seen, kNow + 5s);
+}
+
+TEST(ClientRegistry, ASampleFromAnUnannouncedHostStillRegistersIt) {
+    ClientRegistry registry;
+    registry.record_sample("ROGUE", kNow);
+    EXPECT_EQ(registry.snapshot().size(), 1u);
+}
+
+TEST(ClientRegistry, ReportsRecordTheAppliedRevision) {
+    ClientRegistry registry;
+    registry.record_announce("PC-001", Capabilities{}, kNow);
+    registry.record_report("PC-001", 7, kNow + 1s);
+
+    EXPECT_EQ(registry.snapshot().front().applied_revision, 7u);
+}
+
+TEST(ClientRegistry, AnnouncementDoesNotResetAKnownRevision) {
+    ClientRegistry registry;
+    registry.record_report("PC-001", 7, kNow);
+    registry.record_announce("PC-001", Capabilities{}, kNow + 1s);
+
+    EXPECT_EQ(registry.snapshot().front().applied_revision, 7u);
+}
+
+TEST(ClientRegistry, MarkLostRemovesTheClient) {
+    ClientRegistry registry;
+    registry.record_announce("PC-001", Capabilities{}, kNow);
+    registry.mark_lost("PC-001");
+    EXPECT_TRUE(registry.snapshot().empty());
+}
+
+TEST(ClientRegistry, MarkLostForAnUnknownHostIsHarmless) {
+    ClientRegistry registry;
+    EXPECT_NO_THROW(registry.mark_lost("GHOST"));
+}
+
+TEST(ClientRegistry, SnapshotIsOrderedByHostId) {
+    ClientRegistry registry;
+    registry.record_announce("PC-003", Capabilities{}, kNow);
+    registry.record_announce("PC-001", Capabilities{}, kNow);
+    registry.record_announce("PC-002", Capabilities{}, kNow);
+
+    const auto clients = registry.snapshot();
+    ASSERT_EQ(clients.size(), 3u);
+    EXPECT_EQ(clients[0].host_id, "PC-001");
+    EXPECT_EQ(clients[2].host_id, "PC-003");
+}
+
+TEST(ClientRegistry, FeedsReconcileDirectly) {
+    ClientRegistry registry;
+    registry.record_announce("PC-001", Capabilities{}, kNow);
+
+    ReconcileOptions options;
+    options.liveliness_lease = 10s;
+    const FleetView view = reconcile({{"PC-001", ""}}, registry.snapshot(), kNow, options);
+
+    EXPECT_EQ(view.counts.online, 1u);
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Expected: FAIL — `lm/core/client_registry.hpp` not found.
+
+- [ ] **Step 3: Write `libs/core/include/lm/core/client_registry.hpp` and `src/client_registry.cpp`**
+
+```cpp
+#pragma once
+
+#include <map>
+#include <vector>
+
+#include "lm/core/fleet.hpp"
+
+namespace lm::core {
+
+/// Pure bookkeeping of clients the server has heard from. No I/O and no clock:
+/// timestamps are supplied by the caller, so this is fully testable.
+class ClientRegistry {
+public:
+    void record_announce(const HostId& host_id, Capabilities caps, TimePoint seen_at);
+    void record_sample(const HostId& host_id, TimePoint seen_at);
+    void record_report(const HostId& host_id, std::uint64_t applied_revision, TimePoint seen_at);
+    void mark_lost(const HostId& host_id);
+
+    /// Ordered by host id; feeds straight into reconcile().
+    [[nodiscard]] std::vector<DiscoveredClient> snapshot() const;
+
+private:
+    DiscoveredClient& touch(const HostId& host_id, TimePoint seen_at);
+
+    std::map<HostId, DiscoveredClient> clients_;
+};
+
+}  // namespace lm::core
+```
+
+`touch()` inserts the host if unknown and advances `last_seen` only forward, so an
+out-of-order sample cannot make a live client look stale. `record_announce` updates
+`caps` but must **not** touch `applied_revision`.
+
+Add `src/client_registry.cpp` and `tests/test_client_registry.cpp` to
+`libs/core/CMakeLists.txt`.
+
+- [ ] **Step 4: Write `apps/server/server_controller.hpp/.cpp`**
+
+Owns the `IServerTransport`, the `ClientRegistry`, the expected-host list, the published
+bundle and the draft bundle. Responsibilities:
+
+- Transport callbacks arrive on Fast DDS threads and are marshalled onto the GUI thread
+  with `QMetaObject::invokeMethod(this, ..., Qt::QueuedConnection)` before touching the
+  registry. **This is mandatory** — the registry is not thread-safe by design.
+- Resource samples go through `SampleCoalescer` rather than straight to the model.
+- A 1 s `QTimer` calls `reconcile(expected_, registry_.snapshot(), Clock::now(), options_)`
+  and hands the `FleetView` to `FleetModel::apply()`, then emits counts for the ribbon.
+- `publish()` bumps `revision`, recomputes `content_hash`, persists, and calls
+  `transport_->publish_bundle()`. It is only enabled when
+  `content_hash(draft_) != content_hash(published_)`.
+- Config load/save of expected hosts and the bundle as JSON under
+  `QStandardPaths::AppConfigLocation`. A parse failure logs, surfaces the message, and
+  keeps the last good bundle in memory.
+
+- [ ] **Step 5: Write `apps/server/status_ribbon.hpp/.cpp`**
+
+A horizontal row of clickable counters — Online, Offline, Missing, Unexpected, Stale.
+`set_counts(const core::FleetCounts&)` updates the numbers, animating each through
+`QVariantAnimation` so the value rolls rather than jumps. Clicking one emits
+`filter_requested(std::optional<core::HostState>)`; clicking the active one again clears
+the filter.
+
+- [ ] **Step 6: Write `apps/server/fleet_window.hpp/.cpp`**
+
+- A `QSortFilterProxyModel` over `FleetModel` with
+  `setSortRole(FleetModel::SeverityRole)` and `sort(0)`, giving the
+  most-urgent-first order without the model ever reordering.
+- Left: the host sidebar (`QListView` or a single-column `QTableView` on the proxy) with
+  a `QLineEdit` filter box wired to `setFilterFixedString` for instant filtering.
+- Centre: detail for the selected host — `Sparkline`, `MeterBar`s, and its compliance
+  list.
+- Top: the `StatusRibbon`; its `filter_requested` signal sets a state filter on the proxy.
+- A Templates tab hosting the rule editor and host→template assignments, with the
+  Publish button described in Step 4.
+- Geometry and splitter state saved and restored via `QSettings`.
+
+- [ ] **Step 7: Write `apps/server/main.cpp`**
+
+Same shape as the client's: `boost::program_options` for `--domain-id`, `--config`,
+`--offline` and `--log-level`; `spdlog` sinks; `Theme::apply(app)`; construct
+`ServerController` and `FleetWindow`; **show** the window (unlike the client).
+
+- [ ] **Step 8: Write `apps/server/CMakeLists.txt`**
+
+Mirrors the client's, with `add_executable(lab_monitor_server WIN32 ...)` and the same
+link set. Add `add_subdirectory(apps/server)` inside the top-level `if(LM_BUILD_GUI)`.
+
+- [ ] **Step 9: Build and run the tests**
+
+```bash
+cmake --build --preset windows-debug
+ctest --preset windows-debug
+```
+
+Expected: all tests pass.
+
+- [ ] **Step 10: Verify the vertical slice end to end**
+
+In one terminal:
+
+```bash
+./build/windows/Debug/lab_monitor_server.exe
+```
+
+In another:
+
+```bash
+./build/windows/Debug/lab_monitor_client.exe
+```
+
+Expected: within a few seconds the server lists the client's hostname as **Unexpected**
+(it is not yet in the expected list), showing live CPU, memory and disk that update
+every 2 seconds. Adding that hostname to the expected list moves it to **Online**.
+Stopping the client moves it to **Offline** within the 10 s liveliness lease.
+
+**This is the vertical slice the plan set out to prove.**
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add libs/core apps/server CMakeLists.txt
+git commit -m "feat: add server fleet console with client registry"
+```
+
+---
+
+## Task 15: CI
+
+**Files:**
+- Create: `.github/workflows/ci.yml`
+
+- [ ] **Step 1: Write the workflow**
+
+Two jobs, matching the spec:
+
+1. **Headless** — `windows-latest` and `ubuntu-latest`, configured with the
+   `windows-headless` / `linux-headless` presets (`LM_BUILD_GUI=OFF`,
+   `VCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON`). Builds `lm_core`, `lm_platform`,
+   `lm_transport` and runs all of their tests. No Qt in the dependency graph, so this
+   is the fast feedback loop on every push.
+2. **Full** — the `windows` / `linux-debug` presets with the GUI, using vcpkg binary
+   caching against the GitHub Actions cache backend
+   (`VCPKG_BINARY_SOURCES=clear;x-gha,readwrite`).
+
+Both jobs pin `VCPKG_ROOT` and use a CMake ≥ 3.28 from the runner image.
+
+- [ ] **Step 2: Verify the headless preset locally first**
+
+```bash
+cmake --preset windows-headless
+cmake --build --preset windows-headless
+ctest --preset windows-headless
+```
+
+Expected: configures without Qt and all non-GUI tests pass.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add .github/workflows/ci.yml
+git commit -m "build: add headless and full CI workflows"
+```
