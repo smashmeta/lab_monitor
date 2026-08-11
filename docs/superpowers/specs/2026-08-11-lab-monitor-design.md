@@ -62,8 +62,9 @@ Interfaces are defined and compile, implementations return empty/`NotApplicable`
 | 4 | **Named, reusable templates assigned to hosts** | Fleets are role-shaped: most machines share a configuration. Per-host rulesets would duplicate the same rules across every machine. |
 | 5 | **Single tray process, user-session scoped** | Simplest to build, debug and deploy. These are lab workstations with users at them; a client shows as offline when nobody is logged in. Splitting into service + tray later requires no change to the shared libraries. |
 | 6 | **Four focused libraries** | Keeps the two critical pure functions free of Qt, DDS and syscalls, so their tests are fast and mock-free. |
-| 7 | **Qt 5.15.18 rather than Qt 6.10** | `qt5-base 5.15.18` is already built for `x64-windows` in the local vcpkg binary cache (1468 archives / 9.6 GB) from this exact port tree, and matches the sibling `discnet` project. Qt 6.10 is a 1–3 hour cold build. Qt Widgets code is ~99 % source-compatible; `lm_ui` avoids version-specific APIs so migration stays cheap. |
-| 8 | **Hand-written `TopicDataType` over FastCDR** | `fastddsgen` is a Java tool and is not a vcpkg port; no JDK is installed. Four topics at roughly 40 lines each is cheaper than adding a Java toolchain dependency to every developer machine and CI job. |
+| 7 | **Qt 5.15.18 for the first iteration, with a planned upgrade** | `qt5-base 5.15.18` is already built for `x64-windows` in the local vcpkg binary cache (1468 archives / 9.6 GB) from this exact port tree, and matches the sibling `discnet` project. Qt 6.10 is a 1–3 hour cold build. Qt Widgets code is ~99 % source-compatible, and `lm_ui` avoids version-specific APIs, so the move to Qt 6 stays cheap. **Upgrading is expected once the first iteration is complete**, not merely possible. |
+| 8 | **`nlohmann-json` for JSON, `spdlog` for logging** | Chosen by the team, and both are already in the local binary cache from `discnet`. Boost's role is therefore narrowed to `program_options` for the two applications' CLI. |
+| 9 | **Hand-written `TopicDataType` over FastCDR** | `fastddsgen` is a Java tool and is not a vcpkg port; no JDK is installed. Four topics at roughly 40 lines each is cheaper than adding a Java toolchain dependency to every developer machine and CI job. |
 
 ## 4. Repository layout
 
@@ -105,10 +106,10 @@ project.
   `"builtin-baseline": "4f326c4072038c8624c36a8ba5ed23f616adda53"`.
   This is the commit both local vcpkg checkouts sit on, and the one that produced the
   existing binary cache — so every dependency we share with `discnet` (boost, spdlog,
-  gtest, qt5-base) restores from cache rather than rebuilding. Only `fastdds` and
-  `fastcdr` are cold, and those build in roughly ten minutes.
-- Dependencies: `boost-program-options`, `boost-json`, `fastdds`, `fastcdr`, `spdlog`,
-  `gtest`; and under the `gui` feature `qt5-base`, `qt5-svg`.
+  gtest, nlohmann-json, qt5-base) restores from cache rather than rebuilding. Only
+  `fastdds` and `fastcdr` are cold, and those build in roughly ten minutes.
+- Dependencies: `boost-program-options`, `nlohmann-json`, `fastdds`, `fastcdr`,
+  `spdlog`, `gtest`; and under the `gui` feature `qt5-base`, `qt5-svg`.
 - **`LM_BUILD_GUI`** (default `ON`). When `OFF`, Qt is dropped from both the CMake build
   and vcpkg feature resolution; `lm_ui` and both applications are excluded, leaving
   `lm_core`, `lm_platform`, `lm_transport` and all of their tests. CI uses this for a
@@ -122,11 +123,12 @@ project.
 
 ### 6.1 `lm_core` — domain logic, zero I/O
 
-Depends on Boost and nothing else. No Qt, no DDS, no syscalls. This is where the
-critical, heavily-tested logic lives.
+Depends on `nlohmann-json` and nothing else — not even Boost, which is confined to the
+two applications' CLI parsing. No Qt, no DDS, no syscalls. This is where the critical,
+heavily-tested logic lives.
 
-Owns: domain types (§7), template model, JSON serialisation via `boost::json`, and the
-two pure functions:
+Owns: domain types (§7), template model, JSON serialisation via `nlohmann::json`, and
+the two pure functions:
 
 ```cpp
 ComplianceReport evaluate(const TemplateBundle& bundle,
@@ -237,7 +239,7 @@ Offline detection uses the DDS Liveliness QoS lease on `ClientAnnounce` combined
 ## 9. Template lifecycle
 
 1. The server owns templates, assignments and the expected-host list, persisted as
-   `boost::json` under the platform config directory.
+   `nlohmann::json` under the platform config directory.
 2. Edits in the UI mutate a **draft**. The draft is compared against the published
    bundle; Publish is enabled only when they differ, and is labelled with the revision
    it will create.
@@ -361,13 +363,16 @@ GitHub Actions, `windows-latest` and `ubuntu-latest`:
 | Risk | Mitigation |
 |---|---|
 | DDS multicast discovery blocked by network policy or firewall | Fast DDS supports an explicit initial-peers list; expose it as a CLI/config option if discovery fails |
-| Qt 5.15 is upstream EOL (KDE-patched in vcpkg) | `lm_ui` avoids version-specific APIs, keeping a Qt 6 migration cheap; revisit once a Qt 6 build has been warmed |
+| Qt 5.15 is upstream EOL (KDE-patched in vcpkg) | Accepted for the first iteration. `lm_ui` avoids version-specific APIs to keep the migration cheap, and the Qt 6 upgrade is planned work once the first iteration lands — not an open question |
 | C++23 support varies across MSVC and GCC | CMake maps `CXX_STANDARD 23` to `/std:c++latest` on MSVC; keep to widely-implemented features and verify both CI legs early |
 | Hand-written `TopicDataType` code is error-prone | Round-trip tests for every topic in `lm_transport`; the four types are deliberately small and flat |
 | Service enumeration on Linux may need D-Bus | Stubbed behind `IServiceProbe` in the first pass; capability reported honestly until implemented |
 
 ## 18. Future work
 
-Historical trends and charting; remote remediation; DDS security plugin; installers and
-service registration; splitting the client into a service plus a tray UI; host groups
-for template assignment; an OpenDDS backend behind the existing `ITransport`.
+**Planned immediately after the first iteration:** upgrade Qt 5.15 → Qt 6.
+
+Beyond that: historical trends and charting; remote remediation; DDS security plugin;
+installers and service registration; splitting the client into a service plus a tray UI;
+host groups for template assignment; an OpenDDS backend behind the existing
+`ITransport`.
