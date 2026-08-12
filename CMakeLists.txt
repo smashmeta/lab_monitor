@@ -28,3 +28,7 @@ enable_testing()
 add_subdirectory(libs/core)
 add_subdirectory(libs/platform)
 add_subdirectory(libs/transport)
+
+if(LM_BUILD_GUI)
+  add_subdirectory(libs/ui)
+endif()
