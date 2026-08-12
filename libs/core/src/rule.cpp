@@ -1,5 +1,7 @@
 #include "lm/core/rule.hpp"
 
+#include <type_traits>
+
 namespace lm::core {
 
 RuleKind kind_of(const Rule& rule) {

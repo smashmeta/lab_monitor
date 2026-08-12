@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 
 #include "lm/core/types.hpp"
