@@ -53,3 +53,55 @@ TEST(Satisfies, HandlesEveryOperator) {
 TEST(ToString, RoundTripsThroughParse) {
     EXPECT_EQ(to_string(*parse_version("10.0.19045")), "10.0.19045");
 }
+
+TEST(ComparisonOpToString, ConvertsAllOperators) {
+    EXPECT_EQ(to_string(ComparisonOp::Equal), "==");
+    EXPECT_EQ(to_string(ComparisonOp::NotEqual), "!=");
+    EXPECT_EQ(to_string(ComparisonOp::Less), "<");
+    EXPECT_EQ(to_string(ComparisonOp::LessEqual), "<=");
+    EXPECT_EQ(to_string(ComparisonOp::Greater), ">");
+    EXPECT_EQ(to_string(ComparisonOp::GreaterEqual), ">=");
+}
+
+TEST(ParseComparisonOp, AcceptsAllValidOperators) {
+    const auto equal = parse_comparison_op("==");
+    ASSERT_TRUE(equal.has_value());
+    EXPECT_EQ(equal.value(), ComparisonOp::Equal);
+
+    const auto not_equal = parse_comparison_op("!=");
+    ASSERT_TRUE(not_equal.has_value());
+    EXPECT_EQ(not_equal.value(), ComparisonOp::NotEqual);
+
+    const auto less = parse_comparison_op("<");
+    ASSERT_TRUE(less.has_value());
+    EXPECT_EQ(less.value(), ComparisonOp::Less);
+
+    const auto less_equal = parse_comparison_op("<=");
+    ASSERT_TRUE(less_equal.has_value());
+    EXPECT_EQ(less_equal.value(), ComparisonOp::LessEqual);
+
+    const auto greater = parse_comparison_op(">");
+    ASSERT_TRUE(greater.has_value());
+    EXPECT_EQ(greater.value(), ComparisonOp::Greater);
+
+    const auto greater_equal = parse_comparison_op(">=");
+    ASSERT_TRUE(greater_equal.has_value());
+    EXPECT_EQ(greater_equal.value(), ComparisonOp::GreaterEqual);
+}
+
+TEST(ParseComparisonOp, RejectsInvalidInput) {
+    EXPECT_FALSE(parse_comparison_op("").has_value());
+    EXPECT_FALSE(parse_comparison_op("=").has_value());
+    EXPECT_FALSE(parse_comparison_op("=>").has_value());
+    EXPECT_FALSE(parse_comparison_op("<>").has_value());
+    EXPECT_FALSE(parse_comparison_op("foo").has_value());
+}
+
+TEST(ComparisonOpRoundTrip, ToStringAndParseAreInverse) {
+    EXPECT_EQ(parse_comparison_op(to_string(ComparisonOp::Equal)), std::optional(ComparisonOp::Equal));
+    EXPECT_EQ(parse_comparison_op(to_string(ComparisonOp::NotEqual)), std::optional(ComparisonOp::NotEqual));
+    EXPECT_EQ(parse_comparison_op(to_string(ComparisonOp::Less)), std::optional(ComparisonOp::Less));
+    EXPECT_EQ(parse_comparison_op(to_string(ComparisonOp::LessEqual)), std::optional(ComparisonOp::LessEqual));
+    EXPECT_EQ(parse_comparison_op(to_string(ComparisonOp::Greater)), std::optional(ComparisonOp::Greater));
+    EXPECT_EQ(parse_comparison_op(to_string(ComparisonOp::GreaterEqual)), std::optional(ComparisonOp::GreaterEqual));
+}
