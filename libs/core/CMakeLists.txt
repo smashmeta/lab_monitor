@@ -6,7 +6,8 @@ add_library(lm_core STATIC
   src/rule.cpp
   src/template_bundle.cpp
   src/json.cpp
-  src/compliance.cpp)
+  src/compliance.cpp
+  src/fleet.cpp)
 add_library(lm::core ALIAS lm_core)
 
 target_include_directories(lm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -19,4 +20,5 @@ lm_add_test(lm_core_tests
     tests/test_template_bundle.cpp
     tests/test_json.cpp
     tests/test_evaluate.cpp
+    tests/test_fleet.cpp
   LINK lm_core)
