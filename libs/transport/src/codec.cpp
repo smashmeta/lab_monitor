@@ -1,6 +1,8 @@
 #include "lm/transport/codec.hpp"
 
+#include <algorithm>
 #include <cstdint>
+#include <exception>
 #include <span>
 #include <string>
 #include <utility>
@@ -41,6 +43,16 @@ bool deserialise(std::span<const std::uint8_t> bytes, Body&& body) {
         std::forward<Body>(body)(reader);
         return true;
     } catch (const eprosima::fastcdr::exception::Exception&) {
+        // FastCDR's own exception hierarchy (e.g. NotEnoughMemoryException on a
+        // truncated buffer). Note: in the installed FastCDR version this class
+        // does NOT derive from std::exception, so it needs its own catch clause
+        // in addition to the one below.
+        return false;
+    } catch (const std::exception&) {
+        // Defence in depth: an unvalidated element count read off the wire (see
+        // the bounded reserve()/push_back() loops below) must never be able to
+        // turn into an escaping std::bad_alloc or std::length_error. Any such
+        // failure becomes a clean `false` instead of taking down the caller.
         return false;
     }
 }
@@ -108,9 +120,17 @@ bool decode(std::span<const std::uint8_t> bytes, ResourceSampleMessage& out) {
         std::uint32_t disk_count = 0;
         reader >> parsed.host_id >> parsed.sample.cpu_percent >> parsed.sample.mem_total_bytes >>
             parsed.sample.mem_used_bytes >> disk_count;
-        parsed.sample.disks.resize(disk_count);
-        for (core::DiskUsage& disk : parsed.sample.disks) {
+        // A corrupt count must never drive the allocation directly: reserve only
+        // a bounded amount up front. If the payload genuinely holds that many
+        // elements the vector grows normally as they are read; if it does not,
+        // FastCDR throws on the first missing element and deserialise() turns
+        // that into a clean `false` instead of an escaping std::bad_alloc.
+        constexpr std::uint32_t kReserveCap = 1024;
+        parsed.sample.disks.reserve(std::min(disk_count, kReserveCap));
+        for (std::uint32_t i = 0; i < disk_count; ++i) {
+            core::DiskUsage disk;
             read_disk(reader, disk);
+            parsed.sample.disks.push_back(std::move(disk));
         }
     });
     if (ok) {
@@ -155,11 +175,16 @@ bool decode(std::span<const std::uint8_t> bytes, ComplianceReportMessage& out) {
     const bool ok = deserialise(bytes, [&](Cdr& reader) {
         std::uint32_t count = 0;
         reader >> parsed.report.host_id >> parsed.report.applied_revision >> count;
-        parsed.report.results.resize(count);
-        for (core::CheckResult& result : parsed.report.results) {
+        // Same reasoning as the disk-count loop above: never allocate directly
+        // off an unvalidated wire count.
+        constexpr std::uint32_t kReserveCap = 1024;
+        parsed.report.results.reserve(std::min(count, kReserveCap));
+        for (std::uint32_t i = 0; i < count; ++i) {
+            core::CheckResult result;
             if (!read_result(reader, result)) {
                 statuses_valid = false;
             }
+            parsed.report.results.push_back(std::move(result));
         }
     });
     if (ok && statuses_valid) {

@@ -107,6 +107,41 @@ TEST(Codec, DecodeRejectsEmptyPayload) {
     EXPECT_FALSE(decode(std::vector<std::uint8_t>{}, decoded));
 }
 
+TEST(Codec, DecodeRejectsHugeDiskCountWithoutAllocating) {
+    ResourceSampleMessage original;
+    original.host_id = "HEADLESS";
+    std::vector<std::uint8_t> bytes = encode(original);
+    ASSERT_GE(bytes.size(), 4u);
+    // original has zero disks, so the trailing four bytes are the (zero) disk
+    // count with nothing serialised behind them. Corrupt just those bytes to
+    // claim billions of disks while leaving no bytes for FastCDR to read.
+    for (std::size_t i = bytes.size() - 4; i < bytes.size(); ++i) {
+        bytes[i] = 0xFF;
+    }
+
+    ResourceSampleMessage decoded;
+    bool ok = true;
+    EXPECT_NO_THROW(ok = decode(bytes, decoded));
+    EXPECT_FALSE(ok);
+}
+
+TEST(Codec, DecodeRejectsHugeResultCountWithoutAllocating) {
+    ComplianceReportMessage original;
+    original.report.host_id = "PC-001";
+    std::vector<std::uint8_t> bytes = encode(original);
+    ASSERT_GE(bytes.size(), 4u);
+    // original has zero results, so the trailing four bytes are the (zero)
+    // result count with nothing serialised behind them.
+    for (std::size_t i = bytes.size() - 4; i < bytes.size(); ++i) {
+        bytes[i] = 0xFF;
+    }
+
+    ComplianceReportMessage decoded;
+    bool ok = true;
+    EXPECT_NO_THROW(ok = decode(bytes, decoded));
+    EXPECT_FALSE(ok);
+}
+
 TEST(Codec, KeysComeFromTheHostId) {
     ClientAnnounce announce;
     announce.host_id = "PC-001";
