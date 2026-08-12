@@ -8,7 +8,12 @@ namespace {
 template <typename Message>
 void deliver(const std::vector<std::function<void(const Message&)>>& handlers,
              const Message& message) {
-    for (const auto& handler : handlers) {
+    // Snapshot before invoking: a handler may synchronously subscribe to the
+    // same bus (e.g. a UI component wiring itself up from inside another
+    // topic's callback), and that push_back can reallocate `handlers` while
+    // we're mid-iteration. Do not "optimise" this copy away.
+    const auto snapshot = handlers;
+    for (const auto& handler : snapshot) {
         if (handler) {
             handler(message);
         }

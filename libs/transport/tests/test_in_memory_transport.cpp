@@ -115,6 +115,10 @@ TEST(InMemoryTransport, ServerReceivesComplianceReports) {
     EXPECT_EQ(received->report.applied_revision, 4u);
     ASSERT_EQ(received->report.results.size(), 1u);
     EXPECT_EQ(received->report.results.front().status, CheckStatus::Pass);
+    // Whole-object equality closes the gap the narrower assertions above leave:
+    // it also covers rule_id, observed and message, which a codec could drop
+    // or corrupt without failing any of the field checks above.
+    EXPECT_EQ(received->report, message.report);
 }
 
 TEST(InMemoryTransport, MultipleClientsAllReachTheServer) {
@@ -156,4 +160,30 @@ TEST(InMemoryTransport, PublishingWithNoSubscriberIsHarmless) {
     MessageBus bus;
     const auto client = make_in_memory_client(bus);
     EXPECT_NO_THROW(client->publish_announce(announce("PC-001")));
+}
+
+TEST(InMemoryTransport, SubscribingFromInsideAHandlerIsSafe) {
+    MessageBus bus;
+    const auto server = make_in_memory_server(bus);
+    const auto client = make_in_memory_client(bus);
+
+    std::vector<HostId> first_seen;
+    std::vector<HostId> second_seen;
+
+    // The first handler subscribes a second handler to the same topic while
+    // delivery is in progress. This must not invalidate the handler list
+    // deliver() is currently iterating.
+    server->on_announce([&](const ClientAnnounce& message) {
+        first_seen.push_back(message.host_id);
+        server->on_announce(
+            [&](const ClientAnnounce& inner) { second_seen.push_back(inner.host_id); });
+    });
+
+    client->publish_announce(announce("PC-001"));
+    client->publish_announce(announce("PC-002"));
+
+    EXPECT_EQ(first_seen, (std::vector<HostId>{"PC-001", "PC-002"}));
+    // The handler registered during the first delivery only observes messages
+    // published after it subscribed.
+    EXPECT_EQ(second_seen, (std::vector<HostId>{"PC-002"}));
 }
