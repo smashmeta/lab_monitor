@@ -15,7 +15,12 @@ std::string local_host_name() {
 }
 
 ProbeSet make_platform_probes() {
-    return ProbeSet{};  // Task 8 fills this in.
+    ProbeSet probes;
+    probes.resources = make_resource_probe();
+    // processes, services and registry arrive in a later iteration; HostProbes
+    // intersects capabilities with the probes actually supplied, so the client
+    // honestly advertises resources only.
+    return probes;
 }
 
 }  // namespace lm::platform

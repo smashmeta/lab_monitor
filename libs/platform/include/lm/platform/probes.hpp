@@ -70,4 +70,8 @@ private:
 /// Builds the probe set for the platform this binary was compiled for.
 [[nodiscard]] ProbeSet make_platform_probes();
 
+/// Builds the resource probe for this platform. Stateful: CPU load is computed
+/// as a delta against the previous call, so the first sample reports 0 %.
+[[nodiscard]] std::unique_ptr<IResourceProbe> make_resource_probe();
+
 }  // namespace lm::platform
