@@ -26,3 +26,4 @@ endif()
 enable_testing()
 
 add_subdirectory(libs/core)
+add_subdirectory(libs/platform)
