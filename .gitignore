@@ -1,1 +1,10 @@
 .superpowers/
+build/
+out/
+install/
+.vs/
+.vscode/
+vcpkg_installed/
+CMakeUserPresets.json
+compile_commands.json
+*.user
