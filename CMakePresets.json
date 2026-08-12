@@ -1,0 +1,68 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "windows",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/windows",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-overlays/ports"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "windows-headless",
+      "inherits": "windows",
+      "binaryDir": "${sourceDir}/build/windows-headless",
+      "cacheVariables": {
+        "LM_BUILD_GUI": "OFF",
+        "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": "ON"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-debug",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-overlays/ports"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "linux-headless",
+      "inherits": "linux-debug",
+      "binaryDir": "${sourceDir}/build/linux-headless",
+      "cacheVariables": {
+        "LM_BUILD_GUI": "OFF",
+        "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-debug", "configurePreset": "windows", "configuration": "Debug" },
+    { "name": "windows-release", "configurePreset": "windows", "configuration": "Release" },
+    { "name": "windows-headless", "configurePreset": "windows-headless", "configuration": "Debug" },
+    { "name": "linux-debug", "configurePreset": "linux-debug" },
+    { "name": "linux-headless", "configurePreset": "linux-headless" }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-debug",
+      "configurePreset": "windows",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}
