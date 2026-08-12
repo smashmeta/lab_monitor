@@ -27,3 +27,4 @@ enable_testing()
 
 add_subdirectory(libs/core)
 add_subdirectory(libs/platform)
+add_subdirectory(libs/transport)
