@@ -137,7 +137,16 @@ int main(int argc, char** argv) {
                       &MonitorWorker::set_reporting_paused);
     QObject::connect(tray, &TrayController::quit_requested, &app, &QApplication::quit);
 
-    QObject::connect(&app, &QApplication::aboutToQuit, worker, [worker, worker_thread] {
+    // Context must be &app (GUI thread), never `worker`: the 4-arg connect
+    // overload runs the functor on the *context* object's thread when
+    // sender and context live on different threads. With `worker` as
+    // context, worker_thread->wait() would execute on the worker thread
+    // itself -- Qt detects that self-wait, logs "QThread::wait: Thread
+    // tried to wait on itself", and returns immediately without actually
+    // waiting, so the worker thread is never joined and may still be
+    // mid-shutdown (or mid-publish, on a live DDS transport) when the
+    // process exits.
+    QObject::connect(&app, &QApplication::aboutToQuit, &app, [worker, worker_thread] {
         worker_thread->quit();
         worker_thread->wait();
         worker->deleteLater();
