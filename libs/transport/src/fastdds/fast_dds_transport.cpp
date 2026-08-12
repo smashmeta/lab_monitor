@@ -230,20 +230,36 @@ public:
         Message sample;
         SampleInfo info;
         // Drain everything available. RETCODE_NO_DATA ends the batch
-        // normally; any other non-OK code is treated as a rejected
+        // normally. Any other non-OK code is most likely a rejected
         // (malformed) sample -- logged at the codec boundary inside
-        // MessageTopicDataType::deserialize -- and skipped with `continue`,
-        // not `break`: a single hostile/corrupt sample from any host on the
-        // network must never stop later, well-formed samples in the same
-        // batch from being delivered.
+        // MessageTopicDataType::deserialize -- which take_next_sample
+        // already consumes, so `continue` (not `break`) is correct: a single
+        // hostile/corrupt sample from any host on the network must never
+        // stop later, well-formed samples in the same batch from being
+        // delivered (confirmed empirically by the
+        // MalformedSampleDoesNotWedgeLaterValidSamples integration test).
+        // But a non-OK code could instead be a persistent reader-level
+        // error not tied to any one queued sample (e.g. a resource or
+        // precondition failure) that would never clear on retry; bound the
+        // consecutive failures so that case degrades to abandoning the
+        // batch instead of spinning this listener thread at 100% CPU
+        // forever. Reset on every successful take so an occasional
+        // malformed sample interleaved with valid ones never trips it.
+        constexpr int kMaxConsecutiveFailures = 64;
+        int consecutive_failures = 0;
         for (;;) {
             const ReturnCode_t rc = reader->take_next_sample(&sample, &info);
             if (rc == RETCODE_NO_DATA) {
                 break;
             }
             if (rc != RETCODE_OK) {
+                if (++consecutive_failures >= kMaxConsecutiveFailures) {
+                    log_error("reader", "too many consecutive failures; abandoning this batch");
+                    break;
+                }
                 continue;
             }
+            consecutive_failures = 0;
             if (info.valid_data) {
                 (owner_.*on_message_)(sample);
             }
@@ -650,17 +666,26 @@ private:
 void AnnounceReaderListener::on_data_available(DataReader* reader) {
     ClientAnnounce sample;
     SampleInfo info;
-    // Same drain-past-rejects reasoning as SimpleReaderListener above: a
+    // Same drain-past-rejects reasoning as SimpleReaderListener above -- a
     // malformed ClientAnnounce must not stop the rest of the batch from
-    // being processed.
+    // being processed -- and the same bounded-failure safety net against a
+    // persistent (non-sample-specific) reader error spinning this thread
+    // forever. Reset on every successful take.
+    constexpr int kMaxConsecutiveFailures = 64;
+    int consecutive_failures = 0;
     for (;;) {
         const ReturnCode_t rc = reader->take_next_sample(&sample, &info);
         if (rc == RETCODE_NO_DATA) {
             break;
         }
         if (rc != RETCODE_OK) {
+            if (++consecutive_failures >= kMaxConsecutiveFailures) {
+                log_error("ClientAnnounce reader", "too many consecutive failures; abandoning this batch");
+                break;
+            }
             continue;
         }
+        consecutive_failures = 0;
         if (info.valid_data) {
             owner_.handle_announce(sample, info.publication_handle);
         }
