@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <utility>
 
 #include "lm/core/fleet.hpp"
 

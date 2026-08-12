@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <map>
+#include <utility>
 
 namespace lm::core {
 namespace {

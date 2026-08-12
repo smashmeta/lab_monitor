@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <utility>
+
 #include "lm/core/compliance.hpp"
 
 using namespace lm::core;
