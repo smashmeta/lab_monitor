@@ -1,7 +1,10 @@
 #include "lm/core/json.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <type_traits>
+#include <variant>
 
 namespace lm::core {
 namespace {
@@ -194,7 +197,7 @@ std::string content_hash(const TemplateBundle& bundle) {
     // FNV-1a 64. Deliberately not std::hash, which is implementation-defined and
     // would give different results across platforms and standard libraries — this
     // value is persisted to disk and compared after restart.
-    std::uint64_t hash = 1469598103934665603ull;
+    std::uint64_t hash = 14695981039346656037ull;
     for (const unsigned char byte : canonical) {
         hash ^= byte;
         hash *= 1099511628211ull;
