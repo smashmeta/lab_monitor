@@ -19,7 +19,10 @@ lm_add_test(lm_transport_tests
   LINK lm_transport)
 
 if(LM_BUILD_INTEGRATION_TESTS)
+  # The malformed-payload test talks to Fast DDS directly (a hand-rolled
+  # TopicDataType/participant/writer), not just through lm_transport, so it
+  # needs fastdds linked itself -- lm_transport only links it PRIVATE.
   lm_add_test(lm_transport_dds_tests
     SOURCES tests/test_fastdds_loopback.cpp
-    LINK lm_transport)
+    LINK lm_transport fastdds)
 endif()

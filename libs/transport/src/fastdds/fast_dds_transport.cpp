@@ -229,17 +229,20 @@ public:
     void on_data_available(DataReader* reader) override {
         Message sample;
         SampleInfo info;
-        // Drain everything available. A rejected (malformed) sample is
-        // logged and skipped at the codec boundary inside
-        // MessageTopicDataType::deserialize -- never fatal here.
+        // Drain everything available. RETCODE_NO_DATA ends the batch
+        // normally; any other non-OK code is treated as a rejected
+        // (malformed) sample -- logged at the codec boundary inside
+        // MessageTopicDataType::deserialize -- and skipped with `continue`,
+        // not `break`: a single hostile/corrupt sample from any host on the
+        // network must never stop later, well-formed samples in the same
+        // batch from being delivered.
         for (;;) {
             const ReturnCode_t rc = reader->take_next_sample(&sample, &info);
             if (rc == RETCODE_NO_DATA) {
                 break;
             }
             if (rc != RETCODE_OK) {
-                log_error("reader", "take_next_sample did not return OK; stopping this batch");
-                break;
+                continue;
             }
             if (info.valid_data) {
                 (owner_.*on_message_)(sample);
@@ -345,7 +348,7 @@ public:
     void on_bundle(std::function<void(const TemplateBundleMessage&)> handler) override {
         std::optional<TemplateBundleMessage> retained;
         {
-            std::lock_guard<std::mutex> lock(bundle_mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
             on_bundle_ = handler;
             retained = retained_bundle_;
         }
@@ -354,10 +357,13 @@ public:
         }
     }
 
-    /// Set once, before any traffic is expected -- see the class-level note
-    /// in fast_dds_transport.hpp / the task-11 report for the threading
-    /// contract this relies on instead of a mutex.
+    /// Fast DDS enables entities (and can start delivering callbacks) as soon
+    /// as they are created in the constructor above, which is before the
+    /// caller has a chance to call this setter -- so handle_match_change()
+    /// below can read on_connection_changed_ concurrently with this write.
+    /// Guarded by mutex_ for that reason (see handle_match_change).
     void on_connection_changed(std::function<void(ConnectionState)> handler) override {
+        std::lock_guard<std::mutex> lock(mutex_);
         on_connection_changed_ = std::move(handler);
     }
 
@@ -369,15 +375,26 @@ public:
         const int new_count = matched_entities_.fetch_add(delta, std::memory_order_relaxed) + delta;
         const ConnectionState new_state = new_count > 0 ? ConnectionState::Connected : ConnectionState::Disconnected;
         const ConnectionState old_state = state_.exchange(new_state, std::memory_order_acq_rel);
-        if (old_state != new_state && on_connection_changed_) {
-            on_connection_changed_(new_state);
+        if (old_state == new_state) {
+            return;
+        }
+        // Copy the handler out under the lock, then invoke it unlocked: a
+        // handler that calls back into this transport (e.g. registers a new
+        // handler of its own) must not deadlock against mutex_.
+        std::function<void(ConnectionState)> handler;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            handler = on_connection_changed_;
+        }
+        if (handler) {
+            handler(new_state);
         }
     }
 
     void handle_bundle(const TemplateBundleMessage& message) {
         std::function<void(const TemplateBundleMessage&)> handler;
         {
-            std::lock_guard<std::mutex> lock(bundle_mutex_);
+            std::lock_guard<std::mutex> lock(mutex_);
             retained_bundle_ = message;
             handler = on_bundle_;
         }
@@ -408,7 +425,13 @@ private:
     std::atomic<int> matched_entities_{0};
     std::atomic<ConnectionState> state_{ConnectionState::Disconnected};
 
-    std::mutex bundle_mutex_;
+    // Guards every handler below (and retained_bundle_): Fast DDS listener
+    // threads can start invoking handle_bundle()/handle_match_change() as
+    // soon as the writers/readers are created in the constructor, which is
+    // before on_bundle()/on_connection_changed() are necessarily called, so
+    // reads and writes of these std::functions are genuinely concurrent, not
+    // just theoretically racy.
+    std::mutex mutex_;
     std::optional<TemplateBundleMessage> retained_bundle_;
     std::function<void(const TemplateBundleMessage&)> on_bundle_;
     std::function<void(ConnectionState)> on_connection_changed_;
@@ -485,15 +508,19 @@ public:
     }
 
     void on_announce(std::function<void(const ClientAnnounce&)> handler) override {
+        std::lock_guard<std::mutex> lock(handlers_mutex_);
         on_announce_ = std::move(handler);
     }
     void on_resources(std::function<void(const ResourceSampleMessage&)> handler) override {
+        std::lock_guard<std::mutex> lock(handlers_mutex_);
         on_resources_ = std::move(handler);
     }
     void on_report(std::function<void(const ComplianceReportMessage&)> handler) override {
+        std::lock_guard<std::mutex> lock(handlers_mutex_);
         on_report_ = std::move(handler);
     }
     void on_client_lost(std::function<void(const core::HostId&)> handler) override {
+        std::lock_guard<std::mutex> lock(handlers_mutex_);
         on_client_lost_ = std::move(handler);
     }
 
@@ -512,20 +539,39 @@ public:
             std::lock_guard<std::mutex> lock(live_hosts_mutex_);
             live_hosts_[publication_handle] = message.host_id;
         }
-        if (on_announce_) {
-            on_announce_(message);
+        // Copy the handler out under handlers_mutex_, then invoke it
+        // unlocked -- see the note on DdsClientTransport::handle_match_change
+        // for why (Fast DDS listener threads can reach this concurrently
+        // with on_announce() being called from the owning application).
+        std::function<void(const ClientAnnounce&)> handler;
+        {
+            std::lock_guard<std::mutex> lock(handlers_mutex_);
+            handler = on_announce_;
+        }
+        if (handler) {
+            handler(message);
         }
     }
 
     void handle_resources(const ResourceSampleMessage& message) {
-        if (on_resources_) {
-            on_resources_(message);
+        std::function<void(const ResourceSampleMessage&)> handler;
+        {
+            std::lock_guard<std::mutex> lock(handlers_mutex_);
+            handler = on_resources_;
+        }
+        if (handler) {
+            handler(message);
         }
     }
 
     void handle_report(const ComplianceReportMessage& message) {
-        if (on_report_) {
-            on_report_(message);
+        std::function<void(const ComplianceReportMessage&)> handler;
+        {
+            std::lock_guard<std::mutex> lock(handlers_mutex_);
+            handler = on_report_;
+        }
+        if (handler) {
+            handler(message);
         }
     }
 
@@ -549,8 +595,16 @@ public:
                 found = true;
             }
         }
-        if (found && on_client_lost_) {
-            on_client_lost_(lost_host);
+        if (!found) {
+            return;
+        }
+        std::function<void(const core::HostId&)> handler;
+        {
+            std::lock_guard<std::mutex> lock(handlers_mutex_);
+            handler = on_client_lost_;
+        }
+        if (handler) {
+            handler(lost_host);
         }
     }
 
@@ -579,6 +633,11 @@ private:
     std::mutex live_hosts_mutex_;
     std::map<InstanceHandle_t, core::HostId> live_hosts_;
 
+    // Guards on_announce_/on_resources_/on_report_/on_client_lost_: writers
+    // and readers are created (and can start firing) inside the constructor,
+    // before the owning application has necessarily called on_announce() et
+    // al. -- see DdsClientTransport's mutex_ for the identical reasoning.
+    std::mutex handlers_mutex_;
     std::function<void(const ClientAnnounce&)> on_announce_;
     std::function<void(const ResourceSampleMessage&)> on_resources_;
     std::function<void(const ComplianceReportMessage&)> on_report_;
@@ -591,14 +650,16 @@ private:
 void AnnounceReaderListener::on_data_available(DataReader* reader) {
     ClientAnnounce sample;
     SampleInfo info;
+    // Same drain-past-rejects reasoning as SimpleReaderListener above: a
+    // malformed ClientAnnounce must not stop the rest of the batch from
+    // being processed.
     for (;;) {
         const ReturnCode_t rc = reader->take_next_sample(&sample, &info);
         if (rc == RETCODE_NO_DATA) {
             break;
         }
         if (rc != RETCODE_OK) {
-            log_error("ClientAnnounce reader", "take_next_sample did not return OK; stopping this batch");
-            break;
+            continue;
         }
         if (info.valid_data) {
             owner_.handle_announce(sample, info.publication_handle);

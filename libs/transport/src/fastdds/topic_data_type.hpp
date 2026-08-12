@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <span>
 #include <string>
 #include <utility>
@@ -15,6 +16,18 @@
 #include "lm/transport/codec.hpp"
 
 namespace lm::transport {
+namespace detail {
+
+/// A malformed/truncated payload is expected input from any host on the
+/// network (Task 10's decode() is hardened specifically for this), so it is
+/// logged here -- at the point of rejection, with the offending type name --
+/// rather than treated as exceptional.
+inline void log_decode_rejected(const std::string& type_name, std::size_t payload_length) {
+    std::cerr << "[lm::transport::fastdds] " << type_name << ": rejected a " << payload_length
+              << "-byte payload that failed to decode\n";
+}
+
+}  // namespace detail
 
 /// Adapts a message type to Fast DDS by forwarding to the free-function codec
 /// (Task 10). Every override here is a thin forwarder; no message-specific
@@ -70,8 +83,13 @@ public:
         // returning false; the caller (Fast DDS) is expected to treat that as
         // a rejected sample rather than something to propagate as an
         // exception. See fast_dds_transport.cpp's reader listeners for how
-        // that rejection is drained without wedging the reader.
-        return decode(bytes, *message);
+        // that rejection is drained (continue, not break) without wedging
+        // the reader on later, well-formed samples.
+        if (decode(bytes, *message)) {
+            return true;
+        }
+        detail::log_decode_rejected(get_name(), bytes.size());
+        return false;
     }
 
     std::uint32_t calculate_serialized_size(
