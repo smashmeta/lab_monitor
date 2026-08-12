@@ -31,4 +31,5 @@ add_subdirectory(libs/transport)
 
 if(LM_BUILD_GUI)
   add_subdirectory(libs/ui)
+  add_subdirectory(apps/client)
 endif()
