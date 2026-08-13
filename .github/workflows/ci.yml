@@ -81,10 +81,18 @@ jobs:
   # The GUI build: apps/client, apps/server and lm_ui, on top of the same
   # three libraries the headless job already covers. Integration tests stay
   # off (LM_BUILD_INTEGRATION_TESTS defaults OFF and nothing here enables
-  # it) -- they need loopback multicast and one of them is known-flaky on a
-  # BEST_EFFORT topic, which has no place gating every push.
+  # it) -- they need loopback multicast, which has no place gating every
+  # push.
+  #
+  # Gated to pull requests and pushes to main: qt5-base/qt5-svg build from
+  # source via vcpkg here, and a cold vcpkg cache on ubuntu-latest makes that
+  # a multi-hour build -- on every push, to every branch, against a 6-hour
+  # job limit, that is not a cost worth paying. `headless` above still runs
+  # on every push and stays fast, since LM_BUILD_GUI=OFF keeps Qt out of its
+  # dependency graph entirely.
   full:
     name: Full / ${{ matrix.os }}
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:

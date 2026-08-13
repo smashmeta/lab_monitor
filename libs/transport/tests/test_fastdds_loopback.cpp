@@ -229,9 +229,20 @@ TEST(FastDdsLoopback, ResourceSamplesReachTheServer) {
     ResourceSampleMessage sample;
     sample.host_id = "LOOPBACK-PC";
     sample.sample.cpu_percent = 12.5;
-    client->publish_resources(sample);
 
-    EXPECT_TRUE(wait_for([&] { return received.load() > 0; }));
+    // ResourceSampleMessage travels BEST_EFFORT/VOLATILE (see
+    // best_effort_volatile_writer_qos() in fast_dds_transport.cpp): there is
+    // no retained history and no ACK/retry, so a sample published before
+    // this specific writer/reader pair -- not just the participant-level
+    // match client->state() reports above -- has finished discovery is
+    // dropped for good. Publishing exactly once therefore lost this race
+    // against discovery roughly 1 run in 4. Publish repeatedly, on every
+    // poll of wait_for's predicate, until the server actually reports one
+    // or the timeout expires -- a known-flaky test is worse than none.
+    EXPECT_TRUE(wait_for([&] {
+        client->publish_resources(sample);
+        return received.load() > 0;
+    }));
 }
 
 TEST(FastDdsLoopback, LateJoiningClientReceivesTheRetainedBundle) {
