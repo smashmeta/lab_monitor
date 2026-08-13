@@ -7,6 +7,7 @@ set(CMAKE_AUTOMOC ON)
 add_executable(lab_monitor_client WIN32
   main.cpp
   monitor_worker.cpp
+  rule_detail.cpp
   tray_controller.cpp
   detail_window.cpp)
 
@@ -19,8 +20,11 @@ copy_runtime_dependencies(lab_monitor_client)
 
 lm_add_test(lab_monitor_client_tests
   NO_GTEST_MAIN
-  SOURCES ${CMAKE_SOURCE_DIR}/libs/ui/tests/main.cpp tests/test_monitor_worker.cpp
+  SOURCES ${CMAKE_SOURCE_DIR}/libs/ui/tests/main.cpp
+          tests/test_monitor_worker.cpp
+          tests/test_rule_detail.cpp
           monitor_worker.cpp
+          rule_detail.cpp
   # spdlog::spdlog is required here, beyond the brief's original LINK list:
   # monitor_worker.cpp (compiled into this test binary too) calls
   # spdlog::error(), and spdlog's vcpkg build is not header-only -- its

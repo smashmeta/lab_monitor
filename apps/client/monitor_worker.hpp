@@ -2,11 +2,13 @@
 
 #include <QObject>
 #include <QTimer>
+#include <QVector>
 
 #include <memory>
 
 #include "lm/platform/probes.hpp"
 #include "lm/transport/transport.hpp"
+#include "rule_detail.hpp"
 
 /// Owns all probing and messaging. Lives on a worker thread; talks to the GUI
 /// only through queued signals.
@@ -31,7 +33,11 @@ public slots:
 
 signals:
     void resources_sampled(lm::core::ResourceSample sample);
-    void report_ready(lm::core::ComplianceReport report);
+    /// Carries the display fields for every rule alongside the report, because
+    /// core::CheckResult itself only ever carries a rule id. The worker holds
+    /// the parsed bundle, so it is the one place that can recover them without
+    /// widening the wire format.
+    void report_ready(lm::core::ComplianceReport report, QVector<RuleDetail> details);
     void template_applied(quint64 revision);
     void connection_changed(int state);
 

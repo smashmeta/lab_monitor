@@ -92,18 +92,37 @@ void DetailWindow::apply_resources(lm::core::ResourceSample sample) {
     sync_disk_bars(sample.disks);
 }
 
-void DetailWindow::apply_report(lm::core::ComplianceReport report) {
+namespace {
+
+QString status_name(lm::core::CheckStatus status) {
+    switch (status) {
+        case lm::core::CheckStatus::Pass:          return QStringLiteral("Pass");
+        case lm::core::CheckStatus::Fail:          return QStringLiteral("Fail");
+        case lm::core::CheckStatus::Error:         return QStringLiteral("Error");
+        case lm::core::CheckStatus::NotApplicable: return QStringLiteral("Not applicable");
+    }
+    return QStringLiteral("Unknown");
+}
+
+}  // namespace
+
+void DetailWindow::apply_report(lm::core::ComplianceReport report, QVector<RuleDetail> details) {
     compliance_tree_->clear();
 
-    // Grouped by CheckStatus, not by RuleKind (Applications / Services /
-    // Registry as the brief describes): ComplianceReport::CheckResult
-    // carries a rule_id and a status but never the RuleKind that produced
-    // it, and MonitorWorker's signal set gives this window no other channel
-    // to learn it (report_ready only ever carries a ComplianceReport, never
-    // the TemplateBundle that would let us look kind_of(rule) up). Grouping
-    // by status is the closest available grouping that still surfaces what
-    // an operator needs first: failures, then errors, then passes, with
-    // NotApplicable rows present but dimmed exactly as specified.
+    // core::CheckResult carries only a rule id, so the rule's description and
+    // payload arrive alongside it via report_ready's second argument, built by
+    // MonitorWorker from the bundle it holds. Index them by id for lookup.
+    QHash<QString, RuleDetail> by_id;
+    by_id.reserve(details.size());
+    for (const RuleDetail& detail : details) {
+        by_id.insert(detail.id, detail);
+    }
+
+    // Grouped by CheckStatus rather than by RuleKind. Now that `details`
+    // carries each rule's kind, grouping by Applications / Services / Registry
+    // is a small change -- but status-first is what an operator needs to see
+    // first: failures, then errors, then passes, with NotApplicable rows
+    // present but dimmed exactly as specified.
     struct Group {
         const char* title;
         lm::core::CheckStatus status;
@@ -132,15 +151,38 @@ void DetailWindow::apply_report(lm::core::ComplianceReport report) {
 
         for (const lm::core::CheckResult* result : matches) {
             auto* row = new QTreeWidgetItem(header);
-            row->setText(0, QString::fromStdString(result->rule_id));
+
+            const QString id = QString::fromStdString(result->rule_id);
+            const auto detail = by_id.constFind(id);
+            const bool described = detail != by_id.constEnd();
+
+            // Show the authored description. Fall back to the id only if this
+            // result has no matching rule at all, which means the bundle
+            // changed between evaluating and rendering.
+            row->setText(0, described ? detail->label : id);
             row->setText(1, lm::ui::Theme::glyph_for(result->status));
-            row->setText(2, QString::fromStdString(
-                                 result->observed.empty() ? result->message : result->observed));
+
+            // Both are populated for an error; observed alone is often terse.
+            QString observed = QString::fromStdString(result->observed);
+            const QString message = QString::fromStdString(result->message);
+            if (!message.isEmpty() && message != observed) {
+                observed = observed.isEmpty() ? message
+                                              : QStringLiteral("%1 - %2").arg(observed, message);
+            }
+            row->setText(2, observed);
+
+            QString tooltip = described ? detail->tooltip() : QStringLiteral("Rule id: %1").arg(id);
+            tooltip += QStringLiteral("\n\nResult:\t%1").arg(status_name(result->status));
+            if (!observed.isEmpty()) {
+                tooltip += QStringLiteral("\nObserved:\t%1").arg(observed);
+            }
+
             const QColor color = result->status == lm::core::CheckStatus::NotApplicable
                                       ? QColor(lm::ui::Theme::kTextMuted)
                                       : lm::ui::Theme::color_for(result->status);
             for (int column = 0; column < 3; ++column) {
                 row->setForeground(column, color);
+                row->setToolTip(column, tooltip);
             }
         }
         header->setExpanded(true);

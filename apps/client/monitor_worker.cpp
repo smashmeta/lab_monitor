@@ -15,6 +15,7 @@
 // macro provides. Declared at global scope, as Q_DECLARE_METATYPE requires.
 Q_DECLARE_METATYPE(lm::core::ResourceSample)
 Q_DECLARE_METATYPE(lm::core::ComplianceReport)
+Q_DECLARE_METATYPE(RuleDetail)
 
 namespace {
 
@@ -31,6 +32,11 @@ void register_metatypes_once() {
     static const bool registered = [] {
         qRegisterMetaType<lm::core::ResourceSample>();
         qRegisterMetaType<lm::core::ComplianceReport>();
+        // RuleDetail is declared at global scope, so moc records the signal
+        // parameter as the literal "QVector<RuleDetail>" -- which is what the
+        // default qRegisterMetaType<T>() form registers here too, so the two
+        // agree without an explicit name string.
+        qRegisterMetaType<QVector<RuleDetail>>();
         return true;
     }();
     (void)registered;
@@ -119,7 +125,15 @@ void MonitorWorker::evaluate_compliance() {
         transport_->publish_report(message);
     }
 
-    emit report_ready(report);
+    // The report identifies rules by id only, so recover their display fields
+    // from the bundle we still hold. rules_for() gives exactly the rules that
+    // were evaluated, in the same order.
+    QVector<RuleDetail> details;
+    for (const lm::core::Rule* rule : lm::core::rules_for(bundle_, probes_->host_id())) {
+        details.push_back(describe(*rule));
+    }
+
+    emit report_ready(report, details);
 }
 
 void MonitorWorker::set_reporting_paused(bool paused) { paused_ = paused; }
