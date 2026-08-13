@@ -80,6 +80,10 @@ private:
     void refresh_detail_pane(const QString& host_id);
     void populate_compliance_tree(const lm::core::ComplianceReport& report);
     void sync_disk_bars(const std::vector<lm::core::DiskUsage>& disks);
+    /// Repopulates the whole Templates tab from the controller's draft. Used
+    /// both after an edit and when start() loads persisted config, which
+    /// happens after this window has already been constructed.
+    void rebuild_templates_view();
     void rebuild_template_list();
     void rebuild_rule_table();
     void rebuild_assignment_table();

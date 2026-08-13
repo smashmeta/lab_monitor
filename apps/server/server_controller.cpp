@@ -218,6 +218,11 @@ void ServerController::load_config() {
                 hosts.push_back(std::move(host));
             }
             expected_ = std::move(hosts);
+            // load_config() runs inside start(), which the caller invokes AFTER
+            // constructing the window -- so the window has already populated
+            // itself from an empty controller. Announce, or it stays empty
+            // until some unrelated edit happens to trigger a rebuild.
+            emit expected_hosts_changed();
         } catch (const std::exception& error) {
             const QString message =
                 QStringLiteral("Failed to parse expected hosts config: %1").arg(error.what());
@@ -236,6 +241,9 @@ void ServerController::load_config() {
             published_ = *parsed;
             draft_ = published_;
             options_.current_revision = published_.revision;
+            // Same reason as expected_hosts_changed() above: the Templates tab
+            // was built before this ran and holds an empty draft.
+            emit published_changed();
         } else {
             const QString message = QStringLiteral("Failed to parse template bundle config: %1")
                                          .arg(QString::fromStdString(parsed.error()));

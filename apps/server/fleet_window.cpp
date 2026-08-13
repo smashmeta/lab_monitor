@@ -151,6 +151,14 @@ FleetWindow::FleetWindow(ServerController* controller, QWidget* parent)
     connect(controller_, &ServerController::resource_sample_received, this, &FleetWindow::on_resource_sample);
     connect(controller_, &ServerController::compliance_report_received, this,
             &FleetWindow::on_compliance_report);
+    // The Templates tab builds itself in this constructor, which runs before
+    // ServerController::start() loads the persisted config. Without these the
+    // tab would show an empty draft until the operator's first edit happened
+    // to trigger a rebuild.
+    connect(controller_, &ServerController::published_changed, this,
+            &FleetWindow::rebuild_templates_view);
+    connect(controller_, &ServerController::expected_hosts_changed, this,
+            &FleetWindow::rebuild_templates_view);
     connect(controller_, &ServerController::draft_publishable_changed, this,
             &FleetWindow::on_draft_publishable_changed);
     connect(controller_, &ServerController::config_error, this, [this](const QString& message) {
@@ -546,6 +554,12 @@ lm::core::Template* FleetWindow::selected_template() {
         }
     }
     return nullptr;
+}
+
+void FleetWindow::rebuild_templates_view() {
+    rebuild_template_list();
+    rebuild_rule_table();
+    rebuild_assignment_table();
 }
 
 void FleetWindow::rebuild_template_list() {
