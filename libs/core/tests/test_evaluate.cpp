@@ -75,6 +75,32 @@ TEST(Evaluate, RegistryRuleIsNotApplicableWithoutTheCapability) {
     EXPECT_EQ(status_of(report), CheckStatus::NotApplicable);
 }
 
+TEST(Evaluate, NotApplicableNamesTheMissingCapabilityRatherThanBlamingTheOs) {
+    // "not supported on this platform" is wrong whenever the capability is
+    // absent because the probe is unimplemented rather than because the OS
+    // cannot serve it -- which is the case for registry checks on Windows
+    // while IRegistryProbe is stubbed. The message must say which capability
+    // is missing and must not assert an OS limitation.
+    const Capabilities without_registry =
+        Capabilities{}.add(Capability::Resources).add(Capability::Processes).add(Capability::Services);
+    const auto report = evaluate(
+        bundle_with(registry_rule(Presence::MustBePresent, RegistryMatch::Exists, "")), HostFacts{},
+        without_registry);
+
+    ASSERT_EQ(report.results.size(), 1u);
+    const std::string& observed = report.results.front().observed;
+    EXPECT_NE(observed.find("Registry"), std::string::npos) << "observed was: " << observed;
+    EXPECT_EQ(observed.find("platform"), std::string::npos)
+        << "must not claim an OS limitation; observed was: " << observed;
+}
+
+TEST(ToStringCapability, NamesEveryCapability) {
+    EXPECT_EQ(to_string(Capability::Resources), "Resources");
+    EXPECT_EQ(to_string(Capability::Processes), "Processes");
+    EXPECT_EQ(to_string(Capability::Services), "Services");
+    EXPECT_EQ(to_string(Capability::Registry), "Registry");
+}
+
 TEST(Evaluate, NotApplicableDoesNotMakeAHostNonCompliant) {
     const Capabilities linux_caps = Capabilities{}.add(Capability::Processes);
     const auto report = evaluate(bundle_with(registry_rule(Presence::MustBePresent,

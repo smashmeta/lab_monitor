@@ -135,7 +135,13 @@ ComplianceReport evaluate(const TemplateBundle& bundle, const HostFacts& facts,
             CheckResult result;
             result.rule_id = rule->id;
             result.status = CheckStatus::NotApplicable;
-            result.observed = "not supported on this platform";
+            // Deliberately does not claim an OS limitation: a capability can be
+            // absent either because the platform cannot serve it (registry on
+            // Linux) or because its probe is not implemented yet. evaluate()
+            // cannot tell those apart, so it reports what it actually knows.
+            result.observed =
+                "not checked: client does not report the " +
+                to_string(required_capability(kind_of(*rule))) + " capability";
             report.results.push_back(std::move(result));
             continue;
         }

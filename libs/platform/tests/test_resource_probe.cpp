@@ -59,6 +59,23 @@ TEST(DiskUsage, UsedPercentHandlesZeroTotalWithoutDividingByZero) {
     EXPECT_DOUBLE_EQ(empty.used_percent(), 0.0);
 }
 
+#ifdef _WIN32
+TEST(PlatformProbes, WindowsSuppliesProcessAndRegistryProbes) {
+    // Wiring check: the probes exist, but until make_platform_probes() hands
+    // them over, HostProbes intersects them away and every process/registry
+    // rule reports NotApplicable.
+    ProbeSet probes = make_platform_probes();
+    EXPECT_NE(probes.processes, nullptr);
+    EXPECT_NE(probes.registry, nullptr);
+
+    HostProbes host{local_host_name(), std::move(probes), platform_capabilities()};
+    EXPECT_TRUE(host.capabilities().has(Capability::Processes));
+    EXPECT_TRUE(host.capabilities().has(Capability::Registry));
+    // Services remain stubbed for now.
+    EXPECT_FALSE(host.capabilities().has(Capability::Services));
+}
+#endif
+
 TEST(PlatformProbes, ProvideResourcesAndMatchDeclaredCapabilities) {
     ProbeSet probes = make_platform_probes();
     ASSERT_NE(probes.resources, nullptr);

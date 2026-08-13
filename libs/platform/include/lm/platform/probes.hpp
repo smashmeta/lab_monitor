@@ -74,4 +74,16 @@ private:
 /// as a delta against the previous call, so the first sample reports 0 %.
 [[nodiscard]] std::unique_ptr<IResourceProbe> make_resource_probe();
 
+/// Builds the process probe. Reports bare executable names ("antivirus.exe"),
+/// never full paths, because that is how rules are authored. A process whose
+/// version cannot be read leaves core::ProcessInfo::version unset rather than
+/// fabricating a value.
+[[nodiscard]] std::unique_ptr<IProcessProbe> make_process_probe();
+
+/// Builds the registry probe, or nullptr on platforms without a registry.
+/// A value or key that does not exist reads back as absent, not as an error;
+/// only a genuine read failure (access denied, and so on) sets
+/// core::RegistryValue::error.
+[[nodiscard]] std::unique_ptr<IRegistryProbe> make_registry_probe();
+
 }  // namespace lm::platform

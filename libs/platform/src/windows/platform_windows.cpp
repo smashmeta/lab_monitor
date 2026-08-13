@@ -18,9 +18,11 @@ std::string local_host_name() {
 ProbeSet make_platform_probes() {
     ProbeSet probes;
     probes.resources = make_resource_probe();
-    // processes, services and registry arrive in a later iteration; HostProbes
-    // intersects capabilities with the probes actually supplied, so the client
-    // honestly advertises resources only.
+    probes.processes = make_process_probe();
+    probes.registry = make_registry_probe();
+    // Services are still stubbed. HostProbes intersects capabilities with the
+    // probes actually supplied, so leaving this null makes the client honestly
+    // advertise that it cannot answer service rules.
     return probes;
 }
 

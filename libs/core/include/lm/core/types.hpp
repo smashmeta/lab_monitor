@@ -47,6 +47,10 @@ private:
     std::uint32_t raw_ = 0;
 };
 
+/// Human-readable name of a single capability, used when reporting that a rule
+/// could not be checked because the client does not provide that data.
+[[nodiscard]] std::string to_string(Capability capability);
+
 /// The capabilities of the platform this binary was compiled for.
 [[nodiscard]] Capabilities platform_capabilities();
 
