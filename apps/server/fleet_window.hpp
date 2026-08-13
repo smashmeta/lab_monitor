@@ -63,6 +63,7 @@ private slots:
     void on_context_menu_requested(const QPoint& pos);
     void on_publish_clicked();
     void on_draft_publishable_changed(bool can_publish);
+    void on_add_expected_host_clicked();
 
     void on_add_template_clicked();
     void on_remove_template_clicked();
@@ -94,6 +95,12 @@ private:
     FleetProxyModel* proxy_;
     QTableView* host_view_;
     QLineEdit* filter_edit_;
+    /// Spec §11: the only other way to reach ServerController::add_expected_host()
+    /// is the Fleet tab's context menu, which only ever offers to add a row
+    /// already discovered (i.e. already Online) -- so without this button,
+    /// HostState::Missing was unreachable and the ribbon's Missing counter
+    /// could never be exercised.
+    QPushButton* add_expected_host_button_;
     StatusRibbon* ribbon_;
     QSplitter* main_splitter_;
 

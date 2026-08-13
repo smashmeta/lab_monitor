@@ -175,9 +175,13 @@ void FleetWindow::build_fleet_tab() {
     ribbon_ = new StatusRibbon(page);
     layout->addWidget(ribbon_);
 
+    auto* filter_row = new QHBoxLayout();
     filter_edit_ = new QLineEdit(page);
     filter_edit_->setPlaceholderText(QStringLiteral("Filter by host..."));
-    layout->addWidget(filter_edit_);
+    filter_row->addWidget(filter_edit_, 1);
+    add_expected_host_button_ = new QPushButton(QStringLiteral("Add Expected Host"), page);
+    filter_row->addWidget(add_expected_host_button_);
+    layout->addLayout(filter_row);
 
     main_splitter_ = new QSplitter(Qt::Horizontal, page);
 
@@ -233,6 +237,7 @@ void FleetWindow::build_fleet_tab() {
     connect(host_view_, &QWidget::customContextMenuRequested, this, &FleetWindow::on_context_menu_requested);
     connect(ribbon_, &StatusRibbon::filter_requested, this, &FleetWindow::on_filter_requested);
     connect(ribbon_, &StatusRibbon::stale_filter_requested, this, &FleetWindow::on_stale_filter_requested);
+    connect(add_expected_host_button_, &QPushButton::clicked, this, &FleetWindow::on_add_expected_host_clicked);
 
     tabs_->addTab(page, QStringLiteral("Fleet"));
 }
@@ -495,6 +500,27 @@ void FleetWindow::on_context_menu_requested(const QPoint& pos) {
                 [this, host_id] { controller_->remove_expected_host(host_id.toStdString()); });
     }
     menu.exec(host_view_->viewport()->mapToGlobal(pos));
+}
+
+void FleetWindow::on_add_expected_host_clicked() {
+    bool ok = false;
+    const QString host_id = QInputDialog::getText(this, QStringLiteral("Add Expected Host"),
+                                                    QStringLiteral("Hostname:"), QLineEdit::Normal, {}, &ok);
+    if (!ok || host_id.trimmed().isEmpty()) {
+        return;
+    }
+
+    // Address is optional -- ServerController::add_expected_host() treats an
+    // empty string the same way the context menu's "Add to Expected Hosts"
+    // action already does for an already-discovered host.
+    const QString address = QInputDialog::getText(this, QStringLiteral("Add Expected Host"),
+                                                    QStringLiteral("Address (optional):"), QLineEdit::Normal, {},
+                                                    &ok);
+    if (!ok) {
+        return;
+    }
+
+    controller_->add_expected_host(host_id.trimmed().toStdString(), address.trimmed().toStdString());
 }
 
 void FleetWindow::on_publish_clicked() { controller_->publish(); }
