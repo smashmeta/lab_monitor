@@ -1,4 +1,5 @@
 find_package(Qt5 COMPONENTS Widgets Svg Test REQUIRED)
+find_package(spdlog CONFIG REQUIRED)
 
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -24,7 +25,9 @@ add_library(lm::ui ALIAS lm_ui)
 target_include_directories(lm_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(lm_ui
   PUBLIC lm_core lm_transport Qt5::Widgets Qt5::Svg
-  PRIVATE lm_warnings)
+  # spdlog is private: only theme.cpp's failed-open log call needs it, and
+  # it is not part of any lm_ui public header.
+  PRIVATE lm_warnings spdlog::spdlog)
 
 lm_add_test(lm_ui_tests
   NO_GTEST_MAIN
