@@ -45,6 +45,16 @@ public:
     /// reconcile timer. Call once, on the GUI thread, after construction.
     void start();
 
+    /// Deterministic shutdown: stops the reconcile timer and resets
+    /// transport_, which runs IServerTransport's destructor synchronously
+    /// (for the DDS transport, this tears down the Fast DDS participant --
+    /// announcing a clean departure and joining its internal threads --
+    /// before this call returns). Call once, on the GUI thread, before
+    /// destroying this controller, so no DDS-thread callback can ever be
+    /// mid-flight (or queued and pending) against an object that is about to
+    /// be deleted.
+    void stop();
+
     /// Owned by this controller; FleetWindow wraps it in a
     /// QSortFilterProxyModel rather than taking ownership.
     [[nodiscard]] lm::ui::FleetModel* model() { return &model_; }
@@ -99,8 +109,11 @@ private:
     void reconcile_now();
 
     void load_config();
-    void save_expected_hosts() const;
-    void save_published_bundle() const;
+    /// Emits config_error() on a failed open or a short/failed write,
+    /// mirroring load_config()'s own failure handling. No longer const,
+    /// since a failure path now emits a signal.
+    void save_expected_hosts();
+    void save_published_bundle();
     [[nodiscard]] QString expected_hosts_path() const;
     [[nodiscard]] QString bundle_path() const;
 

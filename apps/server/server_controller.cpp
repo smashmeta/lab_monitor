@@ -24,6 +24,20 @@ bool ServerController::can_publish() const {
     return lm::core::content_hash(draft_) != lm::core::content_hash(published_);
 }
 
+void ServerController::stop() {
+    reconcile_timer_.stop();
+    // Resetting transport_ runs IServerTransport's destructor synchronously,
+    // right here, on the GUI thread. For the DDS transport that tears down
+    // the Fast DDS participant (delete_contained_entities() +
+    // delete_participant()), which announces a clean departure to other
+    // participants and joins Fast DDS's own internal threads before this
+    // call returns -- so by the time stop() returns, no DDS thread can still
+    // be mid-callback or about to post a new QMetaObject::invokeMethod
+    // against this object. That is what makes it safe for the caller to
+    // delete this controller immediately afterward.
+    transport_.reset();
+}
+
 void ServerController::start() {
     load_config();
 
@@ -233,22 +247,49 @@ void ServerController::load_config() {
     }
 }
 
-void ServerController::save_expected_hosts() const {
+void ServerController::save_expected_hosts() {
     nlohmann::json doc = nlohmann::json::array();
     for (const lm::core::ExpectedHost& host : expected_) {
         doc.push_back({{"host_id", host.host_id}, {"address", host.address}});
     }
-    QFile file(expected_hosts_path());
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-        const std::string text = doc.dump(2);
-        file.write(text.data(), static_cast<qint64>(text.size()));
+
+    const QString path = expected_hosts_path();
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        const QString message =
+            QStringLiteral("Failed to save expected hosts config to %1: %2").arg(path, file.errorString());
+        spdlog::error(message.toStdString());
+        emit config_error(message);
+        return;
+    }
+
+    const std::string text = doc.dump(2);
+    const qint64 written = file.write(text.data(), static_cast<qint64>(text.size()));
+    if (written != static_cast<qint64>(text.size())) {
+        const QString message =
+            QStringLiteral("Failed to write expected hosts config to %1: %2").arg(path, file.errorString());
+        spdlog::error(message.toStdString());
+        emit config_error(message);
     }
 }
 
-void ServerController::save_published_bundle() const {
-    QFile file(bundle_path());
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-        const std::string text = lm::core::serialise_bundle(published_);
-        file.write(text.data(), static_cast<qint64>(text.size()));
+void ServerController::save_published_bundle() {
+    const QString path = bundle_path();
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        const QString message =
+            QStringLiteral("Failed to save template bundle config to %1: %2").arg(path, file.errorString());
+        spdlog::error(message.toStdString());
+        emit config_error(message);
+        return;
+    }
+
+    const std::string text = lm::core::serialise_bundle(published_);
+    const qint64 written = file.write(text.data(), static_cast<qint64>(text.size()));
+    if (written != static_cast<qint64>(text.size())) {
+        const QString message =
+            QStringLiteral("Failed to write template bundle config to %1: %2").arg(path, file.errorString());
+        spdlog::error(message.toStdString());
+        emit config_error(message);
     }
 }

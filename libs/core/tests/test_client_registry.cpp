@@ -81,6 +81,16 @@ TEST(ClientRegistry, SnapshotIsOrderedByHostId) {
     EXPECT_EQ(clients[2].host_id, "PC-003");
 }
 
+TEST(ClientRegistry, OutOfOrderSampleDoesNotRewindLastSeen) {
+    ClientRegistry registry;
+    registry.record_sample("PC-001", kNow + 10s);
+    registry.record_sample("PC-001", kNow + 2s);
+
+    const auto clients = registry.snapshot();
+    ASSERT_EQ(clients.size(), 1u);
+    EXPECT_EQ(clients.front().last_seen, kNow + 10s);
+}
+
 TEST(ClientRegistry, FeedsReconcileDirectly) {
     ClientRegistry registry;
     registry.record_announce("PC-001", Capabilities{}, kNow);

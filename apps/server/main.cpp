@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QDir>
+#include <QObject>
 #include <QStandardPaths>
 #include <QString>
 
@@ -116,6 +117,30 @@ int main(int argc, char** argv) {
     // this thread -- see the long comment at the top of server_controller.hpp.
     auto* controller = new ServerController(std::move(transport), config_dir);
     auto* window = new FleetWindow(controller);
+
+    // Context is &app (GUI thread) rather than `controller` or `window`, for
+    // the same reason Task 13's client documents at its own aboutToQuit
+    // connect: with a context object on a different thread than the sender,
+    // the 4-arg connect overload would run the functor on the *context*
+    // object's thread instead of the sender's. controller and window both
+    // already live on the GUI thread here (neither is ever moveToThread'd),
+    // so &app is not strictly required for correctness the way it was for
+    // the client's worker-thread case -- but using it keeps the two apps'
+    // shutdown paths visibly consistent and removes any doubt.
+    //
+    // Order matters: controller->stop() resets transport_ synchronously,
+    // which runs IServerTransport's destructor (tearing down the Fast DDS
+    // participant and joining its internal threads) before returning, so no
+    // DDS-thread callback can still be in flight -- or queued and pending --
+    // against controller once the deletes below run. Without this, the
+    // process would simply exit with controller/window never destroyed at
+    // all, leaving DdsServerTransport's destructor (and Fast DDS's clean
+    // participant departure) to never run.
+    QObject::connect(&app, &QApplication::aboutToQuit, &app, [controller, window] {
+        controller->stop();
+        delete window;
+        delete controller;
+    });
 
     controller->start();
 
