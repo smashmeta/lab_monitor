@@ -1,5 +1,7 @@
 #include "monitor_worker.hpp"
 
+#include <QMetaObject>
+
 #include <spdlog/spdlog.h>
 
 #include <expected>
@@ -58,7 +60,24 @@ void MonitorWorker::start() {
     announce.capabilities = probes_->capabilities().raw();
     transport_->publish_announce(announce);
 
-    transport_->on_bundle([this](const lm::transport::TemplateBundleMessage& message) { on_bundle(message); });
+    // DdsClientTransport::handle_bundle invokes this handler on a Fast DDS
+    // listener thread, never on this worker thread. on_bundle() assigns
+    // bundle_ (replacing its vectors/maps) and then calls
+    // evaluate_compliance(), which the 30 s slow_timer above can also be
+    // running concurrently on *this* thread -- collect()/evaluate() hold
+    // `const Rule*` pointers into bundle_.templates for the duration of a
+    // tick. Without marshalling, a bundle arriving mid-tick would reassign
+    // bundle_ out from under those pointers (use-after-free) and would also
+    // race paused_ and the probe's CPU-delta state, plus re-enter Fast DDS
+    // (publish_report) from inside a reader callback. Posting onto this
+    // object's own (worker) thread via a queued connection serialises every
+    // bundle application with the timer-driven ticks. Mirrors
+    // ServerController::start()'s identical reasoning for its own transport
+    // callbacks -- see server_controller.cpp.
+    transport_->on_bundle([this](const lm::transport::TemplateBundleMessage& message) {
+        QMetaObject::invokeMethod(
+            this, [this, message] { on_bundle(message); }, Qt::QueuedConnection);
+    });
 
     // Created here rather than in main(): start() only ever runs after
     // QThread::start(), invoked via a queued connection, so this code is
