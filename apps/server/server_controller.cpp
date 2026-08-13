@@ -76,7 +76,30 @@ void ServerController::start() {
     connect(&reconcile_timer_, &QTimer::timeout, this, &ServerController::reconcile_now);
     reconcile_timer_.start();
 
+    announce_published();
+
     reconcile_now();
+}
+
+void ServerController::announce_published() {
+    // DDS TRANSIENT_LOCAL durability belongs to the DataWriter, not to disk, so
+    // a freshly started server has written nothing: without this, clients sit
+    // without a template until the operator happens to make an edit and press
+    // Publish. Re-announcing the bundle we already have is deliberately NOT a
+    // publish -- the revision and hash stay exactly as they were saved, so a
+    // client that already applied this revision short-circuits and re-evaluates
+    // nothing, and restarts cannot inflate the revision counter.
+    if (published_.revision == 0) {
+        return;  // nothing has ever been published; there is no template to distribute
+    }
+
+    lm::transport::TemplateBundleMessage message;
+    message.revision = published_.revision;
+    message.hash = published_.hash;
+    message.json = lm::core::serialise_bundle(published_);
+    transport_->publish_bundle(message);
+
+    spdlog::info("announced template bundle revision {} on startup", published_.revision);
 }
 
 void ServerController::mark_draft_dirty() { emit draft_publishable_changed(can_publish()); }

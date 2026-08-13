@@ -109,6 +109,11 @@ private:
     void reconcile_now();
 
     void load_config();
+
+    /// Re-writes the already-published bundle to the transport at its existing
+    /// revision, so clients receive it after a server restart without waiting
+    /// for an edit. Not a publish: nothing is bumped, hashed or saved.
+    void announce_published();
     /// Emits config_error() on a failed open or a short/failed write,
     /// mirroring load_config()'s own failure handling. No longer const,
     /// since a failure path now emits a signal.

@@ -1,4 +1,8 @@
 .superpowers/
+# Run output: both apps write a rotating log next to their working directory,
+# which is the repo root when launched from here.
+*.log
+
 build/
 out/
 install/

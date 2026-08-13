@@ -6,6 +6,7 @@
 #include <QTextStream>
 
 #include <memory>
+#include <optional>
 
 #include "lm/core/json.hpp"
 #include "lm/transport/in_memory_transport.hpp"
@@ -118,6 +119,64 @@ TEST(ServerControllerConfig, DoesNotAnnounceWhenThereIsNothingToLoad) {
 
     EXPECT_EQ(bundle_spy.count(), 0);
     EXPECT_EQ(hosts_spy.count(), 0);
+
+    harness.controller->stop();
+}
+
+TEST(ServerControllerStartupAnnounce, PublishesTheLoadedBundleSoClientsGetItWithoutAnEdit) {
+    // DDS TRANSIENT_LOCAL durability lives on the DataWriter, not on disk, so a
+    // restarted server has written nothing and every client -- including ones
+    // that never disconnected -- would sit without a template until the
+    // operator happened to make an edit and press Publish.
+    Harness harness;
+    write_file(harness.dir.path() + QStringLiteral("/bundle.json"), saved_bundle_json());
+
+    harness.controller->start();
+
+    // Subscribing after start() deliberately mirrors a client joining late: the
+    // retained sample must still reach it.
+    const auto client = make_in_memory_client(harness.bus);
+    std::optional<TemplateBundleMessage> received;
+    client->on_bundle([&](const TemplateBundleMessage& message) { received = message; });
+
+    ASSERT_TRUE(received.has_value()) << "no bundle was announced on startup";
+    EXPECT_EQ(received->revision, 3u);
+
+    const auto parsed = parse_bundle(received->json);
+    ASSERT_TRUE(parsed.has_value()) << parsed.error();
+    ASSERT_EQ(parsed->templates.size(), 1u);
+    EXPECT_EQ(parsed->templates.front().name, "Lab Workstation");
+
+    harness.controller->stop();
+}
+
+TEST(ServerControllerStartupAnnounce, DoesNotBumpTheRevisionOrCreateUnpublishedChanges) {
+    // Re-announcing is not re-publishing: bumping on every restart would make
+    // every client re-evaluate for nothing and inflate the revision counter.
+    Harness harness;
+    write_file(harness.dir.path() + QStringLiteral("/bundle.json"), saved_bundle_json());
+
+    harness.controller->start();
+
+    EXPECT_EQ(harness.controller->published().revision, 3u);
+    EXPECT_EQ(harness.controller->draft().revision, 3u);
+    EXPECT_FALSE(harness.controller->can_publish())
+        << "startup must not leave the Publish button falsely enabled";
+
+    harness.controller->stop();
+}
+
+TEST(ServerControllerStartupAnnounce, SaysNothingOnAFirstRunWithNothingPublished) {
+    // Nothing has ever been published, so there is no template to distribute.
+    Harness harness;
+
+    harness.controller->start();
+
+    const auto client = make_in_memory_client(harness.bus);
+    std::optional<TemplateBundleMessage> received;
+    client->on_bundle([&](const TemplateBundleMessage& message) { received = message; });
+
+    EXPECT_FALSE(received.has_value()) << "announced a bundle that was never published";
 
     harness.controller->stop();
 }
