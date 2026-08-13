@@ -18,13 +18,21 @@
 /// every slot here is fed by a queued connection from MonitorWorker's
 /// signals, never by a direct call into the worker.
 ///
-/// Closing the window only hides it -- see closeEvent() -- so the tray
-/// remains the only way to quit.
+/// By default, closing the window only hides it -- see closeEvent() -- so
+/// the tray remains the only way to quit. set_hide_on_close(false) switches
+/// to ordinary close-means-close behaviour, for when there is no tray (see
+/// main.cpp's QSystemTrayIcon::isSystemTrayAvailable() guard) and this
+/// window is therefore the app's only way to quit.
 class DetailWindow : public QWidget {
     Q_OBJECT
 
 public:
     explicit DetailWindow(QString host_id, QWidget* parent = nullptr);
+
+    /// true (the default) preserves the tray-app behaviour of hiding
+    /// instead of closing; false lets the window actually close, ending the
+    /// app if quitOnLastWindowClosed is also set.
+    void set_hide_on_close(bool hide_on_close) { hide_on_close_ = hide_on_close; }
 
 public slots:
     void set_connected(int state);
@@ -55,4 +63,5 @@ private:
     QString host_id_;
     bool connected_ = false;
     quint64 applied_revision_ = 0;
+    bool hide_on_close_ = true;
 };

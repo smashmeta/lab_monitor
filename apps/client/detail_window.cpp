@@ -153,8 +153,12 @@ void DetailWindow::set_applied_revision(quint64 revision) {
 }
 
 void DetailWindow::closeEvent(QCloseEvent* event) {
-    hide();
-    event->ignore();
+    if (hide_on_close_) {
+        hide();
+        event->ignore();
+        return;
+    }
+    QWidget::closeEvent(event);
 }
 
 void DetailWindow::sync_disk_bars(const std::vector<lm::core::DiskUsage>& disks) {
