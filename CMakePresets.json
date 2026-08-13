@@ -3,10 +3,9 @@
   "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
   "configurePresets": [
     {
-      "name": "windows",
-      "generator": "Visual Studio 18 2026",
+      "name": "windows-base",
+      "hidden": true,
       "architecture": "x64",
-      "binaryDir": "${sourceDir}/build/windows",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x64-windows",
@@ -15,9 +14,30 @@
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
+      "name": "windows",
+      "inherits": "windows-base",
+      "generator": "Visual Studio 18 2026",
+      "binaryDir": "${sourceDir}/build/windows"
+    },
+    {
       "name": "windows-headless",
       "inherits": "windows",
       "binaryDir": "${sourceDir}/build/windows-headless",
+      "cacheVariables": {
+        "LM_BUILD_GUI": "OFF",
+        "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": "ON"
+      }
+    },
+    {
+      "name": "windows-ci",
+      "inherits": "windows-base",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/windows-ci"
+    },
+    {
+      "name": "windows-headless-ci",
+      "inherits": "windows-ci",
+      "binaryDir": "${sourceDir}/build/windows-headless-ci",
       "cacheVariables": {
         "LM_BUILD_GUI": "OFF",
         "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": "ON"
@@ -49,6 +69,8 @@
     { "name": "windows-debug", "configurePreset": "windows", "configuration": "Debug" },
     { "name": "windows-release", "configurePreset": "windows", "configuration": "Release" },
     { "name": "windows-headless", "configurePreset": "windows-headless", "configuration": "Debug" },
+    { "name": "windows-ci", "configurePreset": "windows-ci", "configuration": "Debug" },
+    { "name": "windows-headless-ci", "configurePreset": "windows-headless-ci", "configuration": "Debug" },
     { "name": "linux-debug", "configurePreset": "linux-debug" },
     { "name": "linux-headless", "configurePreset": "linux-headless" }
   ],
@@ -62,6 +84,18 @@
     {
       "name": "windows-headless",
       "configurePreset": "windows-headless",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-ci",
+      "configurePreset": "windows-ci",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-headless-ci",
+      "configurePreset": "windows-headless-ci",
       "configuration": "Debug",
       "output": { "outputOnFailure": true }
     },

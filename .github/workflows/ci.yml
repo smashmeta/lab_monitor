@@ -19,8 +19,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # windows-latest ships Visual Studio 2022 (v17), not the "Visual
+          # Studio 18 2026" generator the local `windows`/`windows-headless`
+          # presets pin (that generator matches the preview VS toolset on
+          # the dev machine these presets were authored on, not the hosted
+          # runner image). windows-headless-ci is a CI-only sibling preset
+          # that inherits everything else from the same hidden base but
+          # pins "Visual Studio 17 2022" instead -- see CMakePresets.json.
           - os: windows-latest
-            preset: windows-headless
+            preset: windows-headless-ci
           - os: ubuntu-latest
             preset: linux-headless
     runs-on: ${{ matrix.os }}
@@ -82,10 +89,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # windows-ci: same "Visual Studio 17 2022" rationale as
+          # windows-headless-ci above.
           - os: windows-latest
-            configure-preset: windows
-            build-preset: windows-debug
-            test-preset: windows-debug
+            configure-preset: windows-ci
+            build-preset: windows-ci
+            test-preset: windows-ci
           - os: ubuntu-latest
             configure-preset: linux-debug
             build-preset: linux-debug
