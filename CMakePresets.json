@@ -60,8 +60,19 @@
       "output": { "outputOnFailure": true }
     },
     {
+      "name": "windows-headless",
+      "configurePreset": "windows-headless",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
       "name": "linux-debug",
       "configurePreset": "linux-debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-headless",
+      "configurePreset": "linux-headless",
       "output": { "outputOnFailure": true }
     }
   ]
