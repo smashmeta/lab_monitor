@@ -51,7 +51,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-overlays/ports"
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-overlays/ports",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-dynamic"
       },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
     },

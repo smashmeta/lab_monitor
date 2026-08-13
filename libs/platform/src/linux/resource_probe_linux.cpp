@@ -5,6 +5,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -13,16 +14,33 @@
 namespace lm::platform {
 namespace {
 
-/// Filesystems that are not real storage and would otherwise clutter the view.
+/// Filesystems that are not real storage and would otherwise clutter the
+/// view, plus network filesystems: Windows filters disks on
+/// GetDriveTypeW(...) != DRIVE_FIXED, which excludes remote drives, so
+/// nfs/nfs4/cifs/smbfs are excluded here to match -- without this, a
+/// hard-mounted, currently-unreachable NFS/CIFS share makes the statvfs()
+/// call in sample_disks() below block for the RPC/SMB timeout, stalling the
+/// 2 s resource-sampling tick and making a healthy machine read Offline.
 bool is_pseudo_filesystem(const std::string& type) {
     static const std::vector<std::string> kPseudo = {
         "proc",   "sysfs",     "devtmpfs", "devpts", "tmpfs",   "cgroup",  "cgroup2",
         "pstore", "securityfs", "debugfs",  "tracefs", "mqueue", "hugetlbfs", "overlay",
-        "squashfs", "autofs",  "binfmt_misc", "configfs", "fusectl", "bpf", "ramfs"};
+        "squashfs", "autofs",  "binfmt_misc", "configfs", "fusectl", "bpf", "ramfs",
+        "nfs", "nfs4", "cifs", "smbfs"};
     for (const std::string& pseudo : kPseudo) {
         if (type == pseudo) {
             return true;
         }
+    }
+    // FUSE mounts report as "fuse.<helper>" (e.g. "fuse.sshfs", "fuse.encfs"
+    // -- the suffix names whichever userspace helper mounted it), never a
+    // single fixed string, so this needs a prefix check rather than another
+    // kPseudo entry. Many of these are themselves network filesystems
+    // (sshfs, davfs, etc.) with the same unreachable-host blocking-statvfs
+    // risk as nfs/cifs above.
+    constexpr std::string_view kFusePrefix = "fuse.";
+    if (type.compare(0, kFusePrefix.size(), kFusePrefix) == 0) {
+        return true;
     }
     return false;
 }
