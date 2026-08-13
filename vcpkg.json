@@ -1,0 +1,20 @@
+{
+  "name": "lab-monitor",
+  "version": "0.1.0",
+  "builtin-baseline": "4f326c4072038c8624c36a8ba5ed23f616adda53",
+  "dependencies": [
+    "boost-program-options",
+    "nlohmann-json",
+    "fastdds",
+    "fastcdr",
+    "spdlog",
+    "gtest"
+  ],
+  "features": {
+    "gui": {
+      "description": "Qt Widgets user interfaces",
+      "dependencies": [ "qt5-base", "qt5-svg" ]
+    }
+  },
+  "default-features": [ "gui" ]
+}

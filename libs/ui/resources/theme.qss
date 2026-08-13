@@ -1,0 +1,122 @@
+/* Dark slate with a single cyan accent. See lm/ui/theme.hpp for the palette
+   this stylesheet is generated from; keep the two in sync by hand. */
+
+QWidget {
+    background-color: #0f172a;
+    color: #e2e8f0;
+    font-family: "Segoe UI", sans-serif;
+    font-size: 10pt;
+}
+
+QMainWindow, QDialog {
+    background-color: #0f172a;
+}
+
+QToolTip {
+    background-color: #1e293b;
+    color: #e2e8f0;
+    border: 1px solid #22d3ee;
+    padding: 4px;
+}
+
+QLabel {
+    background: transparent;
+}
+
+QLabel[muted="true"] {
+    color: #94a3b8;
+}
+
+QFrame, QAbstractScrollArea {
+    background-color: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 6px;
+}
+
+QHeaderView::section {
+    background-color: #1e293b;
+    color: #94a3b8;
+    padding: 4px 8px;
+    border: none;
+    border-bottom: 1px solid #334155;
+}
+
+QTableView, QTreeView, QListView {
+    background-color: #1e293b;
+    alternate-background-color: #172033;
+    gridline-color: #334155;
+    selection-background-color: #22d3ee;
+    selection-color: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 6px;
+}
+
+QTableView::item:selected, QTreeView::item:selected, QListView::item:selected {
+    background-color: #22d3ee;
+    color: #0f172a;
+}
+
+QPushButton {
+    background-color: #1e293b;
+    color: #e2e8f0;
+    border: 1px solid #334155;
+    border-radius: 4px;
+    padding: 6px 14px;
+}
+
+QPushButton:hover {
+    border-color: #22d3ee;
+}
+
+QPushButton:pressed {
+    background-color: #22d3ee;
+    color: #0f172a;
+}
+
+QPushButton:disabled {
+    color: #64748b;
+    border-color: #334155;
+}
+
+QLineEdit, QComboBox, QSpinBox {
+    background-color: #0f172a;
+    color: #e2e8f0;
+    border: 1px solid #334155;
+    border-radius: 4px;
+    padding: 4px 6px;
+}
+
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus {
+    border-color: #22d3ee;
+}
+
+QScrollBar:vertical, QScrollBar:horizontal {
+    background: #0f172a;
+    border: none;
+}
+
+QScrollBar::handle {
+    background: #334155;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:hover {
+    background: #22d3ee;
+}
+
+QStatusBar {
+    background-color: #1e293b;
+    color: #94a3b8;
+    border-top: 1px solid #334155;
+}
+
+QMenuBar, QMenu {
+    background-color: #1e293b;
+    color: #e2e8f0;
+    border: 1px solid #334155;
+}
+
+QMenu::item:selected {
+    background-color: #22d3ee;
+    color: #0f172a;
+}

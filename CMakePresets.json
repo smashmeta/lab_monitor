@@ -1,0 +1,114 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "architecture": "x64",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-overlays/ports"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "windows",
+      "inherits": "windows-base",
+      "generator": "Visual Studio 18 2026",
+      "binaryDir": "${sourceDir}/build/windows"
+    },
+    {
+      "name": "windows-headless",
+      "inherits": "windows",
+      "binaryDir": "${sourceDir}/build/windows-headless",
+      "cacheVariables": {
+        "LM_BUILD_GUI": "OFF",
+        "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": "ON"
+      }
+    },
+    {
+      "name": "windows-ci",
+      "inherits": "windows-base",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/windows-ci"
+    },
+    {
+      "name": "windows-headless-ci",
+      "inherits": "windows-ci",
+      "binaryDir": "${sourceDir}/build/windows-headless-ci",
+      "cacheVariables": {
+        "LM_BUILD_GUI": "OFF",
+        "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": "ON"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/linux-debug",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-overlays/ports",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-dynamic"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "linux-headless",
+      "inherits": "linux-debug",
+      "binaryDir": "${sourceDir}/build/linux-headless",
+      "cacheVariables": {
+        "LM_BUILD_GUI": "OFF",
+        "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-debug", "configurePreset": "windows", "configuration": "Debug" },
+    { "name": "windows-release", "configurePreset": "windows", "configuration": "Release" },
+    { "name": "windows-headless", "configurePreset": "windows-headless", "configuration": "Debug" },
+    { "name": "windows-ci", "configurePreset": "windows-ci", "configuration": "Debug" },
+    { "name": "windows-headless-ci", "configurePreset": "windows-headless-ci", "configuration": "Debug" },
+    { "name": "linux-debug", "configurePreset": "linux-debug" },
+    { "name": "linux-headless", "configurePreset": "linux-headless" }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-debug",
+      "configurePreset": "windows",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-headless",
+      "configurePreset": "windows-headless",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-ci",
+      "configurePreset": "windows-ci",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-headless-ci",
+      "configurePreset": "windows-headless-ci",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-headless",
+      "configurePreset": "linux-headless",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

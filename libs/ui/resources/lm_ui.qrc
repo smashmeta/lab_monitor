@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/lm_ui">
+    <file alias="theme.qss">theme.qss</file>
+  </qresource>
+</RCC>
