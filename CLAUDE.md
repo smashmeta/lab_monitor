@@ -40,14 +40,14 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 
 | Target | Responsibility | Tests |
 |---|---|---|
-| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 84 |
+| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 95 |
 | `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 36 |
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend | 23 |
 | `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail` | 34 + 3 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 8 |
-| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 11 |
+| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 12 |
 
-**199 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
+**211 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they need loopback multicast).
 
 `lm_ui`'s second figure is `lm_ui_render_tests`, a separate binary because it
@@ -122,6 +122,29 @@ list with every host named in a template assignment. Without this, assigning a
 template to a machine left it sitting in **Unexpected** forever, since only the
 explicit list reached `reconcile()`. Explicit entries win so a typed address is
 never dropped.
+
+### Rule ids are generated, never typed
+The Add Rule flow used to open with a "Unique rule id:" prompt. `RuleId` is the
+join key between a rule and the `CheckResult` reported for it, and `rules_for()`
+merges the baseline with every assigned template keeping only the **first** rule
+per id — so a reused id silently dropped a rule from evaluation and made every
+lookup by id ambiguous. Nothing enforced uniqueness; the operator was expected to
+remember which strings were taken, across every template.
+
+`make_rule_id()` now derives one from the rule's kind and target
+(`process-chrome-exe`, `registry-displayversion`), suffixed `-2`, `-3`… against
+ids already in the bundle. Uniqueness is bundle-wide, not per-template, because
+templates are combined per host. `deduplicate_rule_ids()` repairs bundles
+authored under the old flow; `load_config()` runs it over the **draft** only and
+logs each rename, leaving `published_` alone — it records what clients actually
+hold, and rewriting it would misreport the fleet. The operator publishes the
+repair when they choose to.
+
+Anything looking a rule up by id must go through `rules_for(bundle, host_id)`,
+not a walk over every template: the latter both admits rules the host was never
+assigned and resolves collisions last-wins, the opposite of `rules_for()`. That
+is what made the server label a row with a different rule's description than the
+client showed for the same result.
 
 ### Client recovers rule descriptions locally
 `core::CheckResult` travels the wire carrying only a rule id, status, observed

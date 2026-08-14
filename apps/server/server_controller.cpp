@@ -285,6 +285,17 @@ void ServerController::load_config() {
             published_ = *parsed;
             draft_ = published_;
             options_.current_revision = published_.revision;
+
+            // Bundles written while ids were typed by hand can hold the same id
+            // twice, which costs a rule: rules_for() keeps the first and drops
+            // the rest. Repair the draft only -- published_ is the record of
+            // what clients actually hold, and rewriting it would misreport the
+            // fleet. The operator publishes the repair when they choose to.
+            for (const auto& [before, after] : lm::core::deduplicate_rule_ids(draft_)) {
+                spdlog::warn("duplicate rule id '{}' in the loaded bundle; renamed to '{}' in the "
+                              "draft -- publish to apply it to the fleet",
+                              before, after);
+            }
             // Same reason as expected_hosts_changed() above: the Templates tab
             // was built before this ran and holds an empty draft.
             emit published_changed();

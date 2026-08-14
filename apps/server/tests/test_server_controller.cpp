@@ -41,6 +41,40 @@ std::string saved_bundle_json() {
     return serialise_bundle(bundle);
 }
 
+/// Two templates reusing one rule id -- what an operator typing ids by hand
+/// produces sooner or later, and what rules_for()'s dedup silently punishes.
+std::string bundle_with_duplicate_rule_ids() {
+    TemplateBundle bundle;
+    bundle.revision = 5;
+    bundle.baseline.name = "baseline";
+
+    RegistryRule payload;
+    payload.key_path = R"(SOFTWARE\Acme\Terminal)";
+    payload.value_name = "DisplayVersion";
+    Rule registry;
+    registry.id = "check";
+    registry.description = "reg check";
+    registry.payload = payload;
+
+    Rule process;
+    process.id = "check";
+    process.description = "terminal";
+    process.payload = ProcessRule{"terminal.exe"};
+
+    Template workstation;
+    workstation.name = "Lab Workstation";
+    workstation.rules.push_back(registry);
+
+    Template build_server;
+    build_server.name = "Build Server";
+    build_server.rules.push_back(process);
+
+    bundle.templates.push_back(workstation);
+    bundle.templates.push_back(build_server);
+    bundle.hash = content_hash(bundle);
+    return serialise_bundle(bundle);
+}
+
 void write_file(const QString& path, const std::string& text) {
     QFile file(path);
     ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Text)) << path.toStdString();
@@ -70,6 +104,27 @@ TEST(ServerControllerConfig, LoadsAPersistedBundleOnStart) {
     ASSERT_EQ(harness.controller->draft().templates.size(), 1u);
     EXPECT_EQ(harness.controller->draft().templates.front().name, "Lab Workstation");
     EXPECT_EQ(harness.controller->draft().revision, 3u);
+
+    harness.controller->stop();
+}
+
+TEST(ServerControllerConfig, RepairsDuplicateRuleIdsInTheDraftOnLoad) {
+    Harness harness;
+    write_file(harness.dir.path() + QStringLiteral("/bundle.json"), bundle_with_duplicate_rule_ids());
+
+    harness.controller->start();
+
+    const lm::core::TemplateBundle& draft = harness.controller->draft();
+    ASSERT_EQ(draft.templates.size(), 2u);
+    EXPECT_EQ(draft.templates.at(0).rules.front().id, "check")
+        << "the first holder keeps the id: it is the one rules_for() already hands to clients";
+    EXPECT_NE(draft.templates.at(1).rules.front().id, "check");
+
+    // Left publishable rather than saved behind the operator's back: the fleet
+    // keeps evaluating what it was given until someone chooses to push this.
+    EXPECT_TRUE(harness.controller->can_publish());
+    EXPECT_EQ(harness.controller->published().templates.at(1).rules.front().id, "check")
+        << "the published bundle is a record of what clients hold; repairing it in place would lie";
 
     harness.controller->stop();
 }

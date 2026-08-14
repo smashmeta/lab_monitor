@@ -465,17 +465,19 @@ void FleetWindow::on_compliance_report(QString host_id, lm::core::ComplianceRepo
 void FleetWindow::populate_compliance_tree(const lm::core::ComplianceReport& report) {
     // CheckResult carries only a rule id, so recover each rule's description
     // and payload from the published bundle -- which this server owns, being
-    // the thing that published it. Same presentation as the client's
-    // DetailWindow, which recovers them from its own copy of the bundle.
+    // the thing that published it.
+    //
+    // rules_for(), rather than every template in the bundle: this host's rules
+    // are the baseline plus the templates assigned to it, which is exactly the
+    // set the client evaluated. Walking all templates instead meant a rule id
+    // reused in an *unrelated* template could win the lookup and label the row
+    // with a different rule's description -- and it resolved collisions the
+    // opposite way round from rules_for() (last wins, not first), so the two
+    // ends disagreed about the same id. Ids are unique now, but agreeing with
+    // the client by construction beats relying on that.
     QHash<QString, lm::ui::RuleDetail> by_id;
-    const lm::core::TemplateBundle& bundle = controller_->published();
-    for (const lm::core::Rule& rule : bundle.baseline.rules) {
-        by_id.insert(QString::fromStdString(rule.id), lm::ui::describe(rule));
-    }
-    for (const lm::core::Template& tmpl : bundle.templates) {
-        for (const lm::core::Rule& rule : tmpl.rules) {
-            by_id.insert(QString::fromStdString(rule.id), lm::ui::describe(rule));
-        }
+    for (const lm::core::Rule* rule : lm::core::rules_for(controller_->published(), report.host_id)) {
+        by_id.insert(QString::fromStdString(rule->id), lm::ui::describe(*rule));
     }
 
     // Grouped by CheckStatus rather than by RuleKind. `by_id` now carries each
@@ -791,13 +793,12 @@ void FleetWindow::on_add_rule_clicked() {
         return;
     }
 
+    // No id prompt: ids are generated from the rule once its payload is known
+    // (see the end of this function). They are a join key between a rule and
+    // the CheckResult reported for it, not something an operator should have to
+    // keep a ledger of -- and a reused one silently cost a rule, since
+    // rules_for() keeps only the first holder of an id.
     bool ok = false;
-    const QString id = QInputDialog::getText(this, QStringLiteral("Rule ID"), QStringLiteral("Unique rule id:"),
-                                              QLineEdit::Normal, {}, &ok);
-    if (!ok || id.trimmed().isEmpty()) {
-        return;
-    }
-
     const QStringList kinds{QStringLiteral("Process"), QStringLiteral("Service"), QStringLiteral("Registry")};
     const QString kind =
         QInputDialog::getItem(this, QStringLiteral("Rule Kind"), QStringLiteral("Kind:"), kinds, 0, false, &ok);
@@ -819,7 +820,6 @@ void FleetWindow::on_add_rule_clicked() {
     }
 
     lm::core::Rule rule;
-    rule.id = id.trimmed().toStdString();
     rule.description = description.trimmed().toStdString();
     rule.expectation = expectation_text == QStringLiteral("Must be present") ? lm::core::Presence::MustBePresent
                                                                               : lm::core::Presence::MustBeAbsent;
@@ -881,6 +881,11 @@ void FleetWindow::on_add_rule_clicked() {
         reg.expected_value = expected_value.toStdString();
         rule.payload = reg;
     }
+
+    // Last, because the id is derived from the payload -- and against the whole
+    // draft, since templates are combined per host and an id taken in any of
+    // them is taken here too.
+    rule.id = lm::core::make_rule_id(controller_->draft(), rule);
 
     tmpl->rules.push_back(std::move(rule));
     controller_->mark_draft_dirty();
