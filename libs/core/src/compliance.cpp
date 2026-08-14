@@ -12,10 +12,11 @@ namespace lm::core {
 namespace {
 
 bool equals_ignore_case(std::string_view lhs, std::string_view rhs) {
-    return lhs.size() == rhs.size() &&
-           std::equal(lhs.begin(), lhs.end(), rhs.begin(), [](unsigned char a, unsigned char b) {
-               return std::tolower(a) == std::tolower(b);
-           });
+    // std::ranges::equal compares sizes itself for sized ranges, so the manual
+    // length guard the two-iterator form needed is gone.
+    return std::ranges::equal(lhs, rhs, [](unsigned char a, unsigned char b) {
+        return std::tolower(a) == std::tolower(b);
+    });
 }
 
 CheckResult resolve(const Rule& rule, bool present, std::string observed) {
@@ -38,9 +39,9 @@ CheckResult error(const Rule& rule, std::string observed, std::string message) {
 
 CheckResult evaluate_process(const Rule& rule, const ProcessRule& payload,
                              const HostFacts& facts) {
-    const auto found = std::find_if(
-        facts.processes.begin(), facts.processes.end(),
-        [&](const ProcessInfo& info) { return equals_ignore_case(info.executable, payload.executable); });
+    const auto found = std::ranges::find_if(facts.processes, [&](const ProcessInfo& info) {
+        return equals_ignore_case(info.executable, payload.executable);
+    });
 
     if (found == facts.processes.end()) {
         return resolve(rule, false, "not running");
@@ -66,9 +67,9 @@ CheckResult evaluate_process(const Rule& rule, const ProcessRule& payload,
 
 CheckResult evaluate_service(const Rule& rule, const ServiceRule& payload,
                              const HostFacts& facts) {
-    const auto found = std::find_if(
-        facts.services.begin(), facts.services.end(),
-        [&](const ServiceInfo& info) { return equals_ignore_case(info.name, payload.service_name); });
+    const auto found = std::ranges::find_if(facts.services, [&](const ServiceInfo& info) {
+        return equals_ignore_case(info.name, payload.service_name);
+    });
 
     if (found == facts.services.end()) {
         return resolve(rule, false, "not installed");
@@ -164,9 +165,7 @@ ComplianceReport evaluate(const TemplateBundle& bundle, const HostFacts& facts,
 }
 
 std::size_t count_by_status(const ComplianceReport& report, CheckStatus status) {
-    return static_cast<std::size_t>(
-        std::count_if(report.results.begin(), report.results.end(),
-                      [&](const CheckResult& result) { return result.status == status; }));
+    return static_cast<std::size_t>(std::ranges::count(report.results, status, &CheckResult::status));
 }
 
 bool is_compliant(const ComplianceReport& report) {

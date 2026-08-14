@@ -25,8 +25,9 @@ std::optional<Version> parse_version(std::string_view text) {
         const std::string_view part =
             text.substr(start, dot == std::string_view::npos ? std::string_view::npos : dot - start);
 
-        if (part.empty() || !std::all_of(part.begin(), part.end(),
-                                         [](unsigned char c) { return std::isdigit(c) != 0; })) {
+        if (part.empty() || !std::ranges::all_of(part, [](unsigned char c) {
+                return std::isdigit(c) != 0;
+            })) {
             return std::nullopt;
         }
 

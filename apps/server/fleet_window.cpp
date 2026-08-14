@@ -701,11 +701,9 @@ void FleetWindow::on_remove_template_clicked() {
     }
     const QString name = item->text();
     auto& templates = controller_->draft().templates;
-    templates.erase(std::remove_if(templates.begin(), templates.end(),
-                                    [&](const lm::core::Template& tmpl) {
-                                        return QString::fromStdString(tmpl.name) == name;
-                                    }),
-                     templates.end());
+    std::erase_if(templates, [&](const lm::core::Template& tmpl) {
+        return QString::fromStdString(tmpl.name) == name;
+    });
     controller_->mark_draft_dirty();
     rebuild_template_list();
     rebuild_rule_table();

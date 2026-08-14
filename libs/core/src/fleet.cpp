@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <utility>
 
 namespace lm::core {
@@ -40,7 +41,15 @@ FleetView reconcile(const std::vector<ExpectedHost>& expected,
     };
 
     FleetView view;
-    std::vector<HostId> accounted;
+
+    // Every host in `expected` that also appears in `latest` is classified by
+    // the loop below, so the unexpected pass just has to skip anything expected.
+    // Testing membership against a set replaces the old parallel `accounted`
+    // vector and its linear scan per candidate, which made this O(n^2).
+    std::set<HostId> expected_ids;
+    for (const ExpectedHost& host : expected) {
+        expected_ids.insert(host.host_id);
+    }
 
     for (const ExpectedHost& host : expected) {
         FleetEntry entry;
@@ -56,13 +65,12 @@ FleetView reconcile(const std::vector<ExpectedHost>& expected,
             entry.stale = seen->second.applied_revision != options.current_revision;
             entry.state = within_lease(seen->second.last_seen) ? HostState::Online
                                                                : HostState::Offline;
-            accounted.push_back(host.host_id);
         }
         view.entries.push_back(std::move(entry));
     }
 
     for (const auto& [host_id, client] : latest) {
-        if (std::find(accounted.begin(), accounted.end(), host_id) != accounted.end()) {
+        if (expected_ids.contains(host_id)) {
             continue;
         }
         FleetEntry entry;
@@ -74,7 +82,7 @@ FleetView reconcile(const std::vector<ExpectedHost>& expected,
         view.entries.push_back(std::move(entry));
     }
 
-    std::sort(view.entries.begin(), view.entries.end(),
+    std::ranges::sort(view.entries,
               [](const FleetEntry& a, const FleetEntry& b) {
                   const int ua = urgency(a.state);
                   const int ub = urgency(b.state);

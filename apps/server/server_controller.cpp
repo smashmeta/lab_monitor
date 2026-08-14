@@ -88,8 +88,9 @@ std::vector<lm::core::ExpectedHost> ServerController::effective_expected_hosts()
     // never overwritten by an assignment-derived entry that has none.
     for (const auto& [host_id, template_names] : published_.assignments) {
         const bool already_listed =
-            std::any_of(hosts.begin(), hosts.end(),
-                        [&](const lm::core::ExpectedHost& host) { return host.host_id == host_id; });
+            std::ranges::any_of(hosts, [&](const lm::core::ExpectedHost& host) {
+                return host.host_id == host_id;
+            });
         if (!already_listed) {
             hosts.push_back(lm::core::ExpectedHost{host_id, std::string{}});
         }
@@ -129,8 +130,7 @@ void ServerController::set_expected_hosts(std::vector<lm::core::ExpectedHost> ho
 }
 
 void ServerController::add_expected_host(const lm::core::HostId& host_id, const std::string& address) {
-    const auto it = std::find_if(expected_.begin(), expected_.end(),
-                                  [&](const lm::core::ExpectedHost& host) { return host.host_id == host_id; });
+    const auto it = std::ranges::find(expected_, host_id, &lm::core::ExpectedHost::host_id);
     if (it != expected_.end()) {
         it->address = address;
     } else {
@@ -142,13 +142,13 @@ void ServerController::add_expected_host(const lm::core::HostId& host_id, const 
 }
 
 void ServerController::remove_expected_host(const lm::core::HostId& host_id) {
-    const auto new_end =
-        std::remove_if(expected_.begin(), expected_.end(),
-                        [&](const lm::core::ExpectedHost& host) { return host.host_id == host_id; });
-    if (new_end == expected_.end()) {
+    // std::erase_if returns how many it removed, so the erase-remove pair and
+    // its "did anything change?" iterator comparison both collapse into this.
+    if (std::erase_if(expected_, [&](const lm::core::ExpectedHost& host) {
+            return host.host_id == host_id;
+        }) == 0) {
         return;
     }
-    expected_.erase(new_end, expected_.end());
     save_expected_hosts();
     emit expected_hosts_changed();
     reconcile_now();
@@ -208,8 +208,9 @@ void ServerController::on_client_lost(const lm::core::HostId& host_id) {
     // the fleet view forever after disconnecting. mark_lost() is reserved
     // for exactly that case.
     const bool is_expected =
-        std::any_of(expected_.begin(), expected_.end(),
-                    [&](const lm::core::ExpectedHost& host) { return host.host_id == host_id; });
+        std::ranges::any_of(expected_, [&](const lm::core::ExpectedHost& host) {
+            return host.host_id == host_id;
+        });
     if (!is_expected) {
         registry_.mark_lost(host_id);
     }

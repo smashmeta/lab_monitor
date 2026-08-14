@@ -123,10 +123,7 @@ QVariant FleetModel::headerData(int section, Qt::Orientation orientation, int ro
 
 void FleetModel::apply(const core::FleetView& view) {
     std::vector<core::FleetEntry> incoming = view.entries;
-    std::sort(incoming.begin(), incoming.end(), [](const core::FleetEntry& a,
-                                                    const core::FleetEntry& b) {
-        return a.host_id < b.host_id;
-    });
+    std::ranges::sort(incoming, {}, &core::FleetEntry::host_id);
 
     std::size_t old_index = 0;
     std::size_t new_index = 0;

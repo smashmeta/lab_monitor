@@ -25,8 +25,7 @@ std::vector<const Rule*> rules_for(const TemplateBundle& bundle, const HostId& h
     }
 
     for (const std::string& name : assignment->second) {
-        const auto tmpl = std::find_if(bundle.templates.begin(), bundle.templates.end(),
-                                       [&](const Template& t) { return t.name == name; });
+        const auto tmpl = std::ranges::find(bundle.templates, name, &Template::name);
         if (tmpl != bundle.templates.end()) {
             append(*tmpl);
         }
