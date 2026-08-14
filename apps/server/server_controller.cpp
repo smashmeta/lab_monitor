@@ -81,6 +81,23 @@ void ServerController::start() {
     reconcile_now();
 }
 
+std::vector<lm::core::ExpectedHost> ServerController::effective_expected_hosts() const {
+    std::vector<lm::core::ExpectedHost> hosts = expected_;
+
+    // Explicit entries win, so an address typed into the expected-host list is
+    // never overwritten by an assignment-derived entry that has none.
+    for (const auto& [host_id, template_names] : published_.assignments) {
+        const bool already_listed =
+            std::any_of(hosts.begin(), hosts.end(),
+                        [&](const lm::core::ExpectedHost& host) { return host.host_id == host_id; });
+        if (!already_listed) {
+            hosts.push_back(lm::core::ExpectedHost{host_id, std::string{}});
+        }
+    }
+
+    return hosts;
+}
+
 void ServerController::announce_published() {
     // DDS TRANSIENT_LOCAL durability belongs to the DataWriter, not to disk, so
     // a freshly started server has written nothing: without this, clients sit
@@ -213,8 +230,8 @@ void ServerController::apply_coalesced(QVector<lm::transport::ResourceSampleMess
 
 void ServerController::reconcile_now() {
     options_.current_revision = published_.revision;
-    const lm::core::FleetView view =
-        lm::core::reconcile(expected_, registry_.snapshot(), lm::core::Clock::now(), options_);
+    const lm::core::FleetView view = lm::core::reconcile(
+        effective_expected_hosts(), registry_.snapshot(), lm::core::Clock::now(), options_);
     model_.apply(view);
     emit counts_changed(view.counts);
 }

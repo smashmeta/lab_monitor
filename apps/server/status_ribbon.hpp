@@ -56,6 +56,10 @@ public:
 
     void set_counts(const lm::core::FleetCounts& counts);
 
+    /// Deactivates every counter without emitting, so an external "Clear
+    /// filter" control can put the ribbon back in sync.
+    void clear_active();
+
 signals:
     void filter_requested(std::optional<lm::core::HostState> state);
     void stale_filter_requested(bool active);

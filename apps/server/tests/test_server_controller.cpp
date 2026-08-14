@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <optional>
+#include <algorithm>
 
 #include "lm/core/json.hpp"
 #include "lm/transport/in_memory_transport.hpp"
@@ -177,6 +178,64 @@ TEST(ServerControllerStartupAnnounce, SaysNothingOnAFirstRunWithNothingPublished
     client->on_bundle([&](const TemplateBundleMessage& message) { received = message; });
 
     EXPECT_FALSE(received.has_value()) << "announced a bundle that was never published";
+
+    harness.controller->stop();
+}
+
+TEST(ServerControllerExpectedHosts, AHostNamedInATemplateAssignmentCountsAsExpected) {
+    // Assigning a template to a machine is a statement that you expect that
+    // machine. Requiring it to be typed into a second, separate list as well is
+    // a chore that shows up as the host sitting in Unexpected forever.
+    Harness harness;
+    write_file(harness.dir.path() + QStringLiteral("/bundle.json"), saved_bundle_json());
+
+    harness.controller->start();
+
+    const std::vector<ExpectedHost> effective = harness.controller->effective_expected_hosts();
+    const auto found = std::find_if(effective.begin(), effective.end(), [](const ExpectedHost& host) {
+        return host.host_id == "PC-001";
+    });
+    ASSERT_NE(found, effective.end()) << "a host with a template assignment must be expected";
+
+    harness.controller->stop();
+}
+
+TEST(ServerControllerExpectedHosts, AnExplicitEntryKeepsItsAddress) {
+    // The explicit list carries an address; the assignment table has no field
+    // for one. When a host is in both, the explicit entry must win so the
+    // operator's address is not silently dropped.
+    Harness harness;
+    write_file(harness.dir.path() + QStringLiteral("/bundle.json"), saved_bundle_json());
+    write_file(harness.dir.path() + QStringLiteral("/expected_hosts.json"),
+               R"([{"host_id":"PC-001","address":"10.0.0.7"}])");
+
+    harness.controller->start();
+
+    const std::vector<ExpectedHost> effective = harness.controller->effective_expected_hosts();
+    const auto found = std::find_if(effective.begin(), effective.end(), [](const ExpectedHost& host) {
+        return host.host_id == "PC-001";
+    });
+    ASSERT_NE(found, effective.end());
+    EXPECT_EQ(found->address, "10.0.0.7");
+    // And it must appear exactly once, not once per source.
+    EXPECT_EQ(std::count_if(effective.begin(), effective.end(),
+                            [](const ExpectedHost& h) { return h.host_id == "PC-001"; }),
+              1);
+
+    harness.controller->stop();
+}
+
+TEST(ServerControllerExpectedHosts, WithNoAssignmentsTheExplicitListIsUsedUnchanged) {
+    Harness harness;
+    write_file(harness.dir.path() + QStringLiteral("/expected_hosts.json"),
+               R"([{"host_id":"PC-009","address":"10.0.0.9"}])");
+
+    harness.controller->start();
+
+    const std::vector<ExpectedHost> effective = harness.controller->effective_expected_hosts();
+    ASSERT_EQ(effective.size(), 1u);
+    EXPECT_EQ(effective.front().host_id, "PC-009");
+    EXPECT_EQ(effective.front().address, "10.0.0.9");
 
     harness.controller->stop();
 }

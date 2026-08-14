@@ -60,6 +60,15 @@ public:
     [[nodiscard]] lm::ui::FleetModel* model() { return &model_; }
 
     [[nodiscard]] const std::vector<lm::core::ExpectedHost>& expected_hosts() const { return expected_; }
+
+    /// The explicit expected-host list unioned with every host named in a
+    /// template assignment, which is what reconcile() is actually given.
+    ///
+    /// Assigning a template to a machine is already a statement that you expect
+    /// that machine; making the operator also type it into a separate list just
+    /// leaves the host sitting in Unexpected. Explicit entries win, so an
+    /// address typed there is never dropped.
+    [[nodiscard]] std::vector<lm::core::ExpectedHost> effective_expected_hosts() const;
     [[nodiscard]] const lm::core::TemplateBundle& published() const { return published_; }
     /// Mutable: the Templates tab edits rules/assignments directly through
     /// this reference, then calls mark_draft_dirty() to refresh

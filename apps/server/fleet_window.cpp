@@ -187,6 +187,17 @@ void FleetWindow::build_fleet_tab() {
     filter_edit_ = new QLineEdit(page);
     filter_edit_->setPlaceholderText(QStringLiteral("Filter by host..."));
     filter_row->addWidget(filter_edit_, 1);
+
+    // Without these, clicking a ribbon counter silently changed which rows were
+    // listed and gave no clue that a filter was on, what it was, or how to
+    // undo it.
+    filter_status_label_ = new QLabel(page);
+    filter_status_label_->setProperty("muted", true);
+    filter_row->addWidget(filter_status_label_);
+
+    clear_filter_button_ = new QPushButton(QStringLiteral("Clear filter"), page);
+    clear_filter_button_->setToolTip(QStringLiteral("Show all hosts again"));
+    filter_row->addWidget(clear_filter_button_);
     add_expected_host_button_ = new QPushButton(QStringLiteral("Add Expected Host"), page);
     filter_row->addWidget(add_expected_host_button_);
     layout->addLayout(filter_row);
@@ -245,6 +256,13 @@ void FleetWindow::build_fleet_tab() {
     connect(host_view_, &QWidget::customContextMenuRequested, this, &FleetWindow::on_context_menu_requested);
     connect(ribbon_, &StatusRibbon::filter_requested, this, &FleetWindow::on_filter_requested);
     connect(ribbon_, &StatusRibbon::stale_filter_requested, this, &FleetWindow::on_stale_filter_requested);
+    connect(clear_filter_button_, &QPushButton::clicked, this, &FleetWindow::clear_filters);
+    connect(filter_edit_, &QLineEdit::textChanged, this, [this](const QString&) { update_filter_status(); });
+    // The model is re-applied every reconcile tick, so the "showing N of M"
+    // count has to follow it rather than only changing when a filter changes.
+    connect(proxy_, &QAbstractItemModel::layoutChanged, this, &FleetWindow::update_filter_status);
+    connect(proxy_, &QAbstractItemModel::rowsInserted, this, &FleetWindow::update_filter_status);
+    connect(proxy_, &QAbstractItemModel::rowsRemoved, this, &FleetWindow::update_filter_status);
     connect(add_expected_host_button_, &QPushButton::clicked, this, &FleetWindow::on_add_expected_host_clicked);
 
     tabs_->addTab(page, QStringLiteral("Fleet"));
@@ -483,9 +501,54 @@ void FleetWindow::sync_disk_bars(const std::vector<lm::core::DiskUsage>& disks) 
     }
 }
 
-void FleetWindow::on_filter_requested(std::optional<lm::core::HostState> state) { proxy_->set_state_filter(state); }
+void FleetWindow::on_filter_requested(std::optional<lm::core::HostState> state) {
+    state_filter_ = state;
+    proxy_->set_state_filter(state);
+    update_filter_status();
+}
 
-void FleetWindow::on_stale_filter_requested(bool active) { proxy_->set_stale_only(active); }
+void FleetWindow::on_stale_filter_requested(bool active) {
+    stale_filter_ = active;
+    proxy_->set_stale_only(active);
+    update_filter_status();
+}
+
+void FleetWindow::clear_filters() {
+    state_filter_.reset();
+    stale_filter_ = false;
+    proxy_->set_state_filter(std::nullopt);
+    proxy_->set_stale_only(false);
+    filter_edit_->clear();
+    ribbon_->clear_active();
+    update_filter_status();
+}
+
+void FleetWindow::update_filter_status() {
+    QStringList active;
+    if (state_filter_) {
+        active << QString::fromStdString(lm::core::to_string(*state_filter_));
+    }
+    if (stale_filter_) {
+        active << QStringLiteral("Stale");
+    }
+    if (!filter_edit_->text().trimmed().isEmpty()) {
+        active << QStringLiteral("name contains \"%1\"").arg(filter_edit_->text().trimmed());
+    }
+
+    const int shown = proxy_->rowCount();
+    const int total = controller_->model()->rowCount();
+
+    if (active.isEmpty()) {
+        filter_status_label_->setText(total == 0 ? QString()
+                                                 : QStringLiteral("%1 hosts").arg(total));
+        clear_filter_button_->setVisible(false);
+        return;
+    }
+
+    filter_status_label_->setText(
+        QStringLiteral("Showing %1 of %2 - filtered by %3").arg(shown).arg(total).arg(active.join(QStringLiteral(" + "))));
+    clear_filter_button_->setVisible(true);
+}
 
 void FleetWindow::on_context_menu_requested(const QPoint& pos) {
     const QModelIndex index = host_view_->indexAt(pos);

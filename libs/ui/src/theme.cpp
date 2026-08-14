@@ -3,6 +3,8 @@
 #include <QApplication>
 #include <QFile>
 #include <QIODevice>
+#include <QPalette>
+#include <QStyleFactory>
 
 #include <spdlog/spdlog.h>
 
@@ -30,6 +32,37 @@ namespace Theme {
 
 void apply(QApplication& app) {
     ::lm_ui_init_resources();
+
+    // Fusion first: the native Windows style draws several widgets itself and
+    // ignores both the palette and large parts of a stylesheet, which is how
+    // unstyled tabs ended up white-on-grey. Fusion honours both.
+    QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
+
+    // A stylesheet alone does not reach everything: message boxes, native
+    // dialogs and the widgets Qt draws from the palette rather than from CSS.
+    // Setting the palette too means anything the QSS misses still lands in the
+    // dark scheme instead of falling back to the light one.
+    QPalette palette;
+    palette.setColor(QPalette::Window, QColor(kBackground));
+    palette.setColor(QPalette::WindowText, QColor(kText));
+    palette.setColor(QPalette::Base, QColor(kBackground));
+    palette.setColor(QPalette::AlternateBase, QColor(kSurface));
+    palette.setColor(QPalette::Text, QColor(kText));
+    palette.setColor(QPalette::Button, QColor(kSurface));
+    palette.setColor(QPalette::ButtonText, QColor(kText));
+    palette.setColor(QPalette::BrightText, QColor(kMissing));
+    palette.setColor(QPalette::ToolTipBase, QColor(kSurface));
+    palette.setColor(QPalette::ToolTipText, QColor(kText));
+    palette.setColor(QPalette::Link, QColor(kAccent));
+    palette.setColor(QPalette::Highlight, QColor(kAccent));
+    palette.setColor(QPalette::HighlightedText, QColor(kBackground));
+    palette.setColor(QPalette::PlaceholderText, QColor(kTextMuted));
+    // Disabled entries: Fusion greys these itself, but from the light palette
+    // unless told otherwise.
+    palette.setColor(QPalette::Disabled, QPalette::Text, QColor(kTextMuted));
+    palette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(kTextMuted));
+    palette.setColor(QPalette::Disabled, QPalette::WindowText, QColor(kTextMuted));
+    QApplication::setPalette(palette);
 
     QFile file(QStringLiteral(":/lm_ui/theme.qss"));
     if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {

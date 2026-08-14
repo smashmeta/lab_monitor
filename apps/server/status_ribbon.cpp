@@ -68,9 +68,29 @@ void StatusCounterButton::mousePressEvent(QMouseEvent* event) {
 }
 
 void StatusCounterButton::update_style() {
-    setStyleSheet(active_ ? QStringLiteral("background-color: %1; border-radius: 6px;")
-                                 .arg(lm::ui::Theme::kSurface)
-                          : QString());
+    // The old active state was a bare surface-colour fill, which against the
+    // dark background was almost invisible -- clicking appeared to do nothing
+    // except make rows come and go. An active counter now carries the accent
+    // colour on its border, its background and its number, so "this filter is
+    // on" is legible at a glance and from across the room.
+    if (active_) {
+        setStyleSheet(QStringLiteral("QWidget { background-color: %1; border: 1px solid %2;"
+                                     " border-radius: 6px; }")
+                          .arg(lm::ui::Theme::kElevated, lm::ui::Theme::kAccent));
+        value_label_->setStyleSheet(
+            QStringLiteral("color: %1; font-weight: 700;").arg(lm::ui::Theme::kAccent));
+        title_label_->setStyleSheet(QStringLiteral("color: %1;").arg(lm::ui::Theme::kAccent));
+    } else {
+        setStyleSheet(QStringLiteral("QWidget { background-color: transparent;"
+                                     " border: 1px solid transparent; border-radius: 6px; }"));
+        value_label_->setStyleSheet(QStringLiteral("color: %1;").arg(lm::ui::Theme::kText));
+        title_label_->setStyleSheet(QStringLiteral("color: %1;").arg(lm::ui::Theme::kTextMuted));
+    }
+
+    setToolTip(active_
+                   ? QStringLiteral("Showing only %1 hosts.\nClick again to show all.")
+                         .arg(title_label_->text())
+                   : QStringLiteral("Click to show only %1 hosts.").arg(title_label_->text()));
 }
 
 StatusRibbon::StatusRibbon(QWidget* parent)
@@ -105,6 +125,16 @@ void StatusRibbon::set_counts(const lm::core::FleetCounts& counts) {
     missing_->set_value(static_cast<int>(counts.missing));
     unexpected_->set_value(static_cast<int>(counts.unexpected));
     stale_->set_value(static_cast<int>(counts.stale));
+}
+
+void StatusRibbon::clear_active() {
+    active_state_filter_.reset();
+    stale_filter_active_ = false;
+    online_->set_active(false);
+    offline_->set_active(false);
+    missing_->set_active(false);
+    unexpected_->set_active(false);
+    stale_->set_active(false);
 }
 
 void StatusRibbon::handle_state_clicked(lm::core::HostState state) {

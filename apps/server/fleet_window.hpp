@@ -60,6 +60,12 @@ private slots:
     void on_compliance_report(QString host_id, lm::core::ComplianceReport report);
     void on_filter_requested(std::optional<lm::core::HostState> state);
     void on_stale_filter_requested(bool active);
+    /// Drops every filter -- state, stale and the name box -- and clears the
+    /// ribbon's active counter.
+    void clear_filters();
+    /// Refreshes the "Showing N of M - filtered by X" line and the visibility
+    /// of the Clear filter button.
+    void update_filter_status();
     void on_context_menu_requested(const QPoint& pos);
     void on_publish_clicked();
     void on_draft_publishable_changed(bool can_publish);
@@ -99,6 +105,12 @@ private:
     FleetProxyModel* proxy_;
     QTableView* host_view_;
     QLineEdit* filter_edit_;
+    QLabel* filter_status_label_ = nullptr;
+    QPushButton* clear_filter_button_ = nullptr;
+    /// Mirrors what was pushed into the proxy, so the status line can name the
+    /// active filters without the proxy having to expose them back.
+    std::optional<lm::core::HostState> state_filter_;
+    bool stale_filter_ = false;
     /// Spec §11: the only other way to reach ServerController::add_expected_host()
     /// is the Fleet tab's context menu, which only ever offers to add a row
     /// already discovered (i.e. already Online) -- so without this button,

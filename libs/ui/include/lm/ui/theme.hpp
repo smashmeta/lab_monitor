@@ -14,17 +14,25 @@ namespace lm::ui {
 /// never colour alone, so it survives greyscale and colour-blindness.
 namespace Theme {
 
-inline constexpr const char* kAccent = "#22d3ee";
-inline constexpr const char* kBackground = "#0f172a";
-inline constexpr const char* kSurface = "#1e293b";
-inline constexpr const char* kText = "#e2e8f0";
-inline constexpr const char* kTextMuted = "#94a3b8";
+// Chrome's dark-mode palette. Chosen over an invented one so the window sits
+// alongside a dark browser without clashing, and because these values are
+// already contrast-checked against each other by Google.
+inline constexpr const char* kBackground = "#202124";  ///< window / base
+inline constexpr const char* kSurface = "#292a2d";     ///< toolbars, headers, inputs
+inline constexpr const char* kElevated = "#35363a";    ///< hover, selected tab
+inline constexpr const char* kBorder = "#3c4043";      ///< dividers, outlines
+inline constexpr const char* kText = "#e8eaed";        ///< primary text
+inline constexpr const char* kTextMuted = "#9aa0a6";   ///< secondary text
+inline constexpr const char* kAccent = "#8ab4f8";      ///< Chrome's blue
+inline constexpr const char* kAccentPressed = "#aecbfa";
 
-inline constexpr const char* kOnline = "#34d399";
-inline constexpr const char* kOffline = "#fbbf24";
-inline constexpr const char* kMissing = "#f87171";
-inline constexpr const char* kUnexpected = "#a78bfa";
-inline constexpr const char* kNotApplicable = "#64748b";
+// Status colours from the same family, so they read as part of one palette
+// rather than as warning lights bolted on.
+inline constexpr const char* kOnline = "#81c995";
+inline constexpr const char* kOffline = "#fdd663";
+inline constexpr const char* kMissing = "#f28b82";
+inline constexpr const char* kUnexpected = "#c58af9";
+inline constexpr const char* kNotApplicable = "#9aa0a6";
 
 void apply(QApplication& app);
 
