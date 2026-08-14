@@ -11,7 +11,7 @@
 
 #include "lm/core/compliance.hpp"
 #include "lm/core/host_facts.hpp"
-#include "rule_detail.hpp"
+#include "lm/ui/rule_detail.hpp"
 #include "lm/ui/meter_bar.hpp"
 #include "lm/ui/sparkline.hpp"
 #include "lm/ui/status_pill.hpp"
@@ -39,7 +39,7 @@ public:
 public slots:
     void set_connected(int state);
     void apply_resources(lm::core::ResourceSample sample);
-    void apply_report(lm::core::ComplianceReport report, QVector<RuleDetail> details);
+    void apply_report(lm::core::ComplianceReport report, QVector<lm::ui::RuleDetail> details);
     void set_applied_revision(quint64 revision);
 
 protected:

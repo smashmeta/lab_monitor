@@ -124,7 +124,9 @@ QTableView, QTreeView, QListView {
     border-radius: 6px;
     gridline-color: #3c4043;
     selection-background-color: #35363a;
-    selection-color: #e8eaed;
+    /* Deliberately no selection-color: a stylesheet value here would override
+       the model's Qt::ForegroundRole and wipe out the fleet's health colours
+       the moment a row is selected. KeepForegroundDelegate governs instead. */
     outline: none;
 }
 

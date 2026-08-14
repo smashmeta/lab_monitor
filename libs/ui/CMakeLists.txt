@@ -10,6 +10,8 @@ add_library(lm_ui STATIC
   src/sparkline.cpp
   src/meter_bar.cpp
   src/fleet_model.cpp
+  src/keep_foreground_delegate.cpp
+  src/rule_detail.cpp
   src/sample_coalescer.cpp
   # Q_OBJECT headers must be listed explicitly: they live under include/, not
   # next to their .cpp under src/, so AUTOMOC's directory-based header
@@ -18,6 +20,7 @@ add_library(lm_ui STATIC
   include/lm/ui/sparkline.hpp
   include/lm/ui/meter_bar.hpp
   include/lm/ui/fleet_model.hpp
+  include/lm/ui/keep_foreground_delegate.hpp
   include/lm/ui/sample_coalescer.hpp
   resources/lm_ui.qrc)
 add_library(lm::ui ALIAS lm_ui)
@@ -31,7 +34,7 @@ target_link_libraries(lm_ui
 
 lm_add_test(lm_ui_tests
   NO_GTEST_MAIN
-  SOURCES tests/main.cpp tests/test_fleet_model.cpp tests/test_sample_coalescer.cpp
+  SOURCES tests/main.cpp tests/test_fleet_model.cpp tests/test_sample_coalescer.cpp tests/test_rule_detail.cpp
   # Qt5::Test brings in QSignalSpy, used throughout these tests; it is not
   # part of lm_ui's own public interface (Widgets/Svg only).
   LINK lm_ui Qt5::Test)

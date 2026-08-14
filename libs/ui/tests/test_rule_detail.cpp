@@ -1,8 +1,9 @@
 #include <gtest/gtest.h>
 
-#include "rule_detail.hpp"
+#include "lm/ui/rule_detail.hpp"
 
 using namespace lm::core;
+using namespace lm::ui;
 
 namespace {
 

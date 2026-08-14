@@ -35,6 +35,8 @@
 
 #include "lm/core/rule.hpp"
 #include "lm/ui/fleet_model.hpp"
+#include "lm/ui/keep_foreground_delegate.hpp"
+#include "lm/ui/rule_detail.hpp"
 #include "lm/ui/meter_bar.hpp"
 #include "lm/ui/sparkline.hpp"
 #include "lm/ui/theme.hpp"
@@ -61,6 +63,16 @@ QString kind_label(lm::core::RuleKind kind) {
         case lm::core::RuleKind::Process:  return QStringLiteral("Process");
         case lm::core::RuleKind::Service:  return QStringLiteral("Service");
         case lm::core::RuleKind::Registry: return QStringLiteral("Registry");
+    }
+    return QStringLiteral("Unknown");
+}
+
+QString status_name(lm::core::CheckStatus status) {
+    switch (status) {
+        case lm::core::CheckStatus::Pass:          return QStringLiteral("Pass");
+        case lm::core::CheckStatus::Fail:          return QStringLiteral("Fail");
+        case lm::core::CheckStatus::Error:         return QStringLiteral("Error");
+        case lm::core::CheckStatus::NotApplicable: return QStringLiteral("Not applicable");
     }
     return QStringLiteral("Unknown");
 }
@@ -227,6 +239,12 @@ void FleetWindow::build_fleet_tab() {
     host_view_->setAlternatingRowColors(true);
     host_view_->setWordWrap(false);
     host_view_->horizontalHeader()->setFixedHeight(24);
+
+    // Without this a selected row is painted with QPalette::HighlightedText,
+    // discarding the health colour exactly when the operator has clicked the
+    // row they care about. The delegate keeps the text colour and lets the
+    // selection show through the background instead.
+    host_view_->setItemDelegate(new lm::ui::KeepForegroundDelegate(host_view_));
     main_splitter_->addWidget(host_view_);
 
     auto* detail_panel = new QWidget(main_splitter_);
@@ -255,6 +273,8 @@ void FleetWindow::build_fleet_tab() {
     detail_layout->addLayout(detail_disk_layout_);
 
     detail_compliance_tree_ = new QTreeWidget(detail_panel);
+    detail_compliance_tree_->setItemDelegate(
+        new lm::ui::KeepForegroundDelegate(detail_compliance_tree_));
     detail_compliance_tree_->setColumnCount(3);
     detail_compliance_tree_->setHeaderLabels(
         {QStringLiteral("Rule"), QStringLiteral("Status"), QStringLiteral("Observed")});
@@ -443,10 +463,24 @@ void FleetWindow::on_compliance_report(QString host_id, lm::core::ComplianceRepo
 }
 
 void FleetWindow::populate_compliance_tree(const lm::core::ComplianceReport& report) {
-    // Grouped by CheckStatus rather than by RuleKind: CheckResult (the only
-    // thing ComplianceReportMessage ever carries) has no RuleKind field, so
-    // Applications/Services/Registry grouping is not derivable here -- same
-    // limitation, and same resolution, as the client's DetailWindow.
+    // CheckResult carries only a rule id, so recover each rule's description
+    // and payload from the published bundle -- which this server owns, being
+    // the thing that published it. Same presentation as the client's
+    // DetailWindow, which recovers them from its own copy of the bundle.
+    QHash<QString, lm::ui::RuleDetail> by_id;
+    const lm::core::TemplateBundle& bundle = controller_->published();
+    for (const lm::core::Rule& rule : bundle.baseline.rules) {
+        by_id.insert(QString::fromStdString(rule.id), lm::ui::describe(rule));
+    }
+    for (const lm::core::Template& tmpl : bundle.templates) {
+        for (const lm::core::Rule& rule : tmpl.rules) {
+            by_id.insert(QString::fromStdString(rule.id), lm::ui::describe(rule));
+        }
+    }
+
+    // Grouped by CheckStatus rather than by RuleKind. `by_id` now carries each
+    // rule's kind, so regrouping is a small change -- but status-first is what
+    // an operator needs first, matching the client.
     struct Group {
         const char* title;
         lm::core::CheckStatus status;
@@ -475,14 +509,39 @@ void FleetWindow::populate_compliance_tree(const lm::core::ComplianceReport& rep
 
         for (const lm::core::CheckResult* result : matches) {
             auto* row = new QTreeWidgetItem(header);
-            row->setText(0, QString::fromStdString(result->rule_id));
+
+            const QString id = QString::fromStdString(result->rule_id);
+            const auto detail = by_id.constFind(id);
+            const bool described = detail != by_id.constEnd();
+
+            // Show the authored description; fall back to the id only when the
+            // result has no matching rule, meaning the bundle changed between
+            // the client evaluating and this render.
+            row->setText(0, described ? detail->label : id);
             row->setText(1, lm::ui::Theme::glyph_for(result->status));
-            row->setText(2, QString::fromStdString(result->observed.empty() ? result->message : result->observed));
+
+            // Both fields are populated for an error, and observed alone is
+            // often too terse to act on.
+            QString observed = QString::fromStdString(result->observed);
+            const QString message = QString::fromStdString(result->message);
+            if (!message.isEmpty() && message != observed) {
+                observed = observed.isEmpty() ? message
+                                              : QStringLiteral("%1 - %2").arg(observed, message);
+            }
+            row->setText(2, observed);
+
+            QString tooltip = described ? detail->tooltip() : QStringLiteral("Rule id: %1").arg(id);
+            tooltip += QStringLiteral("\n\nResult:\t%1").arg(status_name(result->status));
+            if (!observed.isEmpty()) {
+                tooltip += QStringLiteral("\nObserved:\t%1").arg(observed);
+            }
+
             const QColor color = result->status == lm::core::CheckStatus::NotApplicable
                                       ? QColor(lm::ui::Theme::kTextMuted)
                                       : lm::ui::Theme::color_for(result->status);
             for (int column = 0; column < 3; ++column) {
                 row->setForeground(column, color);
+                row->setToolTip(column, tooltip);
             }
         }
         header->setExpanded(true);

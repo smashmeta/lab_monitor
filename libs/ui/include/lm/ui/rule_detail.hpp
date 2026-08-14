@@ -4,6 +4,8 @@
 
 #include "lm/core/rule.hpp"
 
+namespace lm::ui {
+
 /// Display fields for one compliance rule.
 ///
 /// core::CheckResult travels over the wire carrying only a rule id, a status
@@ -33,3 +35,5 @@ struct RuleDetail {
 
 /// Builds the display fields for a rule. Pure: no Qt widgets, no I/O.
 [[nodiscard]] RuleDetail describe(const lm::core::Rule& rule);
+
+}  // namespace lm::ui

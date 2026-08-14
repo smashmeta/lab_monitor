@@ -12,6 +12,7 @@
 #include "lm/core/fleet.hpp"
 #include "lm/transport/messages.hpp"
 #include "lm/ui/theme.hpp"
+#include "lm/ui/keep_foreground_delegate.hpp"
 
 namespace {
 
@@ -66,6 +67,9 @@ DetailWindow::DetailWindow(QString host_id, QWidget* parent)
     root->addLayout(resources);
 
     // Compliance list, grouped and dimmed per the brief's header comment.
+    // Keeps each row's status colour when selected, instead of the style
+    // repainting it with QPalette::HighlightedText.
+    compliance_tree_->setItemDelegate(new lm::ui::KeepForegroundDelegate(compliance_tree_));
     compliance_tree_->setColumnCount(3);
     compliance_tree_->setHeaderLabels(
         {QStringLiteral("Rule"), QStringLiteral("Status"), QStringLiteral("Observed")});
@@ -106,15 +110,15 @@ QString status_name(lm::core::CheckStatus status) {
 
 }  // namespace
 
-void DetailWindow::apply_report(lm::core::ComplianceReport report, QVector<RuleDetail> details) {
+void DetailWindow::apply_report(lm::core::ComplianceReport report, QVector<lm::ui::RuleDetail> details) {
     compliance_tree_->clear();
 
     // core::CheckResult carries only a rule id, so the rule's description and
     // payload arrive alongside it via report_ready's second argument, built by
     // MonitorWorker from the bundle it holds. Index them by id for lookup.
-    QHash<QString, RuleDetail> by_id;
+    QHash<QString, lm::ui::RuleDetail> by_id;
     by_id.reserve(details.size());
-    for (const RuleDetail& detail : details) {
+    for (const lm::ui::RuleDetail& detail : details) {
         by_id.insert(detail.id, detail);
     }
 

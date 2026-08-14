@@ -1,8 +1,9 @@
-#include "rule_detail.hpp"
+#include "lm/ui/rule_detail.hpp"
 
 #include <type_traits>
 #include <variant>
 
+namespace lm::ui {
 namespace {
 
 QString to_qstring(const std::string& text) { return QString::fromStdString(text); }
@@ -96,3 +97,5 @@ RuleDetail describe(const lm::core::Rule& rule) {
     }
     return detail;
 }
+
+}  // namespace lm::ui

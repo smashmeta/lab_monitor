@@ -15,7 +15,7 @@
 // macro provides. Declared at global scope, as Q_DECLARE_METATYPE requires.
 Q_DECLARE_METATYPE(lm::core::ResourceSample)
 Q_DECLARE_METATYPE(lm::core::ComplianceReport)
-Q_DECLARE_METATYPE(RuleDetail)
+Q_DECLARE_METATYPE(lm::ui::RuleDetail)
 
 namespace {
 
@@ -32,11 +32,11 @@ void register_metatypes_once() {
     static const bool registered = [] {
         qRegisterMetaType<lm::core::ResourceSample>();
         qRegisterMetaType<lm::core::ComplianceReport>();
-        // RuleDetail is declared at global scope, so moc records the signal
-        // parameter as the literal "QVector<RuleDetail>" -- which is what the
-        // default qRegisterMetaType<T>() form registers here too, so the two
-        // agree without an explicit name string.
-        qRegisterMetaType<QVector<RuleDetail>>();
+        // RuleDetail lives in namespace lm::ui, which is exactly the case that
+        // bit SampleCoalescer: moc records whatever literal the header spells,
+        // so this is registered under that literal rather than trusting the
+        // no-name overload's fully-qualified guess to match.
+        qRegisterMetaType<QVector<lm::ui::RuleDetail>>("QVector<lm::ui::RuleDetail>");
         return true;
     }();
     (void)registered;
@@ -128,9 +128,10 @@ void MonitorWorker::evaluate_compliance() {
     // The report identifies rules by id only, so recover their display fields
     // from the bundle we still hold. rules_for() gives exactly the rules that
     // were evaluated, in the same order.
-    QVector<RuleDetail> details;
+    QVector<lm::ui::RuleDetail> details;
     for (const lm::core::Rule* rule : lm::core::rules_for(bundle_, probes_->host_id())) {
-        details.push_back(describe(*rule));
+        // Qualified: ADL searches lm::core (the argument's namespace), not lm::ui.
+        details.push_back(lm::ui::describe(*rule));
     }
 
     emit report_ready(report, details);
