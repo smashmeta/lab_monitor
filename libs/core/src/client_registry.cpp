@@ -1,5 +1,7 @@
 #include "lm/core/client_registry.hpp"
 
+#include <ranges>
+
 namespace lm::core {
 
 DiscoveredClient& ClientRegistry::touch(const HostId& host_id, TimePoint seen_at) {
@@ -36,11 +38,12 @@ void ClientRegistry::mark_lost(const HostId& host_id) { clients_.erase(host_id);
 
 std::vector<DiscoveredClient> ClientRegistry::snapshot() const {
     // std::map<HostId, ...> already iterates in key (host id) order, so no
-    // separate sort is needed here.
+    // separate sort is needed here. Iterating the values directly avoids
+    // binding a key we never read -- and so avoids needing to suppress an
+    // unused-variable warning for it.
     std::vector<DiscoveredClient> result;
     result.reserve(clients_.size());
-    for (const auto& [host_id, client] : clients_) {
-        (void)host_id;
+    for (const DiscoveredClient& client : clients_ | std::views::values) {
         result.push_back(client);
     }
     return result;
