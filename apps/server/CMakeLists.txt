@@ -18,13 +18,19 @@ target_link_libraries(lab_monitor_server PRIVATE
 
 copy_runtime_dependencies(lab_monitor_server)
 
-# ServerController's config load/save and publish bookkeeping are plain logic
-# and worth testing; the widgets are not built here, so no display is needed.
+# ServerController's config load/save and publish bookkeeping are plain logic,
+# and so is a surprising amount of what FleetWindow does — which templates may
+# be created, what an assignment edit means. Both are built here, so this needs
+# a QApplication and a platform plugin (see libs/ui/tests/widget_main.cpp for
+# why offscreen is not an option on Windows).
 lm_add_test(lab_monitor_server_tests
   NO_GTEST_MAIN
-  SOURCES ${CMAKE_SOURCE_DIR}/libs/ui/tests/main.cpp
+  SOURCES ${CMAKE_SOURCE_DIR}/libs/ui/tests/widget_main.cpp
           tests/test_server_controller.cpp
+          tests/test_fleet_window.cpp
           server_controller.cpp
+          status_ribbon.cpp
+          fleet_window.cpp
   LINK lm_core lm_platform lm_transport lm_ui
        Qt5::Widgets Qt5::Test spdlog::spdlog nlohmann_json::nlohmann_json)
 target_include_directories(lab_monitor_server_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

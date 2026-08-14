@@ -95,6 +95,12 @@ std::unordered_set<std::string> all_ids(const TemplateBundle& bundle) {
 
 }  // namespace
 
+bool is_baseline_name(std::string_view name) {
+    return std::ranges::equal(name, kBaselineName, [](unsigned char lhs, unsigned char rhs) {
+        return std::tolower(lhs) == std::tolower(rhs);
+    });
+}
+
 std::vector<const Rule*> rules_for(const TemplateBundle& bundle, const HostId& host_id) {
     std::vector<const Rule*> result;
     std::unordered_set<std::string> seen;

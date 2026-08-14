@@ -47,6 +47,13 @@
 
 namespace {
 
+/// Template list rows are identified by these, never by their label: the
+/// baseline row's label carries an explanatory suffix, and a template
+/// genuinely *named* "Baseline" must stay distinguishable from the bundle's
+/// own baseline — otherwise it is neither selectable nor removable.
+constexpr int kTemplateNameRole = Qt::UserRole;
+constexpr int kIsBaselineRole = Qt::UserRole + 1;
+
 /// One row per resource, label to the left, gauge to the right. Mirrors the
 /// client's detail_window.cpp helper of the same shape.
 QWidget* make_gauge_row(QWidget* parent, const QString& label_text, QWidget* gauge) {
@@ -318,9 +325,9 @@ void FleetWindow::build_templates_tab() {
     left_layout->addWidget(template_list_, 1);
     auto* template_buttons = new QHBoxLayout();
     auto* add_template_button = new QPushButton(QStringLiteral("Add Template"), left);
-    auto* remove_template_button = new QPushButton(QStringLiteral("Remove Template"), left);
+    remove_template_button_ = new QPushButton(QStringLiteral("Remove Template"), left);
     template_buttons->addWidget(add_template_button);
-    template_buttons->addWidget(remove_template_button);
+    template_buttons->addWidget(remove_template_button_);
     left_layout->addLayout(template_buttons);
     splitter->addWidget(left);
 
@@ -368,7 +375,7 @@ void FleetWindow::build_templates_tab() {
 
     connect(template_list_, &QListWidget::currentItemChanged, this, &FleetWindow::on_template_selection_changed);
     connect(add_template_button, &QPushButton::clicked, this, &FleetWindow::on_add_template_clicked);
-    connect(remove_template_button, &QPushButton::clicked, this, &FleetWindow::on_remove_template_clicked);
+    connect(remove_template_button_, &QPushButton::clicked, this, &FleetWindow::on_remove_template_clicked);
     connect(add_rule_button, &QPushButton::clicked, this, &FleetWindow::on_add_rule_clicked);
     connect(remove_rule_button, &QPushButton::clicked, this, &FleetWindow::on_remove_rule_clicked);
     connect(assignment_table_, &QTableWidget::cellChanged, this, &FleetWindow::on_assignment_cell_changed);
@@ -685,10 +692,14 @@ lm::core::Template* FleetWindow::selected_template() {
     if (item == nullptr) {
         return nullptr;
     }
-    const QString name = item->text();
-    if (name == QStringLiteral("Baseline")) {
+    // By role, never by the row's label: the label carries an explanatory
+    // suffix, and a stray template genuinely *named* "Baseline" (which older
+    // builds let an assignment create) would otherwise be indistinguishable
+    // from the bundle's own baseline and impossible to select or delete.
+    if (item->data(kIsBaselineRole).toBool()) {
         return &controller_->draft().baseline;
     }
+    const QString name = item->data(kTemplateNameRole).toString();
     for (lm::core::Template& tmpl : controller_->draft().templates) {
         if (QString::fromStdString(tmpl.name) == name) {
             return &tmpl;
@@ -704,18 +715,48 @@ void FleetWindow::rebuild_templates_view() {
 }
 
 void FleetWindow::rebuild_template_list() {
-    const QString previous = template_list_->currentItem() != nullptr ? template_list_->currentItem()->text() : QString();
+    const QListWidgetItem* current = template_list_->currentItem();
+    const QString previous = current != nullptr ? current->data(kTemplateNameRole).toString() : QString();
+    const bool previous_was_baseline = current != nullptr && current->data(kIsBaselineRole).toBool();
     template_list_->clear();
-    template_list_->addItem(QStringLiteral("Baseline"));
+
+    // The baseline is a field of the bundle, not one of its templates: it is
+    // applied to every host, it cannot be assigned and it cannot be removed.
+    // Saying so in the row beats letting the operator discover it by clicking
+    // Remove and watching nothing happen.
+    auto* baseline_item = new QListWidgetItem(QStringLiteral("Baseline — always applied"));
+    baseline_item->setData(kTemplateNameRole, QString::fromUtf8(lm::core::kBaselineName.data(),
+                                                                 static_cast<int>(lm::core::kBaselineName.size())));
+    baseline_item->setData(kIsBaselineRole, true);
+    baseline_item->setToolTip(
+        QStringLiteral("Applied to every host, expected or not. It is part of the bundle rather than\n"
+                        "one of its templates, so it cannot be assigned, renamed or removed."));
+    // Italic rather than a colour: it survives selection without needing the
+    // foreground-preserving delegate the fleet table uses.
+    QFont baseline_font = baseline_item->font();
+    baseline_font.setItalic(true);
+    baseline_item->setFont(baseline_font);
+    template_list_->addItem(baseline_item);
+
     for (const lm::core::Template& tmpl : controller_->draft().templates) {
-        template_list_->addItem(QString::fromStdString(tmpl.name));
+        const QString name = QString::fromStdString(tmpl.name);
+        auto* item = new QListWidgetItem(name);
+        item->setData(kTemplateNameRole, name);
+        item->setData(kIsBaselineRole, false);
+        template_list_->addItem(item);
     }
-    const QList<QListWidgetItem*> matches = template_list_->findItems(previous, Qt::MatchExactly);
-    if (!matches.isEmpty()) {
-        template_list_->setCurrentItem(matches.first());
-    } else {
-        template_list_->setCurrentRow(0);
+
+    // Restore by role, and only onto a row of the same kind, so a stray
+    // template named "Baseline" cannot capture the baseline's own selection.
+    for (int row = 0; row < template_list_->count(); ++row) {
+        QListWidgetItem* item = template_list_->item(row);
+        if (item->data(kIsBaselineRole).toBool() == previous_was_baseline &&
+            item->data(kTemplateNameRole).toString() == previous) {
+            template_list_->setCurrentItem(item);
+            return;
+        }
     }
+    template_list_->setCurrentRow(0);
 }
 
 void FleetWindow::rebuild_rule_table() {
@@ -766,7 +807,9 @@ void FleetWindow::rebuild_assignment_table() {
         editor->set_known_values(known);
         editor->set_tokens(names);
         connect(editor, &lm::ui::TokenEdit::tokens_changed, this,
-                [this, host](const QStringList& tokens) { on_assignment_tokens_changed(host, tokens); });
+                [this, host, editor](const QStringList& tokens) {
+                    on_assignment_tokens_changed(host, editor, tokens);
+                });
         assignment_table_->setCellWidget(row, 1, editor);
         ++row;
     }
@@ -793,7 +836,13 @@ void FleetWindow::refresh_assignment_completions() {
     }
 }
 
-void FleetWindow::on_template_selection_changed() { rebuild_rule_table(); }
+void FleetWindow::on_template_selection_changed() {
+    const QListWidgetItem* item = template_list_->currentItem();
+    // Greyed out rather than silently doing nothing when the baseline is
+    // selected, which is what it did before.
+    remove_template_button_->setEnabled(item != nullptr && !item->data(kIsBaselineRole).toBool());
+    rebuild_rule_table();
+}
 
 void FleetWindow::on_add_template_clicked() {
     bool ok = false;
@@ -801,6 +850,14 @@ void FleetWindow::on_add_template_clicked() {
         QInputDialog::getText(this, QStringLiteral("New Template"), QStringLiteral("Template name:"),
                                QLineEdit::Normal, {}, &ok);
     if (!ok || name.trimmed().isEmpty()) {
+        return;
+    }
+    if (lm::core::is_baseline_name(name.trimmed().toStdString())) {
+        QMessageBox::information(
+            this, QStringLiteral("New Template"),
+            QStringLiteral("\"Baseline\" is the bundle's own baseline, applied to every host.\n"
+                            "Add rules to it by selecting it in the list; a second template of that\n"
+                            "name would only shadow it."));
         return;
     }
     lm::core::Template tmpl;
@@ -814,10 +871,13 @@ void FleetWindow::on_add_template_clicked() {
 
 void FleetWindow::on_remove_template_clicked() {
     QListWidgetItem* item = template_list_->currentItem();
-    if (item == nullptr || item->text() == QStringLiteral("Baseline")) {
+    // The flag, not the label: a stray template named "Baseline" left over
+    // from an older build has to be removable, and this is the only route to
+    // getting rid of it.
+    if (item == nullptr || item->data(kIsBaselineRole).toBool()) {
         return;
     }
-    const QString name = item->text();
+    const QString name = item->data(kTemplateNameRole).toString();
     auto& templates = controller_->draft().templates;
     std::erase_if(templates, [&](const lm::core::Template& tmpl) {
         return QString::fromStdString(tmpl.name) == name;
@@ -979,13 +1039,25 @@ void FleetWindow::on_remove_assignment_clicked() {
     rebuild_assignment_table();
 }
 
-void FleetWindow::on_assignment_tokens_changed(const QString& host_id, const QStringList& templates) {
+void FleetWindow::on_assignment_tokens_changed(const QString& host_id, lm::ui::TokenEdit* editor,
+                                                const QStringList& templates) {
     std::vector<std::string> names;
     names.reserve(static_cast<std::size_t>(templates.size()));
+    QStringList accepted;
     bool created = false;
+    bool refused = false;
 
     for (const QString& name : templates) {
         std::string standard = name.toStdString();
+
+        // The baseline already applies to every host, and it is a field of the
+        // bundle rather than one of its templates -- so assigning it is both
+        // meaningless and, worse, used to create a *second* template of that
+        // name that shadowed it in the list. Dropped, not created.
+        if (lm::core::is_baseline_name(standard)) {
+            refused = true;
+            continue;
+        }
         // Naming a template that does not exist creates it. The operator has
         // just said this machine should have it; sending them to the other
         // pane to add it first, then back here, is busywork. An empty template
@@ -1000,12 +1072,19 @@ void FleetWindow::on_assignment_tokens_changed(const QString& host_id, const QSt
             controller_->draft().templates.push_back(std::move(tmpl));
             created = true;
         }
+        accepted << QString::fromStdString(standard);
         names.push_back(std::move(standard));
     }
 
     controller_->draft().assignments[host_id.toStdString()] = std::move(names);
     controller_->mark_draft_dirty();
 
+    if (refused) {
+        // set_tokens() does not emit, so this corrects the chips without
+        // re-entering this slot. The chip visibly fails to stick, which with
+        // the baseline row saying "always applied" is the whole explanation.
+        editor->set_tokens(accepted);
+    }
     if (created) {
         rebuild_template_list();
         // Deliberately not rebuild_assignment_table(): this runs from inside

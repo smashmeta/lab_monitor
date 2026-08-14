@@ -40,14 +40,14 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 
 | Target | Responsibility | Tests |
 |---|---|---|
-| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 95 |
+| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 97 |
 | `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 36 |
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend | 23 |
-| `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit` | 34 + 15 |
+| `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit` | 34 + 17 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 8 |
-| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 12 |
+| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 22 |
 
-**223 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
+**237 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they need loopback multicast).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -148,6 +148,26 @@ not a walk over every template: the latter both admits rules the host was never
 assigned and resolves collisions last-wins, the opposite of `rules_for()`. That
 is what made the server label a row with a different rule's description than the
 client showed for the same result.
+
+### "Baseline" is a reserved template name
+`TemplateBundle::baseline` is a **field**, not an entry in `templates`, but the
+Templates tab lists the two together. A template genuinely named "Baseline" put
+a second row of that name in the list — and since rows were matched by their
+*label*, `selected_template()` resolved both to the bundle's baseline, so the
+stray one could be neither selected nor deleted. Assignments created exactly
+that: typing "Baseline" as a chip was an unknown name, so it made a template.
+
+`core::is_baseline_name()` (case-insensitive) now reserves it: Add Template
+refuses it, and an assignment chip is dropped rather than created. List rows
+carry `kTemplateNameRole` and `kIsBaselineRole` instead of being matched by
+label, which is what makes a legacy stray removable through the UI — the only
+route to clearing one out of an existing bundle. The baseline's own row reads
+"Baseline — always applied", in italics, and disables Remove Template while
+selected rather than silently ignoring the click.
+
+`apps/server/tests/test_fleet_window.cpp` covers these against a real
+`FleetWindow`, which is why `lab_monitor_server_tests` now builds the widgets
+and needs a `QApplication`.
 
 ### Naming a template in an assignment creates it
 The Templates tab's assignment column is a `lm::ui::TokenEdit` — an Outlook-style

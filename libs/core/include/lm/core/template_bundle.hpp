@@ -3,12 +3,23 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "lm/core/rule.hpp"
 
 namespace lm::core {
+
+/// Reserved: the baseline is a *field* of TemplateBundle, not an entry in its
+/// `templates`, so a template carrying this name shadows it in every list and
+/// lookup that presents the two together — and it can never be assigned, since
+/// the baseline already applies to every host.
+inline constexpr std::string_view kBaselineName = "Baseline";
+
+/// Case-insensitive: the reservation is about the name an operator reads, and
+/// "baseline" reads as the same word.
+[[nodiscard]] bool is_baseline_name(std::string_view name);
 
 struct Template {
     std::string name;

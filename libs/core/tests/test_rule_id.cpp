@@ -52,6 +52,19 @@ void add_rule(TemplateBundle& bundle, const std::string& template_name, RuleId i
 
 }  // namespace
 
+TEST(BaselineName, MatchesTheReservedNameWhateverItsCase) {
+    EXPECT_TRUE(is_baseline_name("Baseline"));
+    EXPECT_TRUE(is_baseline_name("baseline"));
+    EXPECT_TRUE(is_baseline_name("BASELINE"));
+}
+
+TEST(BaselineName, DoesNotMatchNamesThatMerelyContainIt) {
+    EXPECT_FALSE(is_baseline_name("Baseline 2"));
+    EXPECT_FALSE(is_baseline_name("Old Baseline"));
+    EXPECT_FALSE(is_baseline_name("Base"));
+    EXPECT_FALSE(is_baseline_name(""));
+}
+
 TEST(MakeRuleId, DerivesTheIdFromTheProcessName) {
     const TemplateBundle bundle;
     EXPECT_EQ(make_rule_id(bundle, process_rule("chrome.exe")), "process-chrome-exe");

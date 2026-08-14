@@ -1,7 +1,8 @@
-#include <gtest/gtest.h>
+﻿#include <gtest/gtest.h>
 
 #include <QApplication>
 #include <QCompleter>
+#include <QTableWidget>
 #include <QLineEdit>
 #include <QSignalSpy>
 #include <QStringList>
@@ -160,6 +161,53 @@ TEST(TokenEdit, StopsFlaggingAValueOnceItBecomesKnown) {
     EXPECT_FALSE(input->property("unknown").toBool());
 }
 
+TEST(TokenEdit, ClearsTheInputWhenTheCommittedValueIsCreatedInResponse) {
+    // The exact server round-trip: committing an unknown name makes the window
+    // create the template and hand every editor the longer list back, from
+    // inside this very signal.
+    TokenEdit editor;
+    editor.set_known_values(kKnown);
+    QObject::connect(&editor, &TokenEdit::tokens_changed, &editor,
+                      [&editor](const QStringList& tokens) {
+                          editor.set_known_values(kKnown + tokens);
+                      });
+
+    QLineEdit* input = input_of(editor);
+    QTest::keyClicks(input, QStringLiteral("Renderfarm"));
+    QTest::keyClick(input, Qt::Key_Return);
+
+    EXPECT_EQ(joined(editor.tokens()), "Renderfarm");
+    EXPECT_TRUE(input->text().isEmpty())
+        << "left in the input: " << input->text().toStdString();
+}
+
+TEST(TokenEdit, ClearsTheInputWhenLivingInATableCell) {
+    // Faithful to the server: the editor is a cell widget in a shown table,
+    // and the round-trip that creates the template runs from inside the signal.
+    QTableWidget table(1, 2);
+    auto* editor = new TokenEdit(&table);
+    editor->set_known_values(kKnown);
+    table.setCellWidget(0, 1, editor);
+    table.resize(600, 120);
+    table.show();
+    QApplication::processEvents();
+
+    QObject::connect(editor, &TokenEdit::tokens_changed, editor, [editor](const QStringList& tokens) {
+        editor->set_known_values(kKnown + tokens);
+    });
+
+    QLineEdit* input = editor->findChild<QLineEdit*>();
+    ASSERT_NE(input, nullptr);
+    input->setFocus();
+    QTest::keyClicks(input, QStringLiteral("Renderfarm"));
+    QTest::keyClick(input, Qt::Key_Return);
+    QApplication::processEvents();
+
+    EXPECT_EQ(joined(editor->tokens()), "Renderfarm");
+    EXPECT_TRUE(input->text().isEmpty())
+        << "left in the input: " << input->text().toStdString();
+}
+
 TEST(TokenEdit, PaintsAnUnknownValueInTheWarningColour) {
     // The property test above proves the widget's half of this. Only painting
     // proves the other half -- that a stylesheet rule actually matches the
@@ -205,3 +253,4 @@ TEST(TokenEdit, OffersEveryKnownValueThroughItsCompleter) {
     EXPECT_EQ(completer->model()->rowCount(), kKnown.size());
     EXPECT_EQ(completer->caseSensitivity(), Qt::CaseInsensitive);
 }
+

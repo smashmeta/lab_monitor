@@ -38,6 +38,7 @@ class FleetProxyModel;
 namespace lm::ui {
 class Sparkline;
 class MeterBar;
+class TokenEdit;
 }  // namespace lm::ui
 
 /// The server's main window, shown at startup (unlike the client's
@@ -81,8 +82,10 @@ private slots:
     void on_remove_assignment_clicked();
     void on_assignment_cell_changed(int row, int column);
     /// One host's template chips were edited. Any name that does not match an
-    /// existing template creates it — see the definition for why.
-    void on_assignment_tokens_changed(const QString& host_id, const QStringList& templates);
+    /// existing template creates it — see the definition for why. `editor` is
+    /// the widget that emitted, so a refused name can be taken back off it.
+    void on_assignment_tokens_changed(const QString& host_id, lm::ui::TokenEdit* editor,
+                                       const QStringList& templates);
 
 private:
     void build_fleet_tab();
@@ -144,6 +147,9 @@ private:
     QListWidget* template_list_;
     QTableWidget* rule_table_;
     QTableWidget* assignment_table_;
+    /// Held because it is disabled while the baseline row is selected: the
+    /// baseline is part of the bundle and cannot be removed.
+    QPushButton* remove_template_button_;
     QPushButton* publish_button_;
     QLabel* publish_status_label_;
 
