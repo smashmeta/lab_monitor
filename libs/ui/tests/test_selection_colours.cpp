@@ -7,12 +7,12 @@
 #include <QTableView>
 
 #include <chrono>
-#include <cstdlib>
 
 #include "lm/core/fleet.hpp"
 #include "lm/ui/fleet_model.hpp"
 #include "lm/ui/keep_foreground_delegate.hpp"
 #include "lm/ui/theme.hpp"
+#include "pixel_probe.hpp"
 
 using namespace lm::core;
 using namespace lm::ui;
@@ -34,19 +34,7 @@ FleetView one_unexpected_host() {
     return view;
 }
 
-bool contains_colour(const QImage& image, const QColor& colour, int tolerance = 8) {
-    for (int y = 0; y < image.height(); ++y) {
-        for (int x = 0; x < image.width(); ++x) {
-            const QColor pixel = image.pixelColor(x, y);
-            if (std::abs(pixel.red() - colour.red()) <= tolerance &&
-                std::abs(pixel.green() - colour.green()) <= tolerance &&
-                std::abs(pixel.blue() - colour.blue()) <= tolerance) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
+using lm::ui::test::contains_colour;
 
 /// Paints the fleet table's viewport the way the server does, with row 0
 /// either selected or not, and hands back the pixels.
@@ -70,10 +58,7 @@ QImage paint_fleet_table(bool select_row) {
         QApplication::processEvents();
     }
 
-    QImage image(view.viewport()->size(), QImage::Format_ARGB32);
-    image.fill(Qt::transparent);
-    view.viewport()->render(&image);
-    return image;
+    return lm::ui::test::paint(*view.viewport());
 }
 
 }  // namespace

@@ -4,6 +4,7 @@
 #include <QMap>
 #include <QPoint>
 #include <QString>
+#include <QStringList>
 
 #include <optional>
 #include <vector>
@@ -79,6 +80,9 @@ private slots:
     void on_add_assignment_clicked();
     void on_remove_assignment_clicked();
     void on_assignment_cell_changed(int row, int column);
+    /// One host's template chips were edited. Any name that does not match an
+    /// existing template creates it — see the definition for why.
+    void on_assignment_tokens_changed(const QString& host_id, const QStringList& templates);
 
 private:
     void build_fleet_tab();
@@ -93,6 +97,11 @@ private:
     void rebuild_template_list();
     void rebuild_rule_table();
     void rebuild_assignment_table();
+    /// Re-offers the current template names to every assignment editor without
+    /// recreating them — safe to call from inside one of their signals, which
+    /// rebuild_assignment_table() is not.
+    void refresh_assignment_completions();
+    [[nodiscard]] QStringList template_names() const;
     [[nodiscard]] QString selected_host_id() const;
     /// nullptr only when nothing is selected in template_list_; the
     /// "Baseline" pseudo-entry resolves to &controller_->draft().baseline.

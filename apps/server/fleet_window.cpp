@@ -23,6 +23,7 @@
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTabWidget>
+#include <QTimer>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
@@ -40,6 +41,7 @@
 #include "lm/ui/meter_bar.hpp"
 #include "lm/ui/sparkline.hpp"
 #include "lm/ui/theme.hpp"
+#include "lm/ui/token_edit.hpp"
 #include "server_controller.hpp"
 #include "status_ribbon.hpp"
 
@@ -343,8 +345,7 @@ void FleetWindow::build_templates_tab() {
 
     right_layout->addWidget(new QLabel(QStringLiteral("Host -> Template Assignments"), right));
     assignment_table_ = new QTableWidget(0, 2, right);
-    assignment_table_->setHorizontalHeaderLabels(
-        {QStringLiteral("Host"), QStringLiteral("Templates (comma-separated)")});
+    assignment_table_->setHorizontalHeaderLabels({QStringLiteral("Host"), QStringLiteral("Templates")});
     assignment_table_->horizontalHeader()->setStretchLastSection(true);
     assignment_table_->verticalHeader()->setVisible(false);
     right_layout->addWidget(assignment_table_, 1);
@@ -741,17 +742,55 @@ void FleetWindow::rebuild_assignment_table() {
     assignment_table_->setRowCount(0);
     const auto& assignments = controller_->draft().assignments;
     assignment_table_->setRowCount(static_cast<int>(assignments.size()));
+    const QStringList known = template_names();
+
     int row = 0;
     for (const auto& [host_id, templates] : assignments) {
-        assignment_table_->setItem(row, 0, new QTableWidgetItem(QString::fromStdString(host_id)));
+        const QString host = QString::fromStdString(host_id);
+
+        auto* host_item = new QTableWidgetItem(host);
+        // The id as it stands before any edit, so a rename can move the entry
+        // instead of leaving the old one behind under its old key.
+        host_item->setData(Qt::UserRole, host);
+        assignment_table_->setItem(row, 0, host_item);
+
         QStringList names;
         for (const std::string& name : templates) {
             names << QString::fromStdString(name);
         }
-        assignment_table_->setItem(row, 1, new QTableWidgetItem(names.join(QStringLiteral(", "))));
+
+        // A live widget in the cell rather than an editor opened on demand:
+        // the chips and their remove buttons are the point, and they are no
+        // use hidden behind a double-click.
+        auto* editor = new lm::ui::TokenEdit(assignment_table_);
+        editor->set_known_values(known);
+        editor->set_tokens(names);
+        connect(editor, &lm::ui::TokenEdit::tokens_changed, this,
+                [this, host](const QStringList& tokens) { on_assignment_tokens_changed(host, tokens); });
+        assignment_table_->setCellWidget(row, 1, editor);
         ++row;
     }
+
+    assignment_table_->resizeRowsToContents();
     updating_assignment_table_ = false;
+}
+
+QStringList FleetWindow::template_names() const {
+    QStringList names;
+    names.reserve(static_cast<int>(controller_->draft().templates.size()));
+    for (const lm::core::Template& tmpl : controller_->draft().templates) {
+        names << QString::fromStdString(tmpl.name);
+    }
+    return names;
+}
+
+void FleetWindow::refresh_assignment_completions() {
+    const QStringList known = template_names();
+    for (int row = 0; row < assignment_table_->rowCount(); ++row) {
+        if (auto* editor = qobject_cast<lm::ui::TokenEdit*>(assignment_table_->cellWidget(row, 1))) {
+            editor->set_known_values(known);
+        }
+    }
 }
 
 void FleetWindow::on_template_selection_changed() { rebuild_rule_table(); }
@@ -769,6 +808,8 @@ void FleetWindow::on_add_template_clicked() {
     controller_->draft().templates.push_back(std::move(tmpl));
     controller_->mark_draft_dirty();
     rebuild_template_list();
+    // The assignment editors complete against this list, so it has to follow.
+    refresh_assignment_completions();
 }
 
 void FleetWindow::on_remove_template_clicked() {
@@ -784,6 +825,10 @@ void FleetWindow::on_remove_template_clicked() {
     controller_->mark_draft_dirty();
     rebuild_template_list();
     rebuild_rule_table();
+    // Assignments naming it are left alone: rules_for() already ignores a name
+    // with no template behind it, and silently editing the operator's
+    // assignments because they deleted something is worse than a stale chip.
+    refresh_assignment_completions();
 }
 
 void FleetWindow::on_add_rule_clicked() {
@@ -934,32 +979,82 @@ void FleetWindow::on_remove_assignment_clicked() {
     rebuild_assignment_table();
 }
 
-void FleetWindow::on_assignment_cell_changed(int row, int /*column*/) {
-    if (updating_assignment_table_) {
+void FleetWindow::on_assignment_tokens_changed(const QString& host_id, const QStringList& templates) {
+    std::vector<std::string> names;
+    names.reserve(static_cast<std::size_t>(templates.size()));
+    bool created = false;
+
+    for (const QString& name : templates) {
+        std::string standard = name.toStdString();
+        // Naming a template that does not exist creates it. The operator has
+        // just said this machine should have it; sending them to the other
+        // pane to add it first, then back here, is busywork. An empty template
+        // is harmless -- it contributes no rules until one is added, and the
+        // yellow text while typing already said it was new.
+        const bool exists = std::ranges::any_of(
+            controller_->draft().templates,
+            [&](const lm::core::Template& tmpl) { return tmpl.name == standard; });
+        if (!exists) {
+            lm::core::Template tmpl;
+            tmpl.name = standard;
+            controller_->draft().templates.push_back(std::move(tmpl));
+            created = true;
+        }
+        names.push_back(std::move(standard));
+    }
+
+    controller_->draft().assignments[host_id.toStdString()] = std::move(names);
+    controller_->mark_draft_dirty();
+
+    if (created) {
+        rebuild_template_list();
+        // Deliberately not rebuild_assignment_table(): this runs from inside
+        // the TokenEdit that emitted the signal, and rebuilding would delete
+        // it while its own handler is still on the stack.
+        refresh_assignment_completions();
+    }
+}
+
+void FleetWindow::on_assignment_cell_changed(int row, int column) {
+    // Column 1 holds a TokenEdit now, not an item, so this only ever concerns
+    // the host id -- and it means a rename, which has to move the map entry
+    // rather than write a second one under the new key.
+    if (updating_assignment_table_ || column != 0) {
         return;
     }
     QTableWidgetItem* host_item = assignment_table_->item(row, 0);
-    QTableWidgetItem* templates_item = assignment_table_->item(row, 1);
-    if (host_item == nullptr || templates_item == nullptr) {
+    if (host_item == nullptr) {
         return;
     }
 
-    const std::string host_id = host_item->text().trimmed().toStdString();
-    if (host_id.empty()) {
+    const QString before = host_item->data(Qt::UserRole).toString();
+    const QString after = host_item->text().trimmed();
+    if (after == before) {
         return;
     }
 
-    std::vector<std::string> names;
-    const QStringList parts = templates_item->text().split(QChar(u','), Qt::SkipEmptyParts);
-    for (const QString& part : parts) {
-        const QString trimmed = part.trimmed();
-        if (!trimmed.isEmpty()) {
-            names.push_back(trimmed.toStdString());
-        }
+    auto& assignments = controller_->draft().assignments;
+    if (after.isEmpty() || assignments.contains(after.toStdString())) {
+        // A blank id, or one that already has its own row: put the cell back
+        // rather than dropping an assignment or silently merging two hosts.
+        updating_assignment_table_ = true;
+        host_item->setText(before);
+        updating_assignment_table_ = false;
+        return;
     }
 
-    controller_->draft().assignments[host_id] = std::move(names);
+    auto entry = assignments.extract(before.toStdString());
+    if (entry.empty()) {
+        return;
+    }
+    entry.key() = after.toStdString();
+    assignments.insert(std::move(entry));
     controller_->mark_draft_dirty();
+
+    // Deferred: rebuilding deletes the very item whose setData() is still on
+    // the stack above this slot. The row order can change too, since the
+    // assignments are a std::map keyed by host id.
+    QTimer::singleShot(0, this, &FleetWindow::rebuild_assignment_table);
 }
 
 void FleetWindow::save_window_state() const {

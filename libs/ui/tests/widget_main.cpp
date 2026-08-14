@@ -5,9 +5,10 @@
 #include "lm/ui/theme.hpp"
 
 /// A QApplication rather than the QCoreApplication the other lm_ui tests use,
-/// and Theme::apply() before the first test runs: these tests paint real
-/// widgets through the real stylesheet, which is the only place a QSS rule
-/// that overrides the model's own colours can be caught.
+/// and Theme::apply() before the first test runs: these tests construct and
+/// paint real widgets through the real stylesheet, which is the only place a
+/// QSS rule that overrides what the model or a delegate asked for can be
+/// caught.
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     lm::ui::Theme::apply(app);

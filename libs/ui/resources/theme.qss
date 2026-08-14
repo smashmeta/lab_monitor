@@ -238,6 +238,55 @@ QComboBox QAbstractItemView {
     selection-background-color: #35363a;
 }
 
+/* -------------------------------------------------------- token edit --- */
+/* Outlook-style recipient field: chips for what is committed, a plain input
+   for what is being typed. The container carries the frame so the two read as
+   one field -- hence the frameless input inside it. */
+
+#TokenEdit {
+    background-color: #292a2d;
+    border: 1px solid #3c4043;
+    border-radius: 6px;
+}
+
+#TokenEditInput {
+    background: transparent;
+    border: none;
+    padding: 2px 4px;
+}
+
+/* A name matching no existing template. Yellow rather than red because it is
+   not a mistake: committing it creates the template. Same yellow as the
+   Offline state, so the window keeps one vocabulary of "look at this". */
+#TokenEditInput[unknown="true"] {
+    color: #fdd663;
+}
+
+#TokenChip {
+    background-color: #35363a;
+    border: 1px solid #3c4043;
+    border-radius: 9px;
+}
+
+#TokenChip QLabel {
+    background: transparent;
+    color: #e8eaed;
+}
+
+#TokenChipRemove {
+    background: transparent;
+    border: none;
+    color: #9aa0a6;
+    font-weight: bold;
+    padding: 0px 3px;
+}
+
+/* Removal is the destructive half of the chip, so hover says so before the
+   click rather than after it. */
+#TokenChipRemove:hover {
+    color: #f28b82;
+}
+
 QCheckBox, QRadioButton {
     background: transparent;
     color: #e8eaed;

@@ -13,6 +13,7 @@ add_library(lm_ui STATIC
   src/keep_foreground_delegate.cpp
   src/rule_detail.cpp
   src/sample_coalescer.cpp
+  src/token_edit.cpp
   # Q_OBJECT headers must be listed explicitly: they live under include/, not
   # next to their .cpp under src/, so AUTOMOC's directory-based header
   # discovery would otherwise miss them and silently skip moc generation.
@@ -22,6 +23,7 @@ add_library(lm_ui STATIC
   include/lm/ui/fleet_model.hpp
   include/lm/ui/keep_foreground_delegate.hpp
   include/lm/ui/sample_coalescer.hpp
+  include/lm/ui/token_edit.hpp
   resources/lm_ui.qrc)
 add_library(lm::ui ALIAS lm_ui)
 
@@ -39,18 +41,19 @@ lm_add_test(lm_ui_tests
   # part of lm_ui's own public interface (Widgets/Svg only).
   LINK lm_ui Qt5::Test)
 
-# A separate binary rather than more cases in lm_ui_tests: these paint real
-# widgets, so they need a QApplication and a platform plugin, whereas every
-# other lm_ui test runs under a QCoreApplication and needs neither.
-lm_add_test(lm_ui_render_tests
+# A separate binary rather than more cases in lm_ui_tests: these construct and
+# paint real widgets, so they need a QApplication and a platform plugin,
+# whereas every other lm_ui test runs under a QCoreApplication and needs
+# neither. Qt5::Test supplies QTest's key/mouse simulation and QSignalSpy.
+lm_add_test(lm_ui_widget_tests
   NO_GTEST_MAIN
-  SOURCES tests/render_main.cpp tests/test_selection_colours.cpp
-  LINK lm_ui)
+  SOURCES tests/widget_main.cpp tests/test_selection_colours.cpp tests/test_token_edit.cpp
+  LINK lm_ui Qt5::Test)
 # offscreen would keep this headless, but vcpkg's applocal deployment copies
 # only the plugins it can see the binary needs -- which is qwindows alone, so
 # forcing offscreen on Windows leaves the test with no platform plugin at all
 # and it aborts before reaching main(). The windows plugin paints through the
 # same raster engine, so the pixels under test are identical either way.
 if(NOT WIN32)
-  set_tests_properties(lm_ui_render_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+  set_tests_properties(lm_ui_widget_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()

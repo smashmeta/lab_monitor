@@ -43,18 +43,21 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 | `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 95 |
 | `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 36 |
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend | 23 |
-| `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail` | 34 + 3 |
+| `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit` | 34 + 15 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 8 |
 | `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 12 |
 
-**211 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
+**223 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they need loopback multicast).
 
-`lm_ui`'s second figure is `lm_ui_render_tests`, a separate binary because it
-paints real widgets and so needs a `QApplication` and a platform plugin, where
-every other `lm_ui` test runs under a `QCoreApplication`. It renders a
-`QTableView` through the real stylesheet and inspects the pixels — the only way
-to catch a QSS rule silently overriding what the model or a delegate asked for.
+`lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
+constructs and paints real widgets and so needs a `QApplication` and a platform
+plugin, where every other `lm_ui` test runs under a `QCoreApplication`. Some of
+its cases render through the real stylesheet and inspect the pixels
+(`tests/pixel_probe.hpp`) — the only way to catch a QSS rule silently overriding
+what the model, a delegate or a dynamic property asked for. It cannot use
+`QT_QPA_PLATFORM=offscreen` on Windows: vcpkg's applocal deployment copies only
+`qwindows`, so the binary would abort before `main()`.
 
 **`lm_core` depends on `nlohmann-json` and nothing else.** No Qt, no DDS, no
 syscalls, no Boost. This is load-bearing: it is what makes `evaluate()` and
@@ -145,6 +148,24 @@ not a walk over every template: the latter both admits rules the host was never
 assigned and resolves collisions last-wins, the opposite of `rules_for()`. That
 is what made the server label a row with a different rule's description than the
 client showed for the same result.
+
+### Naming a template in an assignment creates it
+The Templates tab's assignment column is a `lm::ui::TokenEdit` — an Outlook-style
+recipient field: committed names become chips with their own remove button, a
+completer offers the existing templates, and text matching none of them is
+yellow while it is typed. Committing such a name **creates the template**, empty.
+
+The widget itself has no opinion about that: it completes, marks and reports.
+Creation is `FleetWindow::on_assignment_tokens_changed()`'s policy, which is what
+keeps `TokenEdit` reusable rather than a template picker with a general name.
+
+Two traps live in that slot. It must **not** call `rebuild_assignment_table()` —
+it runs from inside the `TokenEdit` that emitted, and rebuilding deletes that
+widget mid-signal; `refresh_assignment_completions()` updates them in place
+instead. And renaming a host in column 0 has to `extract()`/re-key the
+`assignments` map rather than assign through `operator[]`, which would leave the
+old entry behind, with the rebuild deferred through a zero-timer because the item
+whose `setData()` is still on the stack would otherwise be deleted underneath it.
 
 ### Client recovers rule descriptions locally
 `core::CheckResult` travels the wire carrying only a rule id, status, observed
