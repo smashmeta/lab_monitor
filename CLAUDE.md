@@ -43,12 +43,18 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 | `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 84 |
 | `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 36 |
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend | 23 |
-| `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer` | 14 |
-| `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 18 |
+| `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail` | 34 + 3 |
+| `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 8 |
 | `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 11 |
 
-**186 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
+**199 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they need loopback multicast).
+
+`lm_ui`'s second figure is `lm_ui_render_tests`, a separate binary because it
+paints real widgets and so needs a `QApplication` and a platform plugin, where
+every other `lm_ui` test runs under a `QCoreApplication`. It renders a
+`QTableView` through the real stylesheet and inspects the pixels — the only way
+to catch a QSS rule silently overriding what the model or a delegate asked for.
 
 **`lm_core` depends on `nlohmann-json` and nothing else.** No Qt, no DDS, no
 syscalls, no Boost. This is load-bearing: it is what makes `evaluate()` and
@@ -141,6 +147,13 @@ Team choice. Boost is consequently confined to `program_options` in the two apps
 - **A stylesheet does not reach everything.** Message boxes and palette-drawn
   widgets ignore QSS; `Theme::apply()` installs Fusion and a dark `QPalette` too.
   An unstyled widget class falls back to the platform *light* style.
+- **QSS beats an item delegate, and does it last.** With a stylesheet active,
+  `QStyleSheetStyle` draws `CE_ItemViewItem` and feeds the `::item` rule's own
+  `color` to `QRenderRule::configurePalette()` as `QPalette::HighlightedText` —
+  *after* `initStyleOption()` has run. So `color:` on `QTableView::item:selected`
+  silently undid `KeepForegroundDelegate` and turned every selected fleet row
+  white. Selection styling in `theme.qss` is background-only, deliberately.
+  `lm_ui_render_tests` pins this: it is not reproducible in a non-painting test.
 - **DDS `TRANSIENT_LOCAL` durability lives on the DataWriter, not on disk.** A
   restarted server has written nothing, which is why `start()` re-announces the
   published bundle at its existing revision (never bumping it).

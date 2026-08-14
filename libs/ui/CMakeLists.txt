@@ -38,3 +38,19 @@ lm_add_test(lm_ui_tests
   # Qt5::Test brings in QSignalSpy, used throughout these tests; it is not
   # part of lm_ui's own public interface (Widgets/Svg only).
   LINK lm_ui Qt5::Test)
+
+# A separate binary rather than more cases in lm_ui_tests: these paint real
+# widgets, so they need a QApplication and a platform plugin, whereas every
+# other lm_ui test runs under a QCoreApplication and needs neither.
+lm_add_test(lm_ui_render_tests
+  NO_GTEST_MAIN
+  SOURCES tests/render_main.cpp tests/test_selection_colours.cpp
+  LINK lm_ui)
+# offscreen would keep this headless, but vcpkg's applocal deployment copies
+# only the plugins it can see the binary needs -- which is qwindows alone, so
+# forcing offscreen on Windows leaves the test with no platform plugin at all
+# and it aborts before reaching main(). The windows plugin paints through the
+# same raster engine, so the pixels under test are identical either way.
+if(NOT WIN32)
+  set_tests_properties(lm_ui_render_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
