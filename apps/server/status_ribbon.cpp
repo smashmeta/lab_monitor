@@ -23,12 +23,16 @@ StatusCounterButton::StatusCounterButton(QString title, QWidget* parent)
 
     QFont value_font = value_label_->font();
     value_font.setBold(true);
-    value_font.setPointSize(value_font.pointSize() + 6);
+    // +6pt stacked over a title made the ribbon tall enough to cost several
+    // rows of the host list, which is the scarcer resource here.
+    value_font.setPointSize(value_font.pointSize() + 3);
     value_label_->setFont(value_font);
     value_label_->setAlignment(Qt::AlignCenter);
     title_label_->setAlignment(Qt::AlignCenter);
 
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(10, 4, 10, 4);
+    layout->setSpacing(0);
     layout->addWidget(value_label_);
     layout->addWidget(title_label_);
 
@@ -101,6 +105,8 @@ StatusRibbon::StatusRibbon(QWidget* parent)
       unexpected_(new StatusCounterButton(QStringLiteral("Unexpected"), this)),
       stale_(new StatusCounterButton(QStringLiteral("Stale"), this)) {
     auto* layout = new QHBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
     layout->addWidget(online_);
     layout->addWidget(offline_);
     layout->addWidget(missing_);

@@ -7,6 +7,8 @@
 #include <QDateTime>
 #include <QString>
 
+#include "lm/ui/theme.hpp"
+
 namespace lm::ui {
 namespace {
 
@@ -62,6 +64,12 @@ QVariant FleetModel::data(const QModelIndex& index, int role) const {
             return row.entry.stale;
         default:
             break;
+    }
+
+    // Colour the whole row by health, so an operator scanning the list sees
+    // which machines need attention without reading a single word.
+    if (role == Qt::ForegroundRole) {
+        return colour_for(health_of(index.row()));
     }
 
     if (role != Qt::DisplayRole && role != Qt::ToolTipRole) {
@@ -174,6 +182,61 @@ void FleetModel::apply(const core::FleetView& view) {
             // rows_ shifted left; old_index now already points at the next old row.
         }
     }
+}
+
+FleetModel::RowHealth FleetModel::health_of(int row) const {
+    if (row < 0 || row >= static_cast<int>(rows_.size())) {
+        return RowHealth::Unknown;
+    }
+    const Row& r = rows_[static_cast<std::size_t>(row)];
+
+    // Liveness first: a machine that is not there cannot usefully be described
+    // by the last rules it happened to fail.
+    switch (r.entry.state) {
+        case core::HostState::Unexpected: return RowHealth::Unexpected;
+        case core::HostState::Missing:    return RowHealth::Missing;
+        case core::HostState::Offline:    return RowHealth::Offline;
+        case core::HostState::Online:     break;
+    }
+
+    if (!r.compliant) {
+        return RowHealth::Unknown;
+    }
+    return *r.compliant ? RowHealth::Compliant : RowHealth::Failing;
+}
+
+QColor FleetModel::colour_for(RowHealth health) {
+    switch (health) {
+        case RowHealth::Unexpected: return QColor(Theme::kUnexpected);
+        case RowHealth::Missing:    return QColor(Theme::kMissing);
+        case RowHealth::Offline:    return QColor(Theme::kNotApplicable);
+        case RowHealth::Failing:    return QColor(Theme::kOffline);
+        case RowHealth::Compliant:  return QColor(Theme::kOnline);
+        case RowHealth::Unknown:    return QColor(Theme::kTextMuted);
+    }
+    return QColor(Theme::kText);
+}
+
+void FleetModel::apply_compliance(const core::ComplianceReport& report) {
+    const int row = index_of(report.host_id);
+    if (row < 0) {
+        return;  // a report for a host this view does not list
+    }
+
+    // Matches core::is_compliant: only Fail counts against a host. A Linux box
+    // cannot fail a registry rule, and a transient probe error is not a
+    // violation -- neither should paint the row yellow.
+    const bool compliant = core::is_compliant(report);
+
+    Row& r = rows_[static_cast<std::size_t>(row)];
+    if (r.compliant && *r.compliant == compliant) {
+        return;  // nothing visible changed
+    }
+    r.compliant = compliant;
+
+    // Health colours every column, so the whole row has to repaint -- but only
+    // this row, and only when the verdict actually moved.
+    emit dataChanged(index(row, 0), index(row, ColumnCount - 1), {Qt::ForegroundRole});
 }
 
 void FleetModel::apply_sample(const transport::ResourceSampleMessage& sample) {

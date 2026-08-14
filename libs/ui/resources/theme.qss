@@ -98,7 +98,7 @@ QHeaderView {
 QHeaderView::section {
     background-color: #292a2d;
     color: #9aa0a6;
-    padding: 6px 8px;
+    padding: 3px 8px;
     border: none;
     border-right: 1px solid #3c4043;
     border-bottom: 1px solid #3c4043;
@@ -128,8 +128,11 @@ QTableView, QTreeView, QListView {
     outline: none;
 }
 
+/* Vertical padding stays at 0 so the view's own row height governs: the fleet
+   table is sized for ~35 visible hosts and per-item padding would silently
+   defeat that. Horizontal padding is unaffected. */
 QTableView::item, QTreeView::item, QListView::item {
-    padding: 4px 6px;
+    padding: 0px 6px;
     border: none;
 }
 

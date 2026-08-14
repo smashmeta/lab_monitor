@@ -190,6 +190,9 @@ void ServerController::on_report(const lm::transport::ComplianceReportMessage& r
 
     const QString host_id = QString::fromStdString(report.report.host_id);
     report_cache_.insert(host_id, report.report);
+    // The fleet row is coloured by compliance as well as liveness, and
+    // core::FleetEntry carries only the latter.
+    model_.apply_compliance(report.report);
     emit compliance_report_received(host_id, report.report);
 }
 

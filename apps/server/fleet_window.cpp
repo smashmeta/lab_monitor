@@ -180,6 +180,10 @@ void FleetWindow::build_fleet_tab() {
     auto* page = new QWidget();
     auto* layout = new QVBoxLayout(page);
 
+    // Trim the chrome above the table: every pixel here is a row lost.
+    layout->setContentsMargins(6, 6, 6, 6);
+    layout->setSpacing(4);
+
     ribbon_ = new StatusRibbon(page);
     layout->addWidget(ribbon_);
 
@@ -211,6 +215,18 @@ void FleetWindow::build_fleet_tab() {
     host_view_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     host_view_->verticalHeader()->setVisible(false);
     host_view_->setContextMenuPolicy(Qt::CustomContextMenu);
+
+    // Density target: ~35 hosts visible without scrolling in a maximised window
+    // at 1920x1080. After the title bar, tab bar, ribbon, filter row and column
+    // header, roughly 800px of body is left, so rows must stay near 22px.
+    // Fixed rather than ResizeToContents so one long hostname cannot silently
+    // inflate every row and cost a third of the list.
+    host_view_->verticalHeader()->setDefaultSectionSize(22);
+    host_view_->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    host_view_->setShowGrid(false);
+    host_view_->setAlternatingRowColors(true);
+    host_view_->setWordWrap(false);
+    host_view_->horizontalHeader()->setFixedHeight(24);
     main_splitter_->addWidget(host_view_);
 
     auto* detail_panel = new QWidget(main_splitter_);

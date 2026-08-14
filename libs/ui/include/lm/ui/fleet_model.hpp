@@ -1,9 +1,13 @@
 #pragma once
 
 #include <QAbstractTableModel>
+#include <QColor>
 #include <QVector>
+
+#include <optional>
 #include <vector>
 
+#include "lm/core/compliance.hpp"
 #include "lm/core/fleet.hpp"
 #include "lm/transport/messages.hpp"
 
@@ -25,6 +29,19 @@ public:
         RevisionColumn,
         LastSeenColumn,
         ColumnCount
+    };
+
+    /// How a row should read at a glance. Blends liveness with compliance,
+    /// because "is it there?" and "is it correct?" are both things an operator
+    /// scans for, and a machine that is not there cannot usefully be described
+    /// by the last rules it happened to fail -- so state wins over compliance.
+    enum class RowHealth {
+        Unexpected,  ///< reporting but not in the expected list
+        Missing,     ///< expected, never seen
+        Offline,     ///< expected, seen before, now silent
+        Failing,     ///< online, at least one rule failing
+        Compliant,   ///< online, no rule failing
+        Unknown,     ///< online, no compliance report yet
     };
 
     enum Role {
@@ -49,11 +66,26 @@ public:
     /// Updates only the CPU, memory and disk columns for one host.
     void apply_sample(const transport::ResourceSampleMessage& sample);
 
+    /// Records a host's latest compliance result so its row can be coloured.
+    /// core::FleetEntry carries liveness but not compliance, and reports arrive
+    /// on their own topic, so the two are merged here rather than in reconcile().
+    /// A report for an unknown host is ignored.
+    void apply_compliance(const core::ComplianceReport& report);
+
+    [[nodiscard]] RowHealth health_of(int row) const;
+
+    /// The colour a row of this health paints in. Static so the legend can use
+    /// the same mapping the rows do, rather than duplicating it.
+    [[nodiscard]] static QColor colour_for(RowHealth health);
+
 private:
     struct Row {
         core::FleetEntry entry;
         core::ResourceSample resources;
         bool has_resources = false;
+        /// Tri-state rather than bool: "no report yet" must not read as
+        /// compliant, or an unchecked machine shows a green light.
+        std::optional<bool> compliant;
     };
 
     [[nodiscard]] int index_of(const core::HostId& host_id) const;
