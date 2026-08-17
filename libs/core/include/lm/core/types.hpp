@@ -22,6 +22,25 @@ enum class ServiceState { Running, Stopped, Unknown };
 /// name", Unknown means "the platform did not say".
 enum class AdapterType { Unknown, Ethernet, WiFi, Loopback, Ppp, Tunnel, Modem, Other };
 
+/// What an adapter's link is actually doing. A boolean cannot say the useful
+/// part: an Ethernet port with nothing plugged into it, a card the operator
+/// switched off, and a dial-up entry sitting idle are three different
+/// situations needing three different responses, and all three are "not
+/// connected". Windows draws the middle one with a red cross for that reason.
+enum class LinkState {
+    Unknown,       ///< the platform did not say
+    Connected,     ///< up and carrying traffic
+    NoMedia,       ///< enabled, but nothing plugged in — the red cross
+    Disconnected,  ///< defined and idle; a dial-up entry that is not dialled
+    Connecting,    ///< negotiating, authenticating, or on the way down
+    Disabled,      ///< switched off, by the operator or by policy
+    Faulted,       ///< absent, malfunctioning, or refusing to authenticate
+};
+
+/// True only for LinkState::Connected. Named rather than compared inline so
+/// "how many are up" has one definition.
+[[nodiscard]] constexpr bool is_up(LinkState state) { return state == LinkState::Connected; }
+
 enum class Capability : std::uint32_t {
     Resources = 1u << 0,
     Processes = 1u << 1,
@@ -61,6 +80,7 @@ private:
 [[nodiscard]] std::string to_string(Capability capability);
 
 [[nodiscard]] std::string to_string(AdapterType type);
+[[nodiscard]] std::string to_string(LinkState state);
 
 /// The capabilities of the platform this binary was compiled for.
 [[nodiscard]] Capabilities platform_capabilities();

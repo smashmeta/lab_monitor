@@ -44,9 +44,9 @@ struct NetworkAdapter {
     std::string id;
     AdapterType type = AdapterType::Unknown;
     /// Link state, not configuration: an adapter with a cable in it but no
-    /// address is connected. A dial-up or VPN entry that exists but is not
-    /// dialled is not.
-    bool connected = false;
+    /// address is Connected. One that is enabled with nothing plugged in is
+    /// NoMedia, which is a different problem from being switched off.
+    LinkState link = LinkState::Unknown;
     friend bool operator==(const NetworkAdapter&, const NetworkAdapter&) = default;
 };
 

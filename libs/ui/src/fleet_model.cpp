@@ -47,9 +47,9 @@ QString adapter_tooltip(const std::vector<core::NetworkAdapter>& adapters) {
     QStringList lines;
     lines.reserve(static_cast<int>(adapters.size()));
     for (const core::NetworkAdapter& adapter : adapters) {
-        lines << QStringLiteral("%1  %2  (%3)")
-                      .arg(adapter.connected ? QStringLiteral("up  ") : QStringLiteral("down"),
-                            QString::fromStdString(adapter.description),
+        lines << QStringLiteral("%1  —  %2  (%3)")
+                      .arg(QString::fromStdString(core::to_string(adapter.link)),
+                            QString::fromStdString(adapter.name),
                             QString::fromStdString(core::to_string(adapter.type)));
     }
     return lines.join(QChar(u'\n'));
@@ -135,7 +135,8 @@ QVariant FleetModel::data(const QModelIndex& index, int role) const {
                 return adapter_tooltip(row.resources.adapters);
             }
             const auto connected = std::ranges::count_if(
-                row.resources.adapters, &core::NetworkAdapter::connected);
+                row.resources.adapters,
+                [](const core::NetworkAdapter& adapter) { return core::is_up(adapter.link); });
             // Connected over total, because "6 adapters" alone says nothing
             // about whether the machine is actually on the network.
             return QStringLiteral("%1 / %2").arg(connected).arg(row.resources.adapters.size());

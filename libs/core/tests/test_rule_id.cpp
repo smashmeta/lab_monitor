@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "lm/core/template_bundle.hpp"
 
@@ -51,6 +53,29 @@ void add_rule(TemplateBundle& bundle, const std::string& template_name, RuleId i
 }
 
 }  // namespace
+
+TEST(LinkStateNames, NamesEveryStateDistinctly) {
+    // Each of these is a different thing to do about it, so each needs its own
+    // word -- "No link" in particular must not read as "Disconnected".
+    const std::vector<LinkState> states{LinkState::Unknown,      LinkState::Connected,
+                                        LinkState::NoMedia,      LinkState::Disconnected,
+                                        LinkState::Connecting,   LinkState::Disabled,
+                                        LinkState::Faulted};
+    std::set<std::string> names;
+    for (const LinkState state : states) {
+        const std::string name = to_string(state);
+        EXPECT_FALSE(name.empty());
+        EXPECT_TRUE(names.insert(name).second) << name << " is used for two different states";
+    }
+}
+
+TEST(LinkStateNames, OnlyConnectedCountsAsUp) {
+    EXPECT_TRUE(is_up(LinkState::Connected));
+    for (const LinkState state : {LinkState::Unknown, LinkState::NoMedia, LinkState::Disconnected,
+                                  LinkState::Connecting, LinkState::Disabled, LinkState::Faulted}) {
+        EXPECT_FALSE(is_up(state)) << to_string(state);
+    }
+}
 
 TEST(BaselineName, MatchesTheReservedNameWhateverItsCase) {
     EXPECT_TRUE(is_baseline_name("Baseline"));

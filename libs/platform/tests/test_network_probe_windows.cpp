@@ -84,7 +84,7 @@ TEST(WindowsNetworkProbe, ReportsRasEntriesAsModemsWhicheverWayTheyAreDialled) {
     for (const NetworkAdapter& adapter : adapters) {
         if (adapter.description.rfind("RAS entry ", 0) == 0) {
             EXPECT_EQ(adapter.type, AdapterType::Modem);
-            EXPECT_FALSE(adapter.connected)
+            EXPECT_NE(adapter.link, LinkState::Connected)
                 << "a dialled entry should have come from the interface list instead";
         }
     }

@@ -104,7 +104,7 @@ TEST(HostProbes, AlwaysEnumeratesAdaptersWithTheCapability) {
     // rules: no rule references them, and their link state is wanted on every
     // tick regardless of what the host has been assigned.
     Harness harness;
-    harness.network->next = {NetworkAdapter{"eth0", "Onboard NIC", "{eth0-guid}", AdapterType::Ethernet, true}};
+    harness.network->next = {NetworkAdapter{"eth0", "Onboard NIC", "{eth0-guid}", AdapterType::Ethernet, LinkState::Connected}};
 
     const ResourceSample sample = harness.probes->sample_resources();
 
@@ -115,7 +115,7 @@ TEST(HostProbes, AlwaysEnumeratesAdaptersWithTheCapability) {
 
 TEST(HostProbes, ReportsNoAdaptersWithoutTheNetworkCapability) {
     Harness harness(Capabilities{}.add(Capability::Resources));
-    harness.network->next = {NetworkAdapter{"eth0", "Onboard NIC", "{eth0-guid}", AdapterType::Ethernet, true}};
+    harness.network->next = {NetworkAdapter{"eth0", "Onboard NIC", "{eth0-guid}", AdapterType::Ethernet, LinkState::Connected}};
 
     const ResourceSample sample = harness.probes->sample_resources();
 

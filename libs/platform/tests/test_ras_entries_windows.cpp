@@ -91,7 +91,7 @@ TEST(RasEntries, ReportsADialUpEntryThatIsNotDialled) {
     const NetworkAdapter* entry = find_named(adapters, "Lab Dialup");
     ASSERT_NE(entry, nullptr) << "the disconnected entry was not reported";
     EXPECT_EQ(entry->type, AdapterType::Modem);
-    EXPECT_FALSE(entry->connected);
+    EXPECT_EQ(entry->link, LinkState::Disconnected);
     EXPECT_EQ(entry->description, "RAS entry Lab Dialup");
 }
 
@@ -113,7 +113,7 @@ TEST(RasEntries, TypesAVpnEntryAsATunnelRatherThanAModem) {
     const NetworkAdapter* entry = find_named(adapters, "Site VPN");
     ASSERT_NE(entry, nullptr);
     EXPECT_EQ(entry->type, AdapterType::Tunnel);
-    EXPECT_FALSE(entry->connected);
+    EXPECT_EQ(entry->link, LinkState::Disconnected);
 }
 
 TEST(RasEntries, ReportsEveryEntryInThePhonebook) {

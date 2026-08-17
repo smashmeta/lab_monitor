@@ -208,9 +208,9 @@ TEST(FleetModel, CountsConnectedAdaptersAgainstTheTotal) {
     lm::transport::ResourceSampleMessage message;
     message.host_id = "PC-001";
     message.sample.adapters = {
-        NetworkAdapter{"eth0", "Onboard NIC", "{eth0-guid}", AdapterType::Ethernet, true},
-        NetworkAdapter{"wlan0", "Wireless", "{wlan0-guid}", AdapterType::WiFi, false},
-        NetworkAdapter{"Site VPN", "RAS entry Site VPN", "{Site VPN-guid}", AdapterType::Tunnel, false},
+        NetworkAdapter{"eth0", "Onboard NIC", "{eth0-guid}", AdapterType::Ethernet, LinkState::Connected},
+        NetworkAdapter{"wlan0", "Wireless", "{wlan0-guid}", AdapterType::WiFi, LinkState::Disconnected},
+        NetworkAdapter{"Site VPN", "RAS entry Site VPN", "{Site VPN-guid}", AdapterType::Tunnel, LinkState::Disconnected},
     };
     model.apply_sample(message);
 
@@ -250,16 +250,45 @@ TEST(FleetModel, ListsEveryAdapterInTheTooltip) {
     lm::transport::ResourceSampleMessage message;
     message.host_id = "PC-001";
     message.sample.adapters = {
-        NetworkAdapter{"eth0", "Onboard NIC", "{eth0-guid}", AdapterType::Ethernet, true},
-        NetworkAdapter{"Lab Dialup", "RAS entry Lab Dialup", "{Lab Dialup-guid}", AdapterType::Modem, false},
+        NetworkAdapter{"smash-lan", "Onboard NIC", "{eth0-guid}", AdapterType::Ethernet,
+                        LinkState::NoMedia},
+        NetworkAdapter{"Lab Dialup", "RAS entry Lab Dialup", "{dialup-guid}", AdapterType::Modem,
+                        LinkState::Disconnected},
     };
     model.apply_sample(message);
 
     const QString tooltip =
         model.data(model.index(0, FleetModel::AdaptersColumn), Qt::ToolTipRole).toString();
-    EXPECT_TRUE(tooltip.contains(QStringLiteral("Onboard NIC")));
-    EXPECT_TRUE(tooltip.contains(QStringLiteral("RAS entry Lab Dialup")));
+    // Names, not descriptions: the tooltip is read the way the fleet list is,
+    // and "smash-lan" is what the machine's own UI calls it.
+    EXPECT_TRUE(tooltip.contains(QStringLiteral("smash-lan"))) << tooltip.toStdString();
+    EXPECT_TRUE(tooltip.contains(QStringLiteral("Lab Dialup")));
     EXPECT_TRUE(tooltip.contains(QStringLiteral("Modem")));
+    // The distinction the boolean could not make: an unplugged cable is not
+    // the same as a dial-up entry sitting idle.
+    EXPECT_TRUE(tooltip.contains(QStringLiteral("No link")));
+    EXPECT_TRUE(tooltip.contains(QStringLiteral("Disconnected")));
+}
+
+TEST(FleetModel, CountsOnlyFullyConnectedAdaptersAsUp) {
+    // An adapter that is enabled with nothing plugged in, one that is
+    // negotiating, and one that is switched off are all "not up" for the
+    // column's purposes, however different they are to look at.
+    FleetModel model;
+    model.apply(view_with_network_capable_host());
+
+    lm::transport::ResourceSampleMessage message;
+    message.host_id = "PC-001";
+    message.sample.adapters = {
+        NetworkAdapter{"a", "", "{a}", AdapterType::Ethernet, LinkState::Connected},
+        NetworkAdapter{"b", "", "{b}", AdapterType::Ethernet, LinkState::NoMedia},
+        NetworkAdapter{"c", "", "{c}", AdapterType::WiFi, LinkState::Connecting},
+        NetworkAdapter{"d", "", "{d}", AdapterType::Ethernet, LinkState::Disabled},
+        NetworkAdapter{"e", "", "{e}", AdapterType::Ethernet, LinkState::Faulted},
+    };
+    model.apply_sample(message);
+
+    EXPECT_EQ(display_at(model, 0, FleetModel::AdaptersColumn).toStdString(), "1 / 5");
 }
 
 TEST(FleetModel, StartsEmpty) {

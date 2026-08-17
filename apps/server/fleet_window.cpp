@@ -51,7 +51,7 @@ namespace {
 /// Template list rows are identified by these, never by their label: the
 /// baseline row's label carries an explanatory suffix, and a template
 /// genuinely *named* "Baseline" must stay distinguishable from the bundle's
-/// own baseline Ã¢â‚¬â€ otherwise it is neither selectable nor removable.
+/// own baseline — otherwise it is neither selectable nor removable.
 constexpr int kTemplateNameRole = Qt::UserRole;
 constexpr int kIsBaselineRole = Qt::UserRole + 1;
 
@@ -757,7 +757,7 @@ void FleetWindow::rebuild_template_list() {
     // applied to every host, it cannot be assigned and it cannot be removed.
     // Saying so in the row beats letting the operator discover it by clicking
     // Remove and watching nothing happen.
-    auto* baseline_item = new QListWidgetItem(QStringLiteral("Baseline Ã¢â‚¬â€ always applied"));
+    auto* baseline_item = new QListWidgetItem(QStringLiteral("Baseline — always applied"));
     baseline_item->setData(kTemplateNameRole, QString::fromUtf8(lm::core::kBaselineName.data(),
                                                                  static_cast<int>(lm::core::kBaselineName.size())));
     baseline_item->setData(kIsBaselineRole, true);

@@ -61,27 +61,44 @@ TEST(Codec, ResourceSampleRoundTripsNetworkAdapters) {
     original.sample.adapters = {
         // name is the renameable one from Network Connections; id is the GUID.
         NetworkAdapter{"smash-lan", "Intel(R) Ethernet I219-LM", "{4A2B-0000}",
-                        AdapterType::Ethernet, true},
+                        AdapterType::Ethernet, LinkState::Connected},
+        // Enabled with nothing plugged in — the state Windows draws a cross on,
+        // and the one a bool could not distinguish from "switched off".
         NetworkAdapter{"smash-wifi", "Intel(R) Wi-Fi 6 AX201", "{9F31-0000}", AdapterType::WiFi,
-                        false},
+                        LinkState::NoMedia},
         // The case this feature exists for: a dial-up entry that is defined but
         // not dialled, which no adapter enumeration would report at all.
         NetworkAdapter{"Lab Dialup", "RAS entry Lab Dialup", "RAS entry Lab Dialup",
-                        AdapterType::Modem, false},
+                        AdapterType::Modem, LinkState::Disconnected},
     };
 
     const ResourceSampleMessage decoded = round_trip(original);
     EXPECT_EQ(decoded, original);
     ASSERT_EQ(decoded.sample.adapters.size(), 3u);
-    EXPECT_EQ(decoded.sample.adapters[2].type, AdapterType::Modem);
-    EXPECT_FALSE(decoded.sample.adapters[2].connected);
+    EXPECT_EQ(decoded.sample.adapters[1].link, LinkState::NoMedia);
+    EXPECT_EQ(decoded.sample.adapters[2].link, LinkState::Disconnected);
+}
+
+TEST(Codec, ResourceSampleRejectsALinkStateItDoesNotKnow) {
+    ResourceSampleMessage original;
+    original.host_id = "PC-001";
+    original.sample.adapters = {
+        NetworkAdapter{"eth0", "NIC", "{eth0-guid}", AdapterType::Ethernet, LinkState::Connected}};
+    std::vector<std::uint8_t> bytes = encode(original);
+
+    // The link byte is the last one written for an adapter.
+    ASSERT_FALSE(bytes.empty());
+    bytes.back() = 200;
+
+    ResourceSampleMessage decoded;
+    EXPECT_FALSE(decode(bytes, decoded));
 }
 
 TEST(Codec, ResourceSampleRoundTripsDisksAndAdaptersTogether) {
     ResourceSampleMessage original;
     original.host_id = "PC-002";
     original.sample.disks = {DiskUsage{"C:\\", 1000, 250}};
-    original.sample.adapters = {NetworkAdapter{"lo", "Loopback", "{lo-guid}", AdapterType::Loopback, true}};
+    original.sample.adapters = {NetworkAdapter{"lo", "Loopback", "{lo-guid}", AdapterType::Loopback, LinkState::Connected}};
 
     EXPECT_EQ(round_trip(original), original);
 }
@@ -91,7 +108,7 @@ TEST(Codec, ResourceSampleRejectsAnAdapterTypeItDoesNotKnow) {
     // CheckStatus is in a compliance report.
     ResourceSampleMessage original;
     original.host_id = "PC-001";
-    original.sample.adapters = {NetworkAdapter{"eth0", "NIC", "{eth0-guid}", AdapterType::Ethernet, true}};
+    original.sample.adapters = {NetworkAdapter{"eth0", "NIC", "{eth0-guid}", AdapterType::Ethernet, LinkState::Connected}};
     std::vector<std::uint8_t> bytes = encode(original);
 
     // The type byte is the only 0..7 value near the tail; find and corrupt it
@@ -107,8 +124,8 @@ TEST(Codec, ResourceSampleRejectsATruncatedAdapterList) {
     ResourceSampleMessage original;
     original.host_id = "PC-001";
     original.sample.adapters = {
-        NetworkAdapter{"eth0", "Onboard NIC", "{eth0-guid}", AdapterType::Ethernet, true},
-        NetworkAdapter{"wlan0", "Wireless", "{wlan0-guid}", AdapterType::WiFi, true},
+        NetworkAdapter{"eth0", "Onboard NIC", "{eth0-guid}", AdapterType::Ethernet, LinkState::Connected},
+        NetworkAdapter{"wlan0", "Wireless", "{wlan0-guid}", AdapterType::WiFi, LinkState::Connected},
     };
     std::vector<std::uint8_t> bytes = encode(original);
     bytes.resize(bytes.size() - 6);

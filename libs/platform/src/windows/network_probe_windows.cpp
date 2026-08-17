@@ -62,6 +62,21 @@ core::AdapterType map_if_type(IFTYPE if_type) {
     }
 }
 
+/// The fallback path's coarser view. IF_OPER_STATUS cannot tell an unplugged
+/// cable from a disabled adapter -- both are simply Down -- so this reports the
+/// weaker Disconnected rather than claiming a distinction it does not have.
+core::LinkState map_oper_status(IF_OPER_STATUS status) {
+    switch (status) {
+        case IfOperStatusUp:             return core::LinkState::Connected;
+        case IfOperStatusDown:           return core::LinkState::Disconnected;
+        case IfOperStatusLowerLayerDown: return core::LinkState::NoMedia;
+        case IfOperStatusTesting:
+        case IfOperStatusDormant:        return core::LinkState::Connecting;
+        case IfOperStatusNotPresent:     return core::LinkState::Faulted;
+        default:                         return core::LinkState::Unknown;
+    }
+}
+
 /// GetAdaptersAddresses wants a buffer it can size itself; 16 KB covers a
 /// typical machine and the loop grows it when it does not.
 std::vector<core::NetworkAdapter> enumerate_interfaces() {
@@ -79,8 +94,8 @@ std::vector<core::NetworkAdapter> enumerate_interfaces() {
             //
             // Deliberately NOT GAA_FLAG_INCLUDE_ALL_INTERFACES. That returns
             // every NDIS interface, which means one extra entry per *filter
-            // driver bound to each card* -- "â€¦-QoS Packet Scheduler-0000",
-            // "â€¦-WFP Native MAC Layer LightWeight Filter-0000", one per Npcap
+            // driver bound to each card* -- "…-QoS Packet Scheduler-0000",
+            // "…-WFP Native MAC Layer LightWeight Filter-0000", one per Npcap
             // binding. On a developer machine that turned 12 adapters into 40,
             // none of the extras being a thing anyone would call an adapter.
             GAA_FLAG_SKIP_UNICAST | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
@@ -104,7 +119,7 @@ std::vector<core::NetworkAdapter> enumerate_interfaces() {
             entry.name = entry.description;
         }
         entry.type = map_if_type(adapter->IfType);
-        entry.connected = adapter->OperStatus == IfOperStatusUp;
+        entry.link = map_oper_status(adapter->OperStatus);
         adapters.push_back(std::move(entry));
     }
     return adapters;
@@ -182,7 +197,9 @@ std::vector<core::NetworkAdapter> enumerate_ras_entries(const wchar_t* phonebook
         entry.description = "RAS entry " + entry.name;
         entry.id = entry.description;  // a phonebook entry has no GUID
         entry.type = ras_entry_type(phonebook, entry_name.c_str());
-        entry.connected = std::ranges::find(connected, entry_name) != connected.end();
+        entry.link = std::ranges::find(connected, entry_name) != connected.end()
+                          ? core::LinkState::Connected
+                          : core::LinkState::Disconnected;
         adapters.push_back(std::move(entry));
     }
     return adapters;
@@ -218,6 +235,37 @@ void free_properties(NETCON_PROPERTIES* properties) {
     CoTaskMemFree(properties->pszwName);
     CoTaskMemFree(properties->pszwDeviceName);
     CoTaskMemFree(properties);
+}
+
+/// NETCON_STATUS is the richest link state Windows offers, and the one the
+/// Network Connections folder draws its icons from -- the red cross on an
+/// enabled adapter with nothing plugged in is NCS_MEDIA_DISCONNECTED.
+core::LinkState map_netcon_status(NETCON_STATUS status) {
+    switch (status) {
+        case NCS_CONNECTED:
+            return core::LinkState::Connected;
+        case NCS_MEDIA_DISCONNECTED:
+            return core::LinkState::NoMedia;
+        case NCS_DISCONNECTED:
+            return core::LinkState::Disconnected;
+        case NCS_CONNECTING:
+        case NCS_DISCONNECTING:
+        case NCS_AUTHENTICATING:
+        case NCS_AUTHENTICATION_SUCCEEDED:
+            return core::LinkState::Connecting;
+        case NCS_HARDWARE_DISABLED:
+            return core::LinkState::Disabled;
+        case NCS_HARDWARE_NOT_PRESENT:
+        case NCS_HARDWARE_MALFUNCTION:
+        case NCS_AUTHENTICATION_FAILED:
+        case NCS_INVALID_ADDRESS:
+        case NCS_CREDENTIALS_REQUIRED:
+            // All "needs a human": the adapter is not going to come up on its
+            // own, whether the cause is hardware or a rejected credential.
+            return core::LinkState::Faulted;
+        default:
+            return core::LinkState::Unknown;
+    }
 }
 
 std::string guid_string(const GUID& guid) {
@@ -281,10 +329,7 @@ std::optional<std::vector<core::NetworkAdapter>> enumerate_network_connections()
             entry.description = narrow(properties->pszwDeviceName);
             entry.id = guid_string(properties->guidId);
             entry.type = map_media_type(properties->MediaType);
-            // Only fully connected counts as up. Connecting, authenticating and
-            // every hardware-fault state are all "not currently carrying
-            // traffic", which is what the column means.
-            entry.connected = properties->Status == NCS_CONNECTED;
+            entry.link = map_netcon_status(properties->Status);
             adapters.push_back(std::move(entry));
             free_properties(properties);
         }

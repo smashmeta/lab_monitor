@@ -27,6 +27,19 @@ std::string to_string(AdapterType type) {
     return "Unknown";
 }
 
+std::string to_string(LinkState state) {
+    switch (state) {
+        case LinkState::Unknown:      return "Unknown";
+        case LinkState::Connected:    return "Up";
+        case LinkState::NoMedia:      return "No link";
+        case LinkState::Disconnected: return "Disconnected";
+        case LinkState::Connecting:   return "Connecting";
+        case LinkState::Disabled:     return "Disabled";
+        case LinkState::Faulted:      return "Faulted";
+    }
+    return "Unknown";
+}
+
 Capabilities platform_capabilities() {
     Capabilities caps;
     caps.add(Capability::Resources).add(Capability::Processes).add(Capability::Services);
