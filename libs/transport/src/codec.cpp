@@ -66,13 +66,13 @@ void read_disk(Cdr& reader, core::DiskUsage& disk) {
 }
 
 void write_adapter(Cdr& writer, const core::NetworkAdapter& adapter) {
-    writer << adapter.name << adapter.description << static_cast<std::uint8_t>(adapter.type)
-           << adapter.connected;
+    writer << adapter.name << adapter.description << adapter.id
+           << static_cast<std::uint8_t>(adapter.type) << adapter.connected;
 }
 
 bool read_adapter(Cdr& reader, core::NetworkAdapter& adapter) {
     std::uint8_t type = 0;
-    reader >> adapter.name >> adapter.description >> type >> adapter.connected;
+    reader >> adapter.name >> adapter.description >> adapter.id >> type >> adapter.connected;
     // Same rule as read_result's status: an enum from the wire is an integer
     // until it has been checked to be one of ours.
     if (type > static_cast<std::uint8_t>(core::AdapterType::Other)) {

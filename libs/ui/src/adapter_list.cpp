@@ -56,11 +56,12 @@ void AdapterList::set_adapters(const std::vector<core::NetworkAdapter>& adapters
         row->setText(3, adapter.connected ? tr("✓ Up") : tr("✕ Down"));
 
         const QColor colour(adapter.connected ? Theme::kOnline : Theme::kTextMuted);
-        const QString tooltip = tr("%1\n%2\nType:\t%3\nLink:\t%4")
-                                    .arg(QString::fromStdString(adapter.description),
-                                          QString::fromStdString(adapter.name),
+        const QString tooltip = tr("%1\n%2\n\nType:\t%3\nLink:\t%4\nId:\t%5")
+                                    .arg(QString::fromStdString(adapter.name),
+                                          QString::fromStdString(adapter.description),
                                           QString::fromStdString(core::to_string(adapter.type)),
-                                          adapter.connected ? tr("connected") : tr("not connected"));
+                                          adapter.connected ? tr("connected") : tr("not connected"),
+                                          QString::fromStdString(adapter.id));
         for (int column = 0; column < columnCount(); ++column) {
             row->setForeground(column, colour);
             row->setToolTip(column, tooltip);
@@ -68,9 +69,7 @@ void AdapterList::set_adapters(const std::vector<core::NetworkAdapter>& adapters
     }
 
     resizeColumnToContents(0);
-    // Capped: on Windows the name is a GUID, and sizing to it swallows the
-    // width the description needs -- and the description is the part anyone
-    // actually reads. The full name stays available as a tooltip.
+    // Capped so one long name cannot swallow the description's width.
     constexpr int kMaxNameWidth = 190;
     setColumnWidth(0, std::min(columnWidth(0), kMaxNameWidth));
     resizeColumnToContents(2);

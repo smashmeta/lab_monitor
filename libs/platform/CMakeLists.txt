@@ -19,9 +19,11 @@ target_include_directories(lm_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/includ
 target_link_libraries(lm_platform PUBLIC lm_core PRIVATE lm_warnings)
 
 if(WIN32)
-  # iphlpapi for GetAdaptersAddresses; rasapi32 for the dial-up/VPN phonebook,
-  # which is the only place a *disconnected* RAS entry exists at all.
-  target_link_libraries(lm_platform PRIVATE iphlpapi rasapi32)
+  # ole32 for INetConnectionManager, which is the API behind the Network
+  # Connections folder and so decides which adapters are listed at all;
+  # iphlpapi for the interface types it cannot distinguish; rasapi32 for the
+  # phonebook, the only place a disconnected RAS entry exists in the fallback.
+  target_link_libraries(lm_platform PRIVATE iphlpapi rasapi32 ole32)
 endif()
 
 set(lm_platform_test_sources

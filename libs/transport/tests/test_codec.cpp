@@ -59,11 +59,15 @@ TEST(Codec, ResourceSampleRoundTripsNetworkAdapters) {
     ResourceSampleMessage original;
     original.host_id = "PC-001";
     original.sample.adapters = {
-        NetworkAdapter{"{4A2B-...}", "Intel(R) Ethernet I219-LM", AdapterType::Ethernet, true},
-        NetworkAdapter{"{9F31-...}", "Intel(R) Wi-Fi 6 AX201", AdapterType::WiFi, false},
+        // name is the renameable one from Network Connections; id is the GUID.
+        NetworkAdapter{"smash-lan", "Intel(R) Ethernet I219-LM", "{4A2B-0000}",
+                        AdapterType::Ethernet, true},
+        NetworkAdapter{"smash-wifi", "Intel(R) Wi-Fi 6 AX201", "{9F31-0000}", AdapterType::WiFi,
+                        false},
         // The case this feature exists for: a dial-up entry that is defined but
         // not dialled, which no adapter enumeration would report at all.
-        NetworkAdapter{"Site VPN", "RAS entry Site VPN", AdapterType::Modem, false},
+        NetworkAdapter{"Lab Dialup", "RAS entry Lab Dialup", "RAS entry Lab Dialup",
+                        AdapterType::Modem, false},
     };
 
     const ResourceSampleMessage decoded = round_trip(original);
@@ -77,7 +81,7 @@ TEST(Codec, ResourceSampleRoundTripsDisksAndAdaptersTogether) {
     ResourceSampleMessage original;
     original.host_id = "PC-002";
     original.sample.disks = {DiskUsage{"C:\\", 1000, 250}};
-    original.sample.adapters = {NetworkAdapter{"lo", "Loopback", AdapterType::Loopback, true}};
+    original.sample.adapters = {NetworkAdapter{"lo", "Loopback", "{lo-guid}", AdapterType::Loopback, true}};
 
     EXPECT_EQ(round_trip(original), original);
 }
@@ -87,7 +91,7 @@ TEST(Codec, ResourceSampleRejectsAnAdapterTypeItDoesNotKnow) {
     // CheckStatus is in a compliance report.
     ResourceSampleMessage original;
     original.host_id = "PC-001";
-    original.sample.adapters = {NetworkAdapter{"eth0", "NIC", AdapterType::Ethernet, true}};
+    original.sample.adapters = {NetworkAdapter{"eth0", "NIC", "{eth0-guid}", AdapterType::Ethernet, true}};
     std::vector<std::uint8_t> bytes = encode(original);
 
     // The type byte is the only 0..7 value near the tail; find and corrupt it
@@ -103,8 +107,8 @@ TEST(Codec, ResourceSampleRejectsATruncatedAdapterList) {
     ResourceSampleMessage original;
     original.host_id = "PC-001";
     original.sample.adapters = {
-        NetworkAdapter{"eth0", "Onboard NIC", AdapterType::Ethernet, true},
-        NetworkAdapter{"wlan0", "Wireless", AdapterType::WiFi, true},
+        NetworkAdapter{"eth0", "Onboard NIC", "{eth0-guid}", AdapterType::Ethernet, true},
+        NetworkAdapter{"wlan0", "Wireless", "{wlan0-guid}", AdapterType::WiFi, true},
     };
     std::vector<std::uint8_t> bytes = encode(original);
     bytes.resize(bytes.size() - 6);

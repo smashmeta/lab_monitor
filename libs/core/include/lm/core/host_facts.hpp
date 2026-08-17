@@ -32,12 +32,16 @@ struct DiskUsage {
 /// change constantly under DHCP, defeating the equality check that suppresses
 /// no-op updates.
 struct NetworkAdapter {
-    /// The system's own identifier — a GUID on Windows, "eth0" on Linux.
-    /// Stable across reboots and unique; the description is not necessarily
-    /// either, since two identical cards share one.
+    /// What the machine's own UI calls it — "smash-wifi", the name shown in
+    /// Windows' Network Connections and renameable there. Not unique in
+    /// principle, which is what `id` is for.
     std::string name;
-    /// What a person would recognise: "Intel(R) Ethernet Connection I219-LM".
+    /// The hardware behind it: "Intel(R) Centrino(R) Advanced-N 6205".
     std::string description;
+    /// The system's stable identifier — a GUID on Windows, "eth0" on Linux.
+    /// Unique and unchanging where the name is neither, so this is what any
+    /// future matching should key on. Shown only on hover.
+    std::string id;
     AdapterType type = AdapterType::Unknown;
     /// Link state, not configuration: an adapter with a cable in it but no
     /// address is connected. A dial-up or VPN entry that exists but is not

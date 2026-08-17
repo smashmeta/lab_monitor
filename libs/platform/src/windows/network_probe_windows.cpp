@@ -3,11 +3,15 @@
 #include <windows.h>
 
 #include <iphlpapi.h>
+#include <netcon.h>
+#include <objbase.h>
 #include <ras.h>
 #include <raserror.h>
 
 #include <algorithm>
+#include <iterator>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -75,8 +79,8 @@ std::vector<core::NetworkAdapter> enumerate_interfaces() {
             //
             // Deliberately NOT GAA_FLAG_INCLUDE_ALL_INTERFACES. That returns
             // every NDIS interface, which means one extra entry per *filter
-            // driver bound to each card* -- "…-QoS Packet Scheduler-0000",
-            // "…-WFP Native MAC Layer LightWeight Filter-0000", one per Npcap
+            // driver bound to each card* -- "â€¦-QoS Packet Scheduler-0000",
+            // "â€¦-WFP Native MAC Layer LightWeight Filter-0000", one per Npcap
             // binding. On a developer machine that turned 12 adapters into 40,
             // none of the extras being a thing anyone would call an adapter.
             GAA_FLAG_SKIP_UNICAST | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
@@ -90,14 +94,14 @@ std::vector<core::NetworkAdapter> enumerate_interfaces() {
     for (auto* adapter = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.get()); adapter != nullptr;
          adapter = adapter->Next) {
         core::NetworkAdapter entry;
-        // AdapterName is the GUID; FriendlyName is what Network Connections
-        // shows. The GUID is the stable identity, so it is the name and the
-        // friendly one joins the description.
-        entry.name = adapter->AdapterName != nullptr ? std::string(adapter->AdapterName) : "";
+        // FriendlyName is the renameable one Network Connections shows;
+        // Description is the hardware. AdapterName is the GUID, which is the
+        // identity both this and INetConnectionManager can be matched on.
+        entry.name = narrow(adapter->FriendlyName);
         entry.description = narrow(adapter->Description);
-        const std::string friendly = narrow(adapter->FriendlyName);
-        if (!friendly.empty() && friendly != entry.description) {
-            entry.description = friendly + " (" + entry.description + ")";
+        entry.id = adapter->AdapterName != nullptr ? std::string(adapter->AdapterName) : "";
+        if (entry.name.empty()) {
+            entry.name = entry.description;
         }
         entry.type = map_if_type(adapter->IfType);
         entry.connected = adapter->OperStatus == IfOperStatusUp;
@@ -176,6 +180,7 @@ std::vector<core::NetworkAdapter> enumerate_ras_entries(const wchar_t* phonebook
         core::NetworkAdapter entry;
         entry.name = narrow(entry_name.c_str());
         entry.description = "RAS entry " + entry.name;
+        entry.id = entry.description;  // a phonebook entry has no GUID
         entry.type = ras_entry_type(phonebook, entry_name.c_str());
         entry.connected = std::ranges::find(connected, entry_name) != connected.end();
         adapters.push_back(std::move(entry));
@@ -187,9 +192,134 @@ std::vector<core::NetworkAdapter> enumerate_ras_entries(const wchar_t* phonebook
 
 namespace {
 
+/// NCM_LAN covers Ethernet and Wi-Fi alike, so the media type alone cannot
+/// tell them apart. Used only for connections with no interface behind them.
+core::AdapterType map_media_type(NETCON_MEDIATYPE media) {
+    switch (media) {
+        case NCM_PHONE:                return core::AdapterType::Modem;
+        case NCM_TUNNEL:               return core::AdapterType::Tunnel;
+        case NCM_PPPOE:                return core::AdapterType::Ppp;
+        case NCM_ISDN:                 return core::AdapterType::Modem;
+        case NCM_BRIDGE:
+        case NCM_LAN:
+        case NCM_SHAREDACCESSHOST_LAN: return core::AdapterType::Ethernet;
+        default:                       return core::AdapterType::Other;
+    }
+}
+
+/// What NcFreeNetconProperties does, without the dependency: that helper lives
+/// in netshell.lib, which the SDK does not ship an import library for in every
+/// install. NETCON_PROPERTIES holds exactly two pointers, both CoTaskMemAlloc'd
+/// along with the struct itself.
+void free_properties(NETCON_PROPERTIES* properties) {
+    if (properties == nullptr) {
+        return;
+    }
+    CoTaskMemFree(properties->pszwName);
+    CoTaskMemFree(properties->pszwDeviceName);
+    CoTaskMemFree(properties);
+}
+
+std::string guid_string(const GUID& guid) {
+    wchar_t buffer[64] = {};
+    if (StringFromGUID2(guid, buffer, static_cast<int>(std::size(buffer))) == 0) {
+        return {};
+    }
+    return narrow(buffer);
+}
+
+/// The contents of the Network Connections folder, which is the list the user
+/// sees and asked for. INetConnectionManager is the API that folder itself is
+/// built on, so this matches it by construction rather than by guessing which
+/// interfaces Windows chooses to hide -- the registry offers no reliable
+/// signal for that (MediaSubType is set on 2 of 20 entries on one test machine,
+/// including neither of two plainly visible adapters).
+///
+/// Returns nullopt when the folder cannot be enumerated at all -- no COM, no
+/// session -- which is different from it being empty, and the caller falls back
+/// rather than reporting a machine with no network.
+std::optional<std::vector<core::NetworkAdapter>> enumerate_network_connections() {
+    // Per-call rather than once per process: this runs on the sampling thread,
+    // and RPC_E_CHANGED_MODE just means someone else already initialised it in
+    // a compatible-enough way, which is fine.
+    const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool uninitialise = SUCCEEDED(init);
+    if (FAILED(init) && init != RPC_E_CHANGED_MODE) {
+        return std::nullopt;
+    }
+    struct Uninitialiser {
+        bool active;
+        ~Uninitialiser() {
+            if (active) {
+                CoUninitialize();
+            }
+        }
+    } uninitialiser{uninitialise};
+
+    INetConnectionManager* manager = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_ConnectionManager, nullptr, CLSCTX_ALL,
+                                 IID_INetConnectionManager,
+                                 reinterpret_cast<void**>(&manager))) ||
+        manager == nullptr) {
+        return std::nullopt;
+    }
+    IEnumNetConnection* connections = nullptr;
+    const HRESULT enumerated = manager->EnumConnections(NCME_DEFAULT, &connections);
+    manager->Release();
+    if (FAILED(enumerated) || connections == nullptr) {
+        return std::nullopt;
+    }
+
+    std::vector<core::NetworkAdapter> adapters;
+    INetConnection* connection = nullptr;
+    ULONG fetched = 0;
+    while (connections->Next(1, &connection, &fetched) == S_OK && fetched == 1) {
+        NETCON_PROPERTIES* properties = nullptr;
+        if (SUCCEEDED(connection->GetProperties(&properties)) && properties != nullptr) {
+            core::NetworkAdapter entry;
+            entry.name = narrow(properties->pszwName);
+            entry.description = narrow(properties->pszwDeviceName);
+            entry.id = guid_string(properties->guidId);
+            entry.type = map_media_type(properties->MediaType);
+            // Only fully connected counts as up. Connecting, authenticating and
+            // every hardware-fault state are all "not currently carrying
+            // traffic", which is what the column means.
+            entry.connected = properties->Status == NCS_CONNECTED;
+            adapters.push_back(std::move(entry));
+            free_properties(properties);
+        }
+        connection->Release();
+        connection = nullptr;
+    }
+    connections->Release();
+    return adapters;
+}
+
 class WindowsNetworkProbe : public INetworkProbe {
 public:
     std::vector<core::NetworkAdapter> enumerate() override {
+        if (std::optional<std::vector<core::NetworkAdapter>> visible =
+                enumerate_network_connections()) {
+            // The folder decides *which* adapters and what they are called;
+            // the interface list still has the better answer for what each one
+            // is, since NCM_LAN lumps Ethernet and Wi-Fi together. Matched on
+            // the GUID, the one identifier both APIs agree on.
+            const std::vector<core::NetworkAdapter> interfaces = enumerate_interfaces();
+            for (core::NetworkAdapter& adapter : *visible) {
+                const auto match = std::ranges::find(interfaces, adapter.id, &core::NetworkAdapter::id);
+                if (match != interfaces.end()) {
+                    adapter.type = match->type;
+                    if (adapter.description.empty()) {
+                        adapter.description = match->description;
+                    }
+                }
+            }
+            return std::move(*visible);
+        }
+
+        // Fallback: no Network Connections folder to ask (no COM, no desktop
+        // session). Reports every interface plus the phonebook instead, which
+        // is noisier than the folder but better than reporting nothing.
         std::vector<core::NetworkAdapter> adapters = enumerate_interfaces();
 
         // A dialled RAS entry appears in both enumerations -- once as a live

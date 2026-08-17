@@ -208,9 +208,9 @@ TEST(FleetModel, CountsConnectedAdaptersAgainstTheTotal) {
     lm::transport::ResourceSampleMessage message;
     message.host_id = "PC-001";
     message.sample.adapters = {
-        NetworkAdapter{"eth0", "Onboard NIC", AdapterType::Ethernet, true},
-        NetworkAdapter{"wlan0", "Wireless", AdapterType::WiFi, false},
-        NetworkAdapter{"Site VPN", "RAS entry Site VPN", AdapterType::Tunnel, false},
+        NetworkAdapter{"eth0", "Onboard NIC", "{eth0-guid}", AdapterType::Ethernet, true},
+        NetworkAdapter{"wlan0", "Wireless", "{wlan0-guid}", AdapterType::WiFi, false},
+        NetworkAdapter{"Site VPN", "RAS entry Site VPN", "{Site VPN-guid}", AdapterType::Tunnel, false},
     };
     model.apply_sample(message);
 
@@ -250,8 +250,8 @@ TEST(FleetModel, ListsEveryAdapterInTheTooltip) {
     lm::transport::ResourceSampleMessage message;
     message.host_id = "PC-001";
     message.sample.adapters = {
-        NetworkAdapter{"eth0", "Onboard NIC", AdapterType::Ethernet, true},
-        NetworkAdapter{"Lab Dialup", "RAS entry Lab Dialup", AdapterType::Modem, false},
+        NetworkAdapter{"eth0", "Onboard NIC", "{eth0-guid}", AdapterType::Ethernet, true},
+        NetworkAdapter{"Lab Dialup", "RAS entry Lab Dialup", "{Lab Dialup-guid}", AdapterType::Modem, false},
     };
     model.apply_sample(message);
 

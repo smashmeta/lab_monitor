@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <cstdio>
 #include <memory>
 
 #include "lm/platform/probes.hpp"
@@ -19,32 +18,48 @@ std::vector<NetworkAdapter> enumerate_once() {
 
 }  // namespace
 
-TEST(WindowsNetworkProbe, FindsAtLeastTheLoopbackInterface) {
-    // Every Windows machine has one, so an empty result means the enumeration
-    // failed rather than that the machine is bare.
-    const std::vector<NetworkAdapter> adapters = enumerate_once();
-
-    ASSERT_FALSE(adapters.empty());
-    EXPECT_TRUE(std::ranges::any_of(adapters, [](const NetworkAdapter& adapter) {
-        return adapter.type == AdapterType::Loopback;
-    })) << "no loopback interface was reported";
+TEST(WindowsNetworkProbe, ReportsAtLeastOneAdapter) {
+    // Any machine running this has something. An empty result means the
+    // enumeration failed rather than that the machine is bare.
+    EXPECT_FALSE(enumerate_once().empty());
 }
 
-TEST(WindowsNetworkProbe, GivesEveryAdapterANameAndADescription) {
+TEST(WindowsNetworkProbe, LeavesOutTheInterfacesNetworkConnectionsHides) {
+    // The list is meant to match the Network Connections folder, and that
+    // folder shows neither the software loopback pseudo-interface nor the
+    // Teredo/ISATAP tunnel ones. Their presence would mean the probe had
+    // fallen back to enumerating raw interfaces.
+    for (const NetworkAdapter& adapter : enumerate_once()) {
+        EXPECT_NE(adapter.type, AdapterType::Loopback) << adapter.name;
+        EXPECT_EQ(adapter.description.find("Loopback Pseudo-Interface"), std::string::npos)
+            << adapter.name;
+    }
+}
+
+TEST(WindowsNetworkProbe, NamesTheAdapterTheWayWindowsDoesNotByItsGuid) {
+    // "smash-wifi", not "{FC41A3EF-...}". The GUID is still carried, as the id.
     for (const NetworkAdapter& adapter : enumerate_once()) {
         EXPECT_FALSE(adapter.name.empty()) << "an adapter with no name cannot be identified";
+        EXPECT_FALSE(adapter.name.starts_with("{"))
+            << adapter.name << " looks like a GUID rather than a connection name";
         EXPECT_FALSE(adapter.description.empty()) << adapter.name;
     }
 }
 
-TEST(WindowsNetworkProbe, NamesAreUnique) {
-    // The name is the identity used to tell two identical cards apart; the
-    // description is not necessarily distinct.
+TEST(WindowsNetworkProbe, CarriesTheGuidAsTheIdentifier) {
+    for (const NetworkAdapter& adapter : enumerate_once()) {
+        EXPECT_FALSE(adapter.id.empty()) << adapter.name;
+    }
+}
+
+TEST(WindowsNetworkProbe, IdsAreUnique) {
+    // The id is the identity used to tell two identically-named connections
+    // apart; neither the name nor the description is guaranteed distinct.
     std::vector<NetworkAdapter> adapters = enumerate_once();
-    std::ranges::sort(adapters, {}, &NetworkAdapter::name);
-    const auto duplicate = std::ranges::adjacent_find(adapters, {}, &NetworkAdapter::name);
+    std::ranges::sort(adapters, {}, &NetworkAdapter::id);
+    const auto duplicate = std::ranges::adjacent_find(adapters, {}, &NetworkAdapter::id);
     EXPECT_EQ(duplicate, adapters.end())
-        << "duplicate adapter name: " << (duplicate != adapters.end() ? duplicate->name : "");
+        << "duplicate adapter id: " << (duplicate != adapters.end() ? duplicate->id : "");
 }
 
 TEST(WindowsNetworkProbe, ClassifiesEveryAdapterAsSomethingKnown) {
