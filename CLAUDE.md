@@ -208,13 +208,13 @@ Team choice. Boost is consequently confined to `program_options` in the two apps
 - **`connect()`'s 4-argument overload runs the functor on the *context object's*
   thread.** Passing a worker as context made `thread->wait()` a self-wait, which Qt
   detects, warns about, and skips — so the join silently never happened.
-- **A cell widget's own layout changes do not reliably repaint the viewport
-  under them.** `TokenEdit::rebuild_chips()` calls `layout_->activate()` then
-  invalidates both itself and its rect in the parent. Without it, inserting a
-  chip pushed the input sideways and the committed text stayed on screen as dead
-  pixels until the next click. Note this class of bug is **invisible to
-  `QWidget::render()`**, which repaints from scratch — every logical assertion
-  passed while the screen was wrong. `contains_colour` cannot catch it either.
+- **`QWidget::render()` cannot see a stale screen.** It repaints from scratch, so
+  a wrong *backing store* never reaches the image — every pixel test in
+  `lm_ui_widget_tests` is blind to that whole class of bug, as is every logical
+  assertion. To look at what is actually on screen, grab it:
+  `QApplication::primaryScreen()->grabWindow(window->winId())` inside a shown
+  window, save the PNG, and open it. That is the only tool here that shows a
+  repaint artefact, and it is worth reaching for early rather than theorising.
 - **A stylesheet does not reach everything.** Message boxes and palette-drawn
   widgets ignore QSS; `Theme::apply()` installs Fusion and a dark `QPalette` too.
   An unstyled widget class falls back to the platform *light* style.
