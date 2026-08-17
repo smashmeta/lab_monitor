@@ -69,6 +69,15 @@ QVariant FleetModel::data(const QModelIndex& index, int role) const {
     // Colour the whole row by health, so an operator scanning the list sees
     // which machines need attention without reading a single word.
     if (role == Qt::ForegroundRole) {
+        // Except the CPU cell, which reports its own number: a machine can be
+        // perfectly compliant and pegged at 100%, and the row's health colour
+        // hides precisely that. Only while the host is actually reporting,
+        // though -- the last sample from a host that has gone quiet is stale,
+        // and painting it green would read as a live idle machine.
+        if (index.column() == CpuColumn && row.has_resources &&
+            row.entry.state == core::HostState::Online) {
+            return Theme::color_for_load(row.resources.cpu_percent);
+        }
         return colour_for(health_of(index.row()));
     }
 
@@ -156,7 +165,11 @@ void FleetModel::apply(const core::FleetView& view) {
 
                 const int row = static_cast<int>(old_index);
                 if (host_or_state_changed) {
-                    emit dataChanged(index(row, HostColumn), index(row, StateColumn));
+                    // The whole row, not just the two columns whose *text*
+                    // changed: health colours every cell, and the CPU cell
+                    // additionally switches between its load colour and the
+                    // health one as the host starts and stops reporting.
+                    emit dataChanged(index(row, HostColumn), index(row, ColumnCount - 1));
                 }
                 if (revision_or_seen_changed) {
                     emit dataChanged(index(row, RevisionColumn), index(row, LastSeenColumn));

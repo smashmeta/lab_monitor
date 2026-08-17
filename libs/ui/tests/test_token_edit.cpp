@@ -1,4 +1,4 @@
-﻿#include <gtest/gtest.h>
+#include <gtest/gtest.h>
 
 #include <QApplication>
 #include <QCompleter>
@@ -267,4 +267,3 @@ TEST(TokenEdit, OffersEveryKnownValueThroughItsCompleter) {
     EXPECT_EQ(completer->model()->rowCount(), kKnown.size());
     EXPECT_EQ(completer->caseSensitivity(), Qt::CaseInsensitive);
 }
-

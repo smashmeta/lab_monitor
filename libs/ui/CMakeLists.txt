@@ -1,4 +1,4 @@
-﻿find_package(Qt5 COMPONENTS Widgets Svg Test REQUIRED)
+find_package(Qt5 COMPONENTS Widgets Svg Test REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 
 set(CMAKE_AUTOMOC ON)
@@ -58,7 +58,3 @@ lm_add_test(lm_ui_widget_tests
 if(NOT WIN32)
   set_tests_properties(lm_ui_widget_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
-
-
-
-

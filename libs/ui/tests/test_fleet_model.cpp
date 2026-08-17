@@ -36,6 +36,104 @@ int row_of(const FleetModel& model, const QString& host_id) {
 
 }  // namespace
 
+namespace {
+
+/// A sample for one host, as the transport delivers it.
+lm::transport::ResourceSampleMessage sample_for(const QString& host_id, double cpu_percent) {
+    lm::transport::ResourceSampleMessage message;
+    message.host_id = host_id.toStdString();
+    message.sample.cpu_percent = cpu_percent;
+    message.sample.mem_total_bytes = 16'000'000'000;
+    message.sample.mem_used_bytes = 8'000'000'000;
+    return message;
+}
+
+QColor foreground_at(const FleetModel& model, int row, int column) {
+    return model.data(model.index(row, column), Qt::ForegroundRole).value<QColor>();
+}
+
+}  // namespace
+
+TEST(FleetModel, ColoursTheCpuCellByItsLoadRatherThanTheRowHealth) {
+    // A machine can be perfectly compliant and pegged at 100%. Painting the
+    // CPU cell with the row's health colour hides exactly that.
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+    model.apply_sample(sample_for(QStringLiteral("PC-001"), 96.0));
+
+    EXPECT_EQ(foreground_at(model, 0, FleetModel::CpuColumn), Theme::color_for_load(96.0));
+    EXPECT_NE(foreground_at(model, 0, FleetModel::CpuColumn),
+              foreground_at(model, 0, FleetModel::HostColumn))
+        << "the CPU cell must not still be taking the row's colour";
+}
+
+TEST(FleetModel, LeavesEveryOtherColumnOnTheRowHealthColour) {
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+    model.apply_sample(sample_for(QStringLiteral("PC-001"), 96.0));
+
+    const QColor health = FleetModel::colour_for(model.health_of(0));
+    for (const int column : {FleetModel::HostColumn, FleetModel::StateColumn,
+                             FleetModel::MemoryColumn, FleetModel::DiskColumn,
+                             FleetModel::RevisionColumn, FleetModel::LastSeenColumn}) {
+        EXPECT_EQ(foreground_at(model, 0, column), health) << "column " << column;
+    }
+}
+
+TEST(FleetModel, TracksTheLoadColourAsTheReadingChanges) {
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    model.apply_sample(sample_for(QStringLiteral("PC-001"), 3.0));
+    const QColor idle = foreground_at(model, 0, FleetModel::CpuColumn);
+    model.apply_sample(sample_for(QStringLiteral("PC-001"), 99.0));
+    const QColor pegged = foreground_at(model, 0, FleetModel::CpuColumn);
+
+    EXPECT_GT(pegged.redF() - pegged.greenF(), idle.redF() - idle.greenF())
+        << "a busier machine has to read warmer";
+}
+
+TEST(FleetModel, AnnouncesEveryColumnWhenTheStateChanges) {
+    // The health colour paints the whole row, and the CPU cell's colour depends
+    // on the state as well -- so announcing only the first two columns leaves
+    // the rest of the row showing the colour it had before the change.
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+    QSignalSpy spy(&model, &QAbstractItemModel::dataChanged);
+    ASSERT_TRUE(spy.isValid());
+
+    model.apply(view_with({{"PC-001", HostState::Offline}}));
+
+    ASSERT_GT(spy.count(), 0) << "a state change has to be announced at all";
+    int rightmost = -1;
+    for (const QList<QVariant>& emission : spy) {
+        rightmost = std::max(rightmost, emission.at(1).value<QModelIndex>().column());
+    }
+    EXPECT_EQ(rightmost, FleetModel::ColumnCount - 1)
+        << "the announcement stops at column " << rightmost;
+}
+
+TEST(FleetModel, KeepsTheHealthColourOnTheCpuCellBeforeAnySampleArrives) {
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    EXPECT_EQ(foreground_at(model, 0, FleetModel::CpuColumn),
+              FleetModel::colour_for(model.health_of(0)))
+        << "an empty cell has no load to report";
+}
+
+TEST(FleetModel, KeepsTheHealthColourOnTheCpuCellOnceTheHostGoesQuiet) {
+    // The last sample is stale the moment the host stops reporting. Painted
+    // green it would look like a live reading of an idle machine.
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+    model.apply_sample(sample_for(QStringLiteral("PC-001"), 4.0));
+    model.apply(view_with({{"PC-001", HostState::Offline}}));
+
+    EXPECT_EQ(foreground_at(model, 0, FleetModel::CpuColumn),
+              FleetModel::colour_for(model.health_of(0)));
+}
+
 TEST(FleetModel, StartsEmpty) {
     FleetModel model;
     EXPECT_EQ(model.rowCount(), 0);
