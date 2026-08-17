@@ -182,6 +182,86 @@ TEST(FleetModel, KeepsTheHealthColourOnTheCpuCellOnceTheHostGoesQuiet) {
               FleetModel::colour_for(model.health_of(0)));
 }
 
+namespace {
+
+FleetView view_with_network_capable_host() {
+    FleetView view;
+    FleetEntry entry;
+    entry.host_id = "PC-001";
+    entry.state = HostState::Online;
+    entry.last_seen = kNow;
+    entry.caps = Capabilities{}.add(Capability::Resources).add(Capability::Network);
+    view.entries.push_back(entry);
+    return view;
+}
+
+QString display_at(const FleetModel& model, int row, int column) {
+    return model.data(model.index(row, column), Qt::DisplayRole).toString();
+}
+
+}  // namespace
+
+TEST(FleetModel, CountsConnectedAdaptersAgainstTheTotal) {
+    FleetModel model;
+    model.apply(view_with_network_capable_host());
+
+    lm::transport::ResourceSampleMessage message;
+    message.host_id = "PC-001";
+    message.sample.adapters = {
+        NetworkAdapter{"eth0", "Onboard NIC", AdapterType::Ethernet, true},
+        NetworkAdapter{"wlan0", "Wireless", AdapterType::WiFi, false},
+        NetworkAdapter{"Site VPN", "RAS entry Site VPN", AdapterType::Tunnel, false},
+    };
+    model.apply_sample(message);
+
+    EXPECT_EQ(display_at(model, 0, FleetModel::AdaptersColumn).toStdString(), "1 / 3")
+        << "the count alone would not say whether the machine is on the network";
+}
+
+TEST(FleetModel, ShowsADashWhenTheClientCannotReportAdapters) {
+    // An old client reporting nothing and a machine with no adapters are
+    // different facts. "0 / 0" would state the wrong one.
+    FleetModel model;
+    FleetView view;
+    FleetEntry entry;
+    entry.host_id = "PC-001";
+    entry.state = HostState::Online;
+    entry.caps = Capabilities{}.add(Capability::Resources);
+    view.entries.push_back(entry);
+    model.apply(view);
+
+    EXPECT_EQ(display_at(model, 0, FleetModel::AdaptersColumn).toStdString(), "-");
+    EXPECT_TRUE(model.data(model.index(0, FleetModel::AdaptersColumn), Qt::ToolTipRole)
+                    .toString()
+                    .contains(QStringLiteral("does not report")));
+}
+
+TEST(FleetModel, ShowsZeroOfZeroForACapableClientWithNoAdapters) {
+    FleetModel model;
+    model.apply(view_with_network_capable_host());
+
+    EXPECT_EQ(display_at(model, 0, FleetModel::AdaptersColumn).toStdString(), "0 / 0");
+}
+
+TEST(FleetModel, ListsEveryAdapterInTheTooltip) {
+    FleetModel model;
+    model.apply(view_with_network_capable_host());
+
+    lm::transport::ResourceSampleMessage message;
+    message.host_id = "PC-001";
+    message.sample.adapters = {
+        NetworkAdapter{"eth0", "Onboard NIC", AdapterType::Ethernet, true},
+        NetworkAdapter{"Lab Dialup", "RAS entry Lab Dialup", AdapterType::Modem, false},
+    };
+    model.apply_sample(message);
+
+    const QString tooltip =
+        model.data(model.index(0, FleetModel::AdaptersColumn), Qt::ToolTipRole).toString();
+    EXPECT_TRUE(tooltip.contains(QStringLiteral("Onboard NIC")));
+    EXPECT_TRUE(tooltip.contains(QStringLiteral("RAS entry Lab Dialup")));
+    EXPECT_TRUE(tooltip.contains(QStringLiteral("Modem")));
+}
+
 TEST(FleetModel, StartsEmpty) {
     FleetModel model;
     EXPECT_EQ(model.rowCount(), 0);

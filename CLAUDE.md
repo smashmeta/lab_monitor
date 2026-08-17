@@ -41,13 +41,13 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 | Target | Responsibility | Tests |
 |---|---|---|
 | `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 97 |
-| `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 36 |
-| `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend | 23 |
-| `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit` | 43 + 32 |
+| `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 49 |
+| `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend | 27 |
+| `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 47 + 32 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 16 |
 | `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 22 |
 
-**269 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
+**290 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they need loopback multicast).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -125,6 +125,38 @@ list with every host named in a template assignment. Without this, assigning a
 template to a machine left it sitting in **Unexpected** forever, since only the
 explicit list reached `reconcile()`. Explicit entries win so a typed address is
 never dropped.
+
+### Network adapters ride the resource sample
+`core::NetworkAdapter` (name, description, `AdapterType`, `connected`) is a field
+of `ResourceSample`, so adapters travel on the topic that already ticks — link
+state is a live reading, and no rule references them, so unlike processes and
+registry there is nothing to probe lazily against. Deliberately no IP addresses:
+this answers "what is this plugged into, is it up", and addresses would churn the
+sample under DHCP, defeating the equality check that suppresses no-op updates.
+
+`Capability::Network` is what separates "no adapters" from "a client that cannot
+report them" — the fleet column shows `-` for the second and `2 / 6` for the
+first. Never infer it from an empty list.
+
+**The Windows probe is two enumerations, and both are needed.**
+`GetAdaptersAddresses` covers live interfaces; `RasEnumEntries` covers the
+dial-up/VPN phonebook. A RAS entry that is not dialled has **no interface at
+all**, so it is invisible to any adapter enumeration — reporting "defined but
+down" is the whole reason the second call exists. A dialled entry appears in
+both, so the interface wins and only entries with nothing behind them are added.
+`RasEnumEntries` returns names and little else, so each entry's type comes from
+its own `RasGetEntryProperties`; without that a VPN would be labelled a modem.
+
+Do **not** pass `GAA_FLAG_INCLUDE_ALL_INTERFACES`. It returns one extra entry per
+*filter driver bound to each card* — QoS Packet Scheduler, WFP LightWeight
+Filter, every Npcap binding — which turned 6 real adapters into 40 on a
+developer machine.
+
+`tests/test_ras_entries_windows.cpp` builds a **temporary phonebook** with
+`RasSetEntryProperties` rather than touching the real one under `%APPDATA%`,
+since creating entries there would be editing the machine's network config. That
+is what makes the disconnected-entry path genuinely tested on a machine with no
+dial-up configured.
 
 ### The client quits deliberately, never incidentally
 `DetailWindow` drops `Qt::WindowCloseButtonHint` and carries its own **Minimize**
@@ -278,9 +310,10 @@ Team choice. Boost is consequently confined to `program_options` in the two apps
   MSVC. CI is authored but has never run; expect the first Linux job to fail on GCC
   warnings under `-Wall -Wextra -Wpedantic -Wshadow` with warnings-as-errors.
 - **Service checks are stubbed** on both platforms — `IServiceProbe` has no
-  implementation, so service rules report `NotApplicable`. Process and registry
-  probes are implemented on **Windows only**; all three Linux probes beyond
-  resources are stubbed.
+  implementation, so service rules report `NotApplicable`. Process, registry and
+  network probes are implemented on **Windows only**; every Linux probe beyond
+  resources is stubbed, so a Linux client advertises no `Capability::Network` and
+  its adapter column reads `-`.
 - The compliance list groups by status rather than Applications/Services/Registry.
 - `FastDdsLoopback.ResourceSamplesReachTheServer` was de-flaked by publishing in a
   loop; the topic is BEST_EFFORT so a single publish races discovery.

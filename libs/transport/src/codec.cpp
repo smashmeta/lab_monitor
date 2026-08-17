@@ -65,6 +65,23 @@ void read_disk(Cdr& reader, core::DiskUsage& disk) {
     reader >> disk.mount >> disk.total_bytes >> disk.free_bytes;
 }
 
+void write_adapter(Cdr& writer, const core::NetworkAdapter& adapter) {
+    writer << adapter.name << adapter.description << static_cast<std::uint8_t>(adapter.type)
+           << adapter.connected;
+}
+
+bool read_adapter(Cdr& reader, core::NetworkAdapter& adapter) {
+    std::uint8_t type = 0;
+    reader >> adapter.name >> adapter.description >> type >> adapter.connected;
+    // Same rule as read_result's status: an enum from the wire is an integer
+    // until it has been checked to be one of ours.
+    if (type > static_cast<std::uint8_t>(core::AdapterType::Other)) {
+        return false;
+    }
+    adapter.type = static_cast<core::AdapterType>(type);
+    return true;
+}
+
 void write_result(Cdr& writer, const core::CheckResult& result) {
     writer << result.rule_id << static_cast<std::uint8_t>(result.status) << result.observed
            << result.message;
@@ -111,11 +128,16 @@ std::vector<std::uint8_t> encode(const ResourceSampleMessage& message) {
         for (const core::DiskUsage& disk : message.sample.disks) {
             write_disk(writer, disk);
         }
+        writer << static_cast<std::uint32_t>(message.sample.adapters.size());
+        for (const core::NetworkAdapter& adapter : message.sample.adapters) {
+            write_adapter(writer, adapter);
+        }
     });
 }
 
 bool decode(std::span<const std::uint8_t> bytes, ResourceSampleMessage& out) {
     ResourceSampleMessage parsed;
+    bool adapters_valid = true;
     const bool ok = deserialise(bytes, [&](Cdr& reader) {
         std::uint32_t disk_count = 0;
         reader >> parsed.host_id >> parsed.sample.cpu_percent >> parsed.sample.mem_total_bytes >>
@@ -132,11 +154,23 @@ bool decode(std::span<const std::uint8_t> bytes, ResourceSampleMessage& out) {
             read_disk(reader, disk);
             parsed.sample.disks.push_back(std::move(disk));
         }
+
+        std::uint32_t adapter_count = 0;
+        reader >> adapter_count;
+        parsed.sample.adapters.reserve(std::min(adapter_count, kReserveCap));
+        for (std::uint32_t i = 0; i < adapter_count; ++i) {
+            core::NetworkAdapter adapter;
+            if (!read_adapter(reader, adapter)) {
+                adapters_valid = false;
+            }
+            parsed.sample.adapters.push_back(std::move(adapter));
+        }
     });
-    if (ok) {
+    if (ok && adapters_valid) {
         out = std::move(parsed);
+        return true;
     }
-    return ok;
+    return false;
 }
 
 // --- TemplateBundleMessage -------------------------------------------------

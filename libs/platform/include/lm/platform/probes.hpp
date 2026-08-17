@@ -34,12 +34,19 @@ public:
     virtual core::RegistryValue read(const core::RegistryRule& rule) = 0;
 };
 
+class INetworkProbe {
+public:
+    virtual ~INetworkProbe() = default;
+    virtual std::vector<core::NetworkAdapter> enumerate() = 0;
+};
+
 /// Null members mean the capability is unavailable on this platform.
 struct ProbeSet {
     std::unique_ptr<IResourceProbe> resources;
     std::unique_ptr<IProcessProbe> processes;
     std::unique_ptr<IServiceProbe> services;
     std::unique_ptr<IRegistryProbe> registry;
+    std::unique_ptr<INetworkProbe> network;
 };
 
 /// Assembles HostFacts snapshots. Probes lazily: only the categories the host's
@@ -79,6 +86,13 @@ private:
 /// version cannot be read leaves core::ProcessInfo::version unset rather than
 /// fabricating a value.
 [[nodiscard]] std::unique_ptr<IProcessProbe> make_process_probe();
+
+/// Builds the network probe, or nullptr where one is not implemented.
+///
+/// On Windows this reports both live interfaces and dial-up/VPN phonebook
+/// entries that are *not* currently connected — the latter exist only in RAS,
+/// so an adapter enumeration alone never sees them.
+[[nodiscard]] std::unique_ptr<INetworkProbe> make_network_probe();
 
 /// Builds the registry probe, or nullptr on platforms without a registry.
 /// A value or key that does not exist reads back as absent, not as an error;

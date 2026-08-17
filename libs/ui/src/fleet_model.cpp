@@ -36,6 +36,27 @@ QString format_last_seen(const std::optional<core::TimePoint>& last_seen) {
 
 }  // namespace
 
+namespace {
+
+/// One line per adapter, so the whole picture is a hover away without needing
+/// the detail pane.
+QString adapter_tooltip(const std::vector<core::NetworkAdapter>& adapters) {
+    if (adapters.empty()) {
+        return QStringLiteral("No network adapters reported.");
+    }
+    QStringList lines;
+    lines.reserve(static_cast<int>(adapters.size()));
+    for (const core::NetworkAdapter& adapter : adapters) {
+        lines << QStringLiteral("%1  %2  (%3)")
+                      .arg(adapter.connected ? QStringLiteral("up  ") : QStringLiteral("down"),
+                            QString::fromStdString(adapter.description),
+                            QString::fromStdString(core::to_string(adapter.type)));
+    }
+    return lines.join(QChar(u'\n'));
+}
+
+}  // namespace
+
 FleetModel::FleetModel(QObject* parent) : QAbstractTableModel(parent) {}
 
 int FleetModel::rowCount(const QModelIndex& parent) const {
@@ -62,6 +83,8 @@ QVariant FleetModel::data(const QModelIndex& index, int role) const {
             return static_cast<int>(row.entry.state);
         case StaleRole:
             return row.entry.stale;
+        case CapabilitiesRole:
+            return row.entry.caps.raw();
         default:
             break;
     }
@@ -99,6 +122,24 @@ QVariant FleetModel::data(const QModelIndex& index, int role) const {
             return percent ? QString::number(*percent, 'f', 1) + QStringLiteral("%")
                            : QStringLiteral("-");
         }
+        case AdaptersColumn: {
+            // "-" rather than "0" when the client does not advertise the
+            // capability: a machine with no adapters and a client too old to
+            // report them are different facts, and 0 would state the wrong one.
+            if (!row.entry.caps.has(core::Capability::Network)) {
+                return role == Qt::ToolTipRole
+                           ? QStringLiteral("This client does not report network adapters.")
+                           : QStringLiteral("-");
+            }
+            if (role == Qt::ToolTipRole) {
+                return adapter_tooltip(row.resources.adapters);
+            }
+            const auto connected = std::ranges::count_if(
+                row.resources.adapters, &core::NetworkAdapter::connected);
+            // Connected over total, because "6 adapters" alone says nothing
+            // about whether the machine is actually on the network.
+            return QStringLiteral("%1 / %2").arg(connected).arg(row.resources.adapters.size());
+        }
         case RevisionColumn:
             return row.entry.stale ? QStringLiteral("Stale") : QStringLiteral("Current");
         case LastSeenColumn:
@@ -118,6 +159,7 @@ QVariant FleetModel::headerData(int section, Qt::Orientation orientation, int ro
         case CpuColumn:      return QStringLiteral("CPU");
         case MemoryColumn:   return QStringLiteral("Memory");
         case DiskColumn:     return QStringLiteral("Disk");
+        case AdaptersColumn: return QStringLiteral("Adapters");
         case RevisionColumn: return QStringLiteral("Revision");
         case LastSeenColumn: return QStringLiteral("Last Seen");
         default:             return {};

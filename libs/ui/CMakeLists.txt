@@ -5,6 +5,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 add_library(lm_ui STATIC
+  src/adapter_list.cpp
   src/theme.cpp
   src/status_pill.cpp
   src/sparkline.cpp
@@ -24,6 +25,7 @@ add_library(lm_ui STATIC
   include/lm/ui/keep_foreground_delegate.hpp
   include/lm/ui/sample_coalescer.hpp
   include/lm/ui/token_edit.hpp
+  include/lm/ui/adapter_list.hpp
   resources/lm_ui.qrc)
 add_library(lm::ui ALIAS lm_ui)
 

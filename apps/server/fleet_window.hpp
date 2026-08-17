@@ -36,6 +36,7 @@ class StatusRibbon;
 class FleetProxyModel;
 
 namespace lm::ui {
+class AdapterList;
 class Sparkline;
 class MeterBar;
 class TokenEdit;
@@ -93,6 +94,10 @@ private:
     void refresh_detail_pane(const QString& host_id);
     void populate_compliance_tree(const lm::core::ComplianceReport& report);
     void sync_disk_bars(const std::vector<lm::core::DiskUsage>& disks);
+    /// nullptr when no sample has arrived for the selected host yet. Shows
+    /// "not reported" when the host does not advertise Capability::Network,
+    /// which is not the same as reporting no adapters.
+    void refresh_adapter_list(const lm::core::ResourceSample* sample);
     /// Repopulates the whole Templates tab from the controller's draft. Used
     /// both after an edit and when start() loads persisted config, which
     /// happens after this window has already been constructed.
@@ -140,6 +145,7 @@ private:
     /// One meter bar per mount point, keyed by DiskUsage::mount, matching
     /// DetailWindow's approach in the client.
     QMap<QString, lm::ui::MeterBar*> detail_disk_bars_;
+    lm::ui::AdapterList* detail_adapter_list_;
     QTreeWidget* detail_compliance_tree_;
 
     QTabWidget* tabs_;

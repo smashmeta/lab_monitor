@@ -20,6 +20,7 @@ ProbeSet make_platform_probes() {
     probes.resources = make_resource_probe();
     probes.processes = make_process_probe();
     probes.registry = make_registry_probe();
+    probes.network = make_network_probe();
     // Services are still stubbed. HostProbes intersects capabilities with the
     // probes actually supplied, so leaving this null makes the client honestly
     // advertise that it cannot answer service rules.

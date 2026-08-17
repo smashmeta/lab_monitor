@@ -12,6 +12,7 @@
 
 #include "lm/core/compliance.hpp"
 #include "lm/core/host_facts.hpp"
+#include "lm/ui/adapter_list.hpp"
 #include "lm/ui/rule_detail.hpp"
 #include "lm/ui/meter_bar.hpp"
 #include "lm/ui/sparkline.hpp"
@@ -74,6 +75,7 @@ private:
     /// One meter bar per mount point, keyed by DiskUsage::mount. Rebuilt to
     /// match whatever volumes the current sample reports.
     QMap<QString, lm::ui::MeterBar*> disk_bars_;
+    lm::ui::AdapterList* adapter_list_;
 
     QTreeWidget* compliance_tree_;
     QPushButton* minimize_button_;

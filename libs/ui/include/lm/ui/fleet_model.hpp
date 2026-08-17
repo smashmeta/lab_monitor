@@ -26,6 +26,7 @@ public:
         CpuColumn,
         MemoryColumn,
         DiskColumn,
+        AdaptersColumn,
         RevisionColumn,
         LastSeenColumn,
         ColumnCount
@@ -49,6 +50,9 @@ public:
         SeverityRole,  ///< lower sorts first
         StateRole,
         StaleRole,
+        /// core::Capabilities::raw(). Lets a view tell "the client cannot
+        /// report this" apart from "there is none of it".
+        CapabilitiesRole,
     };
 
     explicit FleetModel(QObject* parent = nullptr);

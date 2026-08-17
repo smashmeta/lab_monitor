@@ -35,6 +35,7 @@
 #include <variant>
 
 #include "lm/core/rule.hpp"
+#include "lm/ui/adapter_list.hpp"
 #include "lm/ui/fleet_model.hpp"
 #include "lm/ui/keep_foreground_delegate.hpp"
 #include "lm/ui/rule_detail.hpp"
@@ -50,7 +51,7 @@ namespace {
 /// Template list rows are identified by these, never by their label: the
 /// baseline row's label carries an explanatory suffix, and a template
 /// genuinely *named* "Baseline" must stay distinguishable from the bundle's
-/// own baseline — otherwise it is neither selectable nor removable.
+/// own baseline Ã¢â‚¬â€ otherwise it is neither selectable nor removable.
 constexpr int kTemplateNameRole = Qt::UserRole;
 constexpr int kIsBaselineRole = Qt::UserRole + 1;
 
@@ -285,6 +286,10 @@ void FleetWindow::build_fleet_tab() {
     detail_disk_layout_ = new QVBoxLayout();
     detail_layout->addLayout(detail_disk_layout_);
 
+    detail_layout->addWidget(new QLabel(QStringLiteral("Network adapters"), detail_panel));
+    detail_adapter_list_ = new lm::ui::AdapterList(detail_panel);
+    detail_layout->addWidget(detail_adapter_list_, 1);
+
     detail_compliance_tree_ = new QTreeWidget(detail_panel);
     detail_compliance_tree_->setItemDelegate(
         new lm::ui::KeepForegroundDelegate(detail_compliance_tree_));
@@ -428,6 +433,7 @@ void FleetWindow::refresh_detail_pane(const QString& host_id) {
     if (host_id.isEmpty()) {
         sync_disk_bars({});
         detail_memory_bar_->set_value(0.0);
+        detail_adapter_list_->clear();
         return;
     }
 
@@ -445,6 +451,7 @@ void FleetWindow::refresh_detail_pane(const QString& host_id) {
         detail_memory_bar_->set_value(0.0);
         sync_disk_bars({});
     }
+    refresh_adapter_list(res_it != resources.constEnd() ? &*res_it : nullptr);
 
     const auto& reports = controller_->report_cache();
     const auto rep_it = reports.constFind(host_id);
@@ -464,6 +471,28 @@ void FleetWindow::on_resource_sample(QString host_id, lm::core::ResourceSample s
                                           static_cast<double>(sample.mem_total_bytes);
     detail_memory_bar_->set_value(mem_percent);
     sync_disk_bars(sample.disks);
+    refresh_adapter_list(&sample);
+}
+
+void FleetWindow::refresh_adapter_list(const lm::core::ResourceSample* sample) {
+    // "Not reported" and "none" are different answers, and only the host's
+    // advertised capabilities can tell them apart -- an empty adapter list from
+    // a client that cannot enumerate them says nothing about the machine.
+    const QModelIndexList selected = host_view_->selectionModel()->selectedRows();
+    bool reports_adapters = false;
+    if (!selected.isEmpty()) {
+        const QModelIndex source = proxy_->mapToSource(selected.first());
+        const auto caps = static_cast<std::uint32_t>(
+            controller_->model()->data(source, lm::ui::FleetModel::CapabilitiesRole).toUInt());
+        reports_adapters = lm::core::Capabilities(caps).has(lm::core::Capability::Network);
+    }
+
+    if (!reports_adapters) {
+        detail_adapter_list_->set_not_reported();
+        return;
+    }
+    detail_adapter_list_->set_adapters(sample != nullptr ? sample->adapters
+                                                          : std::vector<lm::core::NetworkAdapter>{});
 }
 
 void FleetWindow::on_compliance_report(QString host_id, lm::core::ComplianceReport report) {
@@ -728,7 +757,7 @@ void FleetWindow::rebuild_template_list() {
     // applied to every host, it cannot be assigned and it cannot be removed.
     // Saying so in the row beats letting the operator discover it by clicking
     // Remove and watching nothing happen.
-    auto* baseline_item = new QListWidgetItem(QStringLiteral("Baseline — always applied"));
+    auto* baseline_item = new QListWidgetItem(QStringLiteral("Baseline Ã¢â‚¬â€ always applied"));
     baseline_item->setData(kTemplateNameRole, QString::fromUtf8(lm::core::kBaselineName.data(),
                                                                  static_cast<int>(lm::core::kBaselineName.size())));
     baseline_item->setData(kIsBaselineRole, true);

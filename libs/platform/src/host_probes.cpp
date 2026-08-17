@@ -23,6 +23,9 @@ core::Capabilities intersect(core::Capabilities declared, const ProbeSet& probes
     if (probes.registry && declared.has(core::Capability::Registry)) {
         result.add(core::Capability::Registry);
     }
+    if (probes.network && declared.has(core::Capability::Network)) {
+        result.add(core::Capability::Network);
+    }
     return result;
 }
 
@@ -32,7 +35,16 @@ HostProbes::HostProbes(core::HostId host_id, ProbeSet probes, core::Capabilities
     : host_id_(std::move(host_id)), probes_(std::move(probes)), caps_(intersect(caps, probes_)) {}
 
 core::ResourceSample HostProbes::sample_resources() {
-    return probes_.resources ? probes_.resources->sample() : core::ResourceSample{};
+    core::ResourceSample sample =
+        probes_.resources ? probes_.resources->sample() : core::ResourceSample{};
+    // Adapters ride the resource sample rather than the compliance report:
+    // link state is a live reading, and this is the only message that already
+    // travels on every tick. No rule references them, so unlike processes and
+    // registry there is nothing to probe lazily against.
+    if (caps_.has(core::Capability::Network)) {
+        sample.adapters = probes_.network->enumerate();
+    }
+    return sample;
 }
 
 core::HostFacts HostProbes::collect(const core::TemplateBundle& bundle) {

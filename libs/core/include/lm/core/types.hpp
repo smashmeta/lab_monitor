@@ -16,11 +16,20 @@ enum class Presence { MustBePresent, MustBeAbsent };
 enum class CheckStatus { Pass, Fail, NotApplicable, Error };
 enum class ServiceState { Running, Stopped, Unknown };
 
+/// How a network adapter attaches, coarse enough to be worth reading at a
+/// glance. Anything a platform reports that does not map here becomes `Other`,
+/// which is distinct from `Unknown`: Other means "we saw a type we do not
+/// name", Unknown means "the platform did not say".
+enum class AdapterType { Unknown, Ethernet, WiFi, Loopback, Ppp, Tunnel, Modem, Other };
+
 enum class Capability : std::uint32_t {
     Resources = 1u << 0,
     Processes = 1u << 1,
     Services  = 1u << 2,
     Registry  = 1u << 3,
+    /// Network adapter inventory. A client without it reports no adapters,
+    /// which the server must not read as "this machine has none".
+    Network   = 1u << 4,
 };
 
 /// A set of capabilities a client advertises. Rules whose required capability
@@ -50,6 +59,8 @@ private:
 /// Human-readable name of a single capability, used when reporting that a rule
 /// could not be checked because the client does not provide that data.
 [[nodiscard]] std::string to_string(Capability capability);
+
+[[nodiscard]] std::string to_string(AdapterType type);
 
 /// The capabilities of the platform this binary was compiled for.
 [[nodiscard]] Capabilities platform_capabilities();

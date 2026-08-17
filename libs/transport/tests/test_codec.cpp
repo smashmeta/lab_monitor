@@ -55,6 +55,64 @@ TEST(Codec, ResourceSampleRoundTripsWithNoDisks) {
     EXPECT_EQ(round_trip(original), original);
 }
 
+TEST(Codec, ResourceSampleRoundTripsNetworkAdapters) {
+    ResourceSampleMessage original;
+    original.host_id = "PC-001";
+    original.sample.adapters = {
+        NetworkAdapter{"{4A2B-...}", "Intel(R) Ethernet I219-LM", AdapterType::Ethernet, true},
+        NetworkAdapter{"{9F31-...}", "Intel(R) Wi-Fi 6 AX201", AdapterType::WiFi, false},
+        // The case this feature exists for: a dial-up entry that is defined but
+        // not dialled, which no adapter enumeration would report at all.
+        NetworkAdapter{"Site VPN", "RAS entry Site VPN", AdapterType::Modem, false},
+    };
+
+    const ResourceSampleMessage decoded = round_trip(original);
+    EXPECT_EQ(decoded, original);
+    ASSERT_EQ(decoded.sample.adapters.size(), 3u);
+    EXPECT_EQ(decoded.sample.adapters[2].type, AdapterType::Modem);
+    EXPECT_FALSE(decoded.sample.adapters[2].connected);
+}
+
+TEST(Codec, ResourceSampleRoundTripsDisksAndAdaptersTogether) {
+    ResourceSampleMessage original;
+    original.host_id = "PC-002";
+    original.sample.disks = {DiskUsage{"C:\\", 1000, 250}};
+    original.sample.adapters = {NetworkAdapter{"lo", "Loopback", AdapterType::Loopback, true}};
+
+    EXPECT_EQ(round_trip(original), original);
+}
+
+TEST(Codec, ResourceSampleRejectsAnAdapterTypeItDoesNotKnow) {
+    // Enum values off the wire are integers until checked, exactly as
+    // CheckStatus is in a compliance report.
+    ResourceSampleMessage original;
+    original.host_id = "PC-001";
+    original.sample.adapters = {NetworkAdapter{"eth0", "NIC", AdapterType::Ethernet, true}};
+    std::vector<std::uint8_t> bytes = encode(original);
+
+    // The type byte is the only 0..7 value near the tail; find and corrupt it
+    // by walking back from the trailing `connected` byte.
+    ASSERT_GE(bytes.size(), 2u);
+    bytes[bytes.size() - 2] = 250;
+
+    ResourceSampleMessage decoded;
+    EXPECT_FALSE(decode(bytes, decoded));
+}
+
+TEST(Codec, ResourceSampleRejectsATruncatedAdapterList) {
+    ResourceSampleMessage original;
+    original.host_id = "PC-001";
+    original.sample.adapters = {
+        NetworkAdapter{"eth0", "Onboard NIC", AdapterType::Ethernet, true},
+        NetworkAdapter{"wlan0", "Wireless", AdapterType::WiFi, true},
+    };
+    std::vector<std::uint8_t> bytes = encode(original);
+    bytes.resize(bytes.size() - 6);
+
+    ResourceSampleMessage decoded;
+    EXPECT_FALSE(decode(bytes, decoded));
+}
+
 TEST(Codec, TemplateBundleEnvelopeRoundTrips) {
     TemplateBundleMessage original;
     original.revision = 18'446'744'073'709'551'615ull;  // max uint64

@@ -40,6 +40,7 @@ DetailWindow::DetailWindow(QString host_id, QWidget* parent)
       cpu_sparkline_(new lm::ui::Sparkline(this)),
       memory_bar_(new lm::ui::MeterBar(this)),
       disk_layout_(new QVBoxLayout()),
+      adapter_list_(new lm::ui::AdapterList(this)),
       compliance_tree_(new QTreeWidget(this)),
       minimize_button_(new QPushButton(QStringLiteral("Minimize"), this)),
       close_button_(new QPushButton(QStringLiteral("Close Program"), this)),
@@ -82,6 +83,9 @@ DetailWindow::DetailWindow(QString host_id, QWidget* parent)
     resources->addLayout(disk_layout_);
     root->addLayout(resources);
 
+    root->addWidget(new QLabel(QStringLiteral("Network adapters"), this));
+    root->addWidget(adapter_list_, 1);
+
     // Compliance list, grouped and dimmed per the brief's header comment.
     // Keeps each row's status colour when selected, instead of the style
     // repainting it with QPalette::HighlightedText.
@@ -121,6 +125,7 @@ void DetailWindow::apply_resources(lm::core::ResourceSample sample) {
     memory_bar_->set_value(mem_percent);
 
     sync_disk_bars(sample.disks);
+    adapter_list_->set_adapters(sample.adapters);
 }
 
 namespace {

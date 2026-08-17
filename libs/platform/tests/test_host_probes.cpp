@@ -43,28 +43,33 @@ struct Harness {
     FakeProcessProbe* processes = nullptr;
     FakeServiceProbe* services = nullptr;
     FakeRegistryProbe* registry = nullptr;
+    FakeNetworkProbe* network = nullptr;
     std::unique_ptr<HostProbes> probes;
 
     explicit Harness(Capabilities caps = Capabilities{}
                                              .add(Capability::Resources)
                                              .add(Capability::Processes)
                                              .add(Capability::Services)
-                                             .add(Capability::Registry)) {
+                                             .add(Capability::Registry)
+                                             .add(Capability::Network)) {
         auto resource_probe = std::make_unique<FakeResourceProbe>();
         auto process_probe = std::make_unique<FakeProcessProbe>();
         auto service_probe = std::make_unique<FakeServiceProbe>();
         auto registry_probe = std::make_unique<FakeRegistryProbe>();
+        auto network_probe = std::make_unique<FakeNetworkProbe>();
 
         resources = resource_probe.get();
         processes = process_probe.get();
         services = service_probe.get();
         registry = registry_probe.get();
+        network = network_probe.get();
 
         ProbeSet set;
         set.resources = std::move(resource_probe);
         set.processes = std::move(process_probe);
         set.services = std::move(service_probe);
         set.registry = std::move(registry_probe);
+        set.network = std::move(network_probe);
 
         probes = std::make_unique<HostProbes>("PC-001", std::move(set), caps);
     }
@@ -92,6 +97,43 @@ TEST(HostProbes, AlwaysSamplesResources) {
     EXPECT_EQ(facts.host_id, "PC-001");
     EXPECT_DOUBLE_EQ(facts.resources.cpu_percent, 42.0);
     EXPECT_EQ(harness.resources->calls, 1);
+}
+
+TEST(HostProbes, AlwaysEnumeratesAdaptersWithTheCapability) {
+    // Unlike processes and registry, adapters are not probed lazily against the
+    // rules: no rule references them, and their link state is wanted on every
+    // tick regardless of what the host has been assigned.
+    Harness harness;
+    harness.network->next = {NetworkAdapter{"eth0", "Onboard NIC", AdapterType::Ethernet, true}};
+
+    const ResourceSample sample = harness.probes->sample_resources();
+
+    ASSERT_EQ(sample.adapters.size(), 1u);
+    EXPECT_EQ(sample.adapters.front().description, "Onboard NIC");
+    EXPECT_EQ(harness.network->calls, 1);
+}
+
+TEST(HostProbes, ReportsNoAdaptersWithoutTheNetworkCapability) {
+    Harness harness(Capabilities{}.add(Capability::Resources));
+    harness.network->next = {NetworkAdapter{"eth0", "Onboard NIC", AdapterType::Ethernet, true}};
+
+    const ResourceSample sample = harness.probes->sample_resources();
+
+    EXPECT_TRUE(sample.adapters.empty());
+    EXPECT_EQ(harness.network->calls, 0);
+    EXPECT_FALSE(harness.probes->capabilities().has(Capability::Network));
+}
+
+TEST(HostProbes, DropsTheNetworkCapabilityWhenNoProbeIsSupplied) {
+    // The same honesty rule the other probes follow: a capability is only
+    // advertised when something can actually serve it.
+    ProbeSet set;
+    set.resources = std::make_unique<FakeResourceProbe>();
+    HostProbes probes("PC-001", std::move(set),
+                       Capabilities{}.add(Capability::Resources).add(Capability::Network));
+
+    EXPECT_FALSE(probes.capabilities().has(Capability::Network));
+    EXPECT_TRUE(probes.sample_resources().adapters.empty());
 }
 
 TEST(HostProbes, EmptyBundleProbesNothingElse) {

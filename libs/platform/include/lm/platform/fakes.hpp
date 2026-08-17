@@ -41,6 +41,17 @@ public:
     }
 };
 
+class FakeNetworkProbe : public INetworkProbe {
+public:
+    std::vector<core::NetworkAdapter> next;
+    int calls = 0;
+
+    std::vector<core::NetworkAdapter> enumerate() override {
+        ++calls;
+        return next;
+    }
+};
+
 class FakeRegistryProbe : public IRegistryProbe {
 public:
     /// Keyed by core::registry_key(). Unlisted keys read back as absent.
