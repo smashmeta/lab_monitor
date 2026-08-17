@@ -11,13 +11,23 @@
 
 namespace {
 
-QPushButton* button_named(DetailWindow& window, const QString& text) {
-    for (QPushButton* candidate : window.findChildren<QPushButton*>()) {
-        if (candidate->text() == text) {
-            return candidate;
-        }
-    }
-    return nullptr;
+/// By object name, not by label: the wording on these buttons is presentation
+/// and has already been changed once, which turned every lookup here into a
+/// null dereference. What the button *does* is the stable thing.
+QPushButton* button_named(DetailWindow& window, const QString& object_name) {
+    return window.findChild<QPushButton*>(object_name);
+}
+
+QPushButton* minimize_button(DetailWindow& window) {
+    QPushButton* button = button_named(window, QStringLiteral("MinimizeButton"));
+    EXPECT_NE(button, nullptr) << "no button named MinimizeButton";
+    return button;
+}
+
+QPushButton* close_button(DetailWindow& window) {
+    QPushButton* button = button_named(window, QStringLiteral("CloseButton"));
+    EXPECT_NE(button, nullptr) << "no button named CloseButton";
+    return button;
 }
 
 /// Answers the next modal question box. Queued so it runs inside the dialog's
@@ -46,8 +56,8 @@ TEST(DetailWindow, HasNoCloseButtonInItsTitleBar) {
 
 TEST(DetailWindow, CarriesItsOwnMinimizeAndCloseButtons) {
     DetailWindow window(QStringLiteral("PC-001"));
-    EXPECT_NE(button_named(window, QStringLiteral("Minimize")), nullptr);
-    EXPECT_NE(button_named(window, QStringLiteral("Close Program")), nullptr);
+    EXPECT_NE(minimize_button(window), nullptr);
+    EXPECT_NE(close_button(window), nullptr);
 }
 
 TEST(DetailWindow, MinimizeHidesToTheTrayWhenThereIsOne) {
@@ -57,7 +67,7 @@ TEST(DetailWindow, MinimizeHidesToTheTrayWhenThereIsOne) {
     QApplication::processEvents();
     ASSERT_TRUE(window.isVisible());
 
-    button_named(window, QStringLiteral("Minimize"))->click();
+    minimize_button(window)->click();
     QApplication::processEvents();
 
     EXPECT_FALSE(window.isVisible()) << "the tray icon is how it comes back";
@@ -71,7 +81,7 @@ TEST(DetailWindow, MinimizeLeavesAWindowBehindWhenThereIsNoTray) {
     window.show();
     QApplication::processEvents();
 
-    button_named(window, QStringLiteral("Minimize"))->click();
+    minimize_button(window)->click();
     QApplication::processEvents();
 
     EXPECT_TRUE(window.isMinimized());
@@ -83,7 +93,7 @@ TEST(DetailWindow, AsksBeforeClosingAndQuitsOnlyIfConfirmed) {
     ASSERT_TRUE(spy.isValid());
 
     answer_next_question(QMessageBox::Yes);
-    button_named(window, QStringLiteral("Close Program"))->click();
+    close_button(window)->click();
 
     EXPECT_EQ(spy.count(), 1);
 }
@@ -93,7 +103,7 @@ TEST(DetailWindow, DoesNotQuitWhenTheUserDeclines) {
     QSignalSpy spy(&window, &DetailWindow::quit_requested);
 
     answer_next_question(QMessageBox::No);
-    button_named(window, QStringLiteral("Close Program"))->click();
+    close_button(window)->click();
 
     EXPECT_EQ(spy.count(), 0) << "declining the question must leave the client running";
 }
@@ -113,7 +123,7 @@ TEST(DetailWindow, DefaultsTheQuestionToNo) {
         }
         ADD_FAILURE() << "no question box was open";
     });
-    button_named(window, QStringLiteral("Close Program"))->click();
+    close_button(window)->click();
 
     EXPECT_EQ(spy.count(), 0);
 }

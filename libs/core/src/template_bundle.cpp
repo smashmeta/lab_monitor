@@ -36,6 +36,7 @@ std::string_view prefix_of(RuleKind kind) {
         case RuleKind::Process:  return "process";
         case RuleKind::Service:  return "service";
         case RuleKind::Registry: return "registry";
+        case RuleKind::Network:  return "network";
     }
     return "rule";
 }
@@ -47,6 +48,14 @@ std::string target_of(const Rule& rule) {
     }
     if (const auto* service = std::get_if<ServiceRule>(&rule.payload)) {
         return service->service_name;
+    }
+    if (const auto* state = std::get_if<AdapterStateRule>(&rule.payload)) {
+        return state->adapter_name;
+    }
+    if (std::holds_alternative<AdapterCountRule>(rule.payload)) {
+        // No target of its own -- the rule is about the fleet-visible count,
+        // so "network-adapters" plus the usual -2, -3 is the best name for it.
+        return "adapters";
     }
 
     const auto& registry = std::get<RegistryRule>(rule.payload);

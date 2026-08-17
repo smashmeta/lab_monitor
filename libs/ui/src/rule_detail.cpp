@@ -78,13 +78,28 @@ RuleDetail describe(const lm::core::Rule& rule) {
                     detail.constraint =
                         QStringLiteral("state %1").arg(service_state_name(*payload.expected_state));
                 }
-            } else {
+            } else if constexpr (std::is_same_v<T, lm::core::RegistryRule>) {
                 detail.kind = QStringLiteral("Registry");
                 detail.target = registry_target(payload);
                 detail.constraint = registry_match_name(payload.match);
                 if (payload.match != lm::core::RegistryMatch::Exists) {
                     detail.constraint += QStringLiteral(" \"%1\"").arg(to_qstring(payload.expected_value));
                 }
+            } else if constexpr (std::is_same_v<T, lm::core::AdapterCountRule>) {
+                detail.kind = QStringLiteral("Network");
+                detail.target = QStringLiteral("connected adapters");
+                detail.constraint = QStringLiteral("%1 %2")
+                                        .arg(to_qstring(lm::core::to_string(payload.comparison)))
+                                        .arg(payload.count);
+                // The comparison already says the direction, so showing
+                // "Must be present" beside it would only invite the reader to
+                // wonder which one wins.
+                detail.expectation = detail.constraint;
+            } else {
+                detail.kind = QStringLiteral("Network");
+                detail.target = to_qstring(payload.adapter_name);
+                detail.constraint =
+                    QStringLiteral("link %1").arg(to_qstring(lm::core::to_string(payload.expected)));
             }
         },
         rule.payload);

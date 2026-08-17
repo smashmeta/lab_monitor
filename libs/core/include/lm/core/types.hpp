@@ -11,7 +11,10 @@ using RuleId = std::string;
 using Clock = std::chrono::system_clock;
 using TimePoint = Clock::time_point;
 
-enum class RuleKind { Process, Service, Registry };
+enum class RuleKind { Process, Service, Registry, Network };
+
+/// How an expected count is compared against the observed one.
+enum class Comparison { AtLeast, Exactly, AtMost };
 enum class Presence { MustBePresent, MustBeAbsent };
 enum class CheckStatus { Pass, Fail, NotApplicable, Error };
 enum class ServiceState { Running, Stopped, Unknown };
@@ -81,6 +84,9 @@ private:
 
 [[nodiscard]] std::string to_string(AdapterType type);
 [[nodiscard]] std::string to_string(LinkState state);
+/// Reads as part of a sentence: "at least 2 connected".
+[[nodiscard]] std::string to_string(Comparison comparison);
+[[nodiscard]] bool satisfies(int observed, Comparison comparison, int expected);
 
 /// The capabilities of the platform this binary was compiled for.
 [[nodiscard]] Capabilities platform_capabilities();

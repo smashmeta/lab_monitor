@@ -7,6 +7,7 @@
 #include <QSet>
 #include <QTreeWidgetItem>
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -42,7 +43,7 @@ DetailWindow::DetailWindow(QString host_id, QWidget* parent)
       disk_layout_(new QVBoxLayout()),
       adapter_list_(new lm::ui::AdapterList(this)),
       compliance_tree_(new QTreeWidget(this)),
-      minimize_button_(new QPushButton(QStringLiteral("Minimize"), this)),
+      minimize_button_(new QPushButton(QStringLiteral("Hide"), this)),
       close_button_(new QPushButton(QStringLiteral("Close Program"), this)),
       host_id_(std::move(host_id)) {
     setWindowTitle(hostname_label_->text());
@@ -94,6 +95,11 @@ DetailWindow::DetailWindow(QString host_id, QWidget* parent)
     compliance_tree_->setHeaderLabels(
         {QStringLiteral("Rule"), QStringLiteral("Status"), QStringLiteral("Observed")});
     root->addWidget(compliance_tree_, 1);
+
+    // Object names so tests (and any future QSS) can find these by role. The
+    // labels are wording, free to change; what they do is not.
+    minimize_button_->setObjectName(QStringLiteral("MinimizeButton"));
+    close_button_->setObjectName(QStringLiteral("CloseButton"));
 
     // Right-aligned, with Close last: the destructive one sits where the eye
     // stops rather than where the cursor lands on the way past.
@@ -223,6 +229,13 @@ void DetailWindow::apply_report(lm::core::ComplianceReport report, QVector<lm::u
         }
         header->setExpanded(true);
     }
+
+    // Same reasoning as the server's pane: a truncated "Wire…" defeats the
+    // point of labelling rows with the description instead of the rule id.
+    compliance_tree_->resizeColumnToContents(0);
+    constexpr int kMaxRuleWidth = 260;
+    compliance_tree_->setColumnWidth(0,
+                                     std::min(compliance_tree_->columnWidth(0), kMaxRuleWidth));
 }
 
 void DetailWindow::set_applied_revision(quint64 revision) {

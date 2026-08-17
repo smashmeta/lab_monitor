@@ -40,6 +40,24 @@ std::string to_string(LinkState state) {
     return "Unknown";
 }
 
+std::string to_string(Comparison comparison) {
+    switch (comparison) {
+        case Comparison::AtLeast: return "at least";
+        case Comparison::Exactly: return "exactly";
+        case Comparison::AtMost:  return "at most";
+    }
+    return "at least";
+}
+
+bool satisfies(int observed, Comparison comparison, int expected) {
+    switch (comparison) {
+        case Comparison::AtLeast: return observed >= expected;
+        case Comparison::Exactly: return observed == expected;
+        case Comparison::AtMost:  return observed <= expected;
+    }
+    return false;
+}
+
 Capabilities platform_capabilities() {
     Capabilities caps;
     caps.add(Capability::Resources).add(Capability::Processes).add(Capability::Services);
@@ -54,6 +72,7 @@ Capability required_capability(RuleKind kind) {
         case RuleKind::Process:  return Capability::Processes;
         case RuleKind::Service:  return Capability::Services;
         case RuleKind::Registry: return Capability::Registry;
+        case RuleKind::Network:  return Capability::Network;
     }
     return Capability::Resources;
 }

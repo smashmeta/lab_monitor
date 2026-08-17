@@ -12,8 +12,12 @@ RuleKind kind_of(const Rule& rule) {
                 return RuleKind::Process;
             } else if constexpr (std::is_same_v<T, ServiceRule>) {
                 return RuleKind::Service;
-            } else {
+            } else if constexpr (std::is_same_v<T, RegistryRule>) {
                 return RuleKind::Registry;
+            } else {
+                // Both adapter payloads: the kind is the capability they need,
+                // and they need the same one.
+                return RuleKind::Network;
             }
         },
         rule.payload);

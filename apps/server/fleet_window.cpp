@@ -73,8 +73,28 @@ QString kind_label(lm::core::RuleKind kind) {
         case lm::core::RuleKind::Process:  return QStringLiteral("Process");
         case lm::core::RuleKind::Service:  return QStringLiteral("Service");
         case lm::core::RuleKind::Registry: return QStringLiteral("Registry");
+        case lm::core::RuleKind::Network:  return QStringLiteral("Network");
     }
     return QStringLiteral("Unknown");
+}
+
+/// The link states a rule can require. Unknown is deliberately absent: "this
+/// adapter must be in a state the client could not determine" is not a check
+/// anyone means to write.
+const QStringList& link_state_choices() {
+    static const QStringList choices{
+        QStringLiteral("Up"),          QStringLiteral("No link"),   QStringLiteral("Disconnected"),
+        QStringLiteral("Connecting"),  QStringLiteral("Disabled"),  QStringLiteral("Faulted")};
+    return choices;
+}
+
+lm::core::LinkState link_state_from_choice(const QString& text) {
+    if (text == QStringLiteral("Up"))           return lm::core::LinkState::Connected;
+    if (text == QStringLiteral("No link"))      return lm::core::LinkState::NoMedia;
+    if (text == QStringLiteral("Connecting"))   return lm::core::LinkState::Connecting;
+    if (text == QStringLiteral("Disabled"))     return lm::core::LinkState::Disabled;
+    if (text == QStringLiteral("Faulted"))      return lm::core::LinkState::Faulted;
+    return lm::core::LinkState::Disconnected;
 }
 
 QString status_name(lm::core::CheckStatus status) {
@@ -95,8 +115,16 @@ QString target_label(const lm::core::Rule& rule) {
                 return QString::fromStdString(payload.executable);
             } else if constexpr (std::is_same_v<T, lm::core::ServiceRule>) {
                 return QString::fromStdString(payload.service_name);
-            } else {
+            } else if constexpr (std::is_same_v<T, lm::core::RegistryRule>) {
                 return QString::fromStdString(lm::core::registry_key(payload));
+            } else if constexpr (std::is_same_v<T, lm::core::AdapterCountRule>) {
+                return QStringLiteral("%1 %2 adapters connected")
+                    .arg(QString::fromStdString(lm::core::to_string(payload.comparison)))
+                    .arg(payload.count);
+            } else {
+                return QStringLiteral("%1 link %2")
+                    .arg(QString::fromStdString(payload.adapter_name),
+                          QString::fromStdString(lm::core::to_string(payload.expected)));
             }
         },
         rule.payload);
@@ -589,6 +617,15 @@ void FleetWindow::populate_compliance_tree(const lm::core::ComplianceReport& rep
         }
         header->setExpanded(true);
     }
+
+    // Rule descriptions are sentences, and the default column width truncated
+    // them to "Wire…" — which defeats the point of showing the description
+    // rather than the id. Capped so one long rule cannot crowd out Observed,
+    // which carries the reason a check failed.
+    detail_compliance_tree_->resizeColumnToContents(0);
+    constexpr int kMaxRuleWidth = 320;
+    detail_compliance_tree_->setColumnWidth(
+        0, std::min(detail_compliance_tree_->columnWidth(0), kMaxRuleWidth));
 }
 
 void FleetWindow::sync_disk_bars(const std::vector<lm::core::DiskUsage>& disks) {
@@ -937,18 +974,29 @@ void FleetWindow::on_add_rule_clicked() {
     // keep a ledger of -- and a reused one silently cost a rule, since
     // rules_for() keeps only the first holder of an id.
     bool ok = false;
-    const QStringList kinds{QStringLiteral("Process"), QStringLiteral("Service"), QStringLiteral("Registry")};
+    const QStringList kinds{QStringLiteral("Process"), QStringLiteral("Service"),
+                            QStringLiteral("Registry"), QStringLiteral("Network: adapter count"),
+                            QStringLiteral("Network: named adapter")};
     const QString kind =
         QInputDialog::getItem(this, QStringLiteral("Rule Kind"), QStringLiteral("Kind:"), kinds, 0, false, &ok);
     if (!ok) {
         return;
     }
 
-    const QStringList expectations{QStringLiteral("Must be present"), QStringLiteral("Must be absent")};
-    const QString expectation_text = QInputDialog::getItem(
-        this, QStringLiteral("Expectation"), QStringLiteral("Expectation:"), expectations, 0, false, &ok);
-    if (!ok) {
-        return;
+    // The count rule carries its own direction in the comparison, so asking
+    // for a presence on top of it would be a second, contradictable way of
+    // saying the same thing. Skipped rather than asked and ignored.
+    const bool asks_expectation = kind != QStringLiteral("Network: adapter count");
+    QString expectation_text = QStringLiteral("Must be present");
+    if (asks_expectation) {
+        const QStringList expectations{QStringLiteral("Must be present"),
+                                        QStringLiteral("Must be absent")};
+        expectation_text = QInputDialog::getItem(this, QStringLiteral("Expectation"),
+                                                  QStringLiteral("Expectation:"), expectations, 0,
+                                                  false, &ok);
+        if (!ok) {
+            return;
+        }
     }
 
     const QString description = QInputDialog::getText(
@@ -976,6 +1024,48 @@ void FleetWindow::on_add_rule_clicked() {
             return;
         }
         rule.payload = lm::core::ServiceRule{service.trimmed().toStdString(), std::nullopt};
+    } else if (kind == QStringLiteral("Network: adapter count")) {
+        const QStringList comparisons{QStringLiteral("at least"), QStringLiteral("exactly"),
+                                       QStringLiteral("at most")};
+        const QString comparison_text =
+            QInputDialog::getItem(this, QStringLiteral("Connected Adapters"),
+                                   QStringLiteral("How many adapters must be connected?"),
+                                   comparisons, 0, false, &ok);
+        if (!ok) {
+            return;
+        }
+        const int count = QInputDialog::getInt(this, QStringLiteral("Connected Adapters"),
+                                                QStringLiteral("Count:"), 1, 0, 64, 1, &ok);
+        if (!ok) {
+            return;
+        }
+        lm::core::AdapterCountRule payload;
+        payload.comparison = comparison_text == QStringLiteral("exactly") ? lm::core::Comparison::Exactly
+                             : comparison_text == QStringLiteral("at most")
+                                 ? lm::core::Comparison::AtMost
+                                 : lm::core::Comparison::AtLeast;
+        payload.count = count;
+        rule.payload = payload;
+    } else if (kind == QStringLiteral("Network: named adapter")) {
+        // Offered as free text rather than a picker: the server does not know
+        // which adapters a host has until that host reports, and a rule is
+        // routinely written for machines that have not checked in yet.
+        const QString name = QInputDialog::getText(
+            this, QStringLiteral("Adapter"),
+            QStringLiteral("Adapter name, as Network Connections shows it:"), QLineEdit::Normal, {},
+            &ok);
+        if (!ok || name.trimmed().isEmpty()) {
+            return;
+        }
+        const QString state_text =
+            QInputDialog::getItem(this, QStringLiteral("Adapter Link"),
+                                   QStringLiteral("Required link state:"), link_state_choices(), 0,
+                                   false, &ok);
+        if (!ok) {
+            return;
+        }
+        rule.payload = lm::core::AdapterStateRule{name.trimmed().toStdString(),
+                                                   link_state_from_choice(state_text)};
     } else {
         const QStringList hives{QStringLiteral("HKLM"), QStringLiteral("HKCU"), QStringLiteral("HKCR"),
                                  QStringLiteral("HKU")};

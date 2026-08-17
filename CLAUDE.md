@@ -40,14 +40,14 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 
 | Target | Responsibility | Tests |
 |---|---|---|
-| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 100 |
+| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 116 |
 | `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 51 |
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend | 28 |
 | `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 48 + 32 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 17 |
 | `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 22 |
 
-**298 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
+**314 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they need loopback multicast).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -178,6 +178,28 @@ modem.
 since creating entries there would be editing the machine's network config. That
 is what makes the disconnected-entry path genuinely tested on a machine with no
 dial-up configured.
+
+### Network rules are two payloads, not one with a mode flag
+`AdapterCountRule` ("at least 2 connected") and `AdapterStateRule` ("smash-wifi
+must be Up") are separate alternatives of `RulePayload`, both mapping to
+`RuleKind::Network` and so to `Capability::Network`. One struct with a "which
+form is this" flag would be the same two-sources-of-truth mistake `Rule` avoids
+by not storing its own `kind`.
+
+`Presence` applies to the state rule — `MustBeAbsent` means "must **not** be in
+this state", which is how every other kind reads it — but **not** to the count
+rule, whose `Comparison` already carries the direction. The Add Rule flow skips
+the question there rather than asking and ignoring the answer.
+
+A named adapter that is missing entirely reports **Fail**, not Error: a removed
+or renamed NIC is exactly what a fleet check should catch, and Error means "could
+not tell". Names are matched case-insensitively against
+`NetworkAdapter::name` — the Network Connections name, not the GUID — because
+rules are typed by people.
+
+JSON uses its own wire names (`"AtLeast"`, `"NoMedia"`), deliberately not
+`core::to_string()`'s display strings ("at least", "No link"): the latter are
+free to be reworded, while anything in a saved bundle has to keep parsing.
 
 ### The client quits deliberately, never incidentally
 `DetailWindow` drops `Qt::WindowCloseButtonHint` and carries its own **Minimize**

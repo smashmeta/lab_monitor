@@ -123,6 +123,45 @@ CheckResult evaluate_registry(const Rule& rule, const RegistryRule& payload,
     return error(rule, value.data, "unhandled registry match mode");
 }
 
+CheckResult evaluate_adapter_count(const Rule& rule, const AdapterCountRule& payload,
+                                    const HostFacts& facts) {
+    const auto connected = static_cast<int>(std::ranges::count_if(
+        facts.resources.adapters,
+        [](const NetworkAdapter& adapter) { return is_up(adapter.link); }));
+
+    CheckResult result;
+    result.rule_id = rule.id;
+    result.observed = std::to_string(connected) + " of " +
+                      std::to_string(facts.resources.adapters.size()) + " connected";
+    // The comparison carries the direction on its own, so Presence would only
+    // be a second, contradictable way of saying the same thing. Ignored here,
+    // as the version constraint is for service and registry rules.
+    result.status = satisfies(connected, payload.comparison, payload.count) ? CheckStatus::Pass
+                                                                             : CheckStatus::Fail;
+    return result;
+}
+
+CheckResult evaluate_adapter_state(const Rule& rule, const AdapterStateRule& payload,
+                                    const HostFacts& facts) {
+    const auto found = std::ranges::find_if(
+        facts.resources.adapters, [&](const NetworkAdapter& adapter) {
+            return equals_ignore_case(adapter.name, payload.adapter_name);
+        });
+
+    if (found == facts.resources.adapters.end()) {
+        // Fail rather than Error: the adapter genuinely is not in the state the
+        // rule asked for, and "the NIC was removed" is exactly what a fleet
+        // check should catch. Error is for "could not tell".
+        return resolve(rule, false, "no adapter named \"" + payload.adapter_name + "\"");
+    }
+
+    const bool matches = found->link == payload.expected;
+    // MustBeAbsent inverts it: "the guest adapter must NOT be connected" is as
+    // reasonable a rule as its opposite, and resolve() already means exactly
+    // that for every other kind.
+    return resolve(rule, matches, to_string(found->link));
+}
+
 }  // namespace
 
 ComplianceReport evaluate(const TemplateBundle& bundle, const HostFacts& facts,
@@ -154,8 +193,12 @@ ComplianceReport evaluate(const TemplateBundle& bundle, const HostFacts& facts,
                     return evaluate_process(*rule, payload, facts);
                 } else if constexpr (std::is_same_v<T, ServiceRule>) {
                     return evaluate_service(*rule, payload, facts);
-                } else {
+                } else if constexpr (std::is_same_v<T, RegistryRule>) {
                     return evaluate_registry(*rule, payload, facts);
+                } else if constexpr (std::is_same_v<T, AdapterCountRule>) {
+                    return evaluate_adapter_count(*rule, payload, facts);
+                } else {
+                    return evaluate_adapter_state(*rule, payload, facts);
                 }
             },
             rule->payload));

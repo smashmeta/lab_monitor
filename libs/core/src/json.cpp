@@ -44,6 +44,49 @@ std::string registry_match_to_string(RegistryMatch value) {
     return "Exists";
 }
 
+/// Stable wire names, deliberately not core::to_string()'s display strings:
+/// "at least" and "No link" are for humans and are free to be reworded, while
+/// anything written into a saved bundle has to keep parsing next release.
+std::string comparison_to_string(Comparison value) {
+    switch (value) {
+        case Comparison::AtLeast: return "AtLeast";
+        case Comparison::Exactly: return "Exactly";
+        case Comparison::AtMost:  return "AtMost";
+    }
+    return "AtLeast";
+}
+
+Comparison comparison_from_string(const std::string& text) {
+    if (text == "AtLeast") return Comparison::AtLeast;
+    if (text == "Exactly") return Comparison::Exactly;
+    if (text == "AtMost")  return Comparison::AtMost;
+    throw std::runtime_error("unknown comparison: " + text);
+}
+
+std::string link_state_to_string(LinkState value) {
+    switch (value) {
+        case LinkState::Unknown:      return "Unknown";
+        case LinkState::Connected:    return "Connected";
+        case LinkState::NoMedia:      return "NoMedia";
+        case LinkState::Disconnected: return "Disconnected";
+        case LinkState::Connecting:   return "Connecting";
+        case LinkState::Disabled:     return "Disabled";
+        case LinkState::Faulted:      return "Faulted";
+    }
+    return "Unknown";
+}
+
+LinkState link_state_from_string(const std::string& text) {
+    if (text == "Unknown")      return LinkState::Unknown;
+    if (text == "Connected")    return LinkState::Connected;
+    if (text == "NoMedia")      return LinkState::NoMedia;
+    if (text == "Disconnected") return LinkState::Disconnected;
+    if (text == "Connecting")   return LinkState::Connecting;
+    if (text == "Disabled")     return LinkState::Disabled;
+    if (text == "Faulted")      return LinkState::Faulted;
+    throw std::runtime_error("unknown link state: " + text);
+}
+
 RegistryMatch registry_match_from_string(const std::string& text) {
     if (text == "Exists")   return RegistryMatch::Exists;
     if (text == "Equals")   return RegistryMatch::Equals;
@@ -88,13 +131,21 @@ void to_json(nlohmann::json& j, const Rule& value) {
                 if (p.expected_state) {
                     payload["expected_state"] = service_state_to_string(*p.expected_state);
                 }
-            } else {
+            } else if constexpr (std::is_same_v<T, RegistryRule>) {
                 payload = {{"type", "registry"},
                            {"hive", to_string(p.hive)},
                            {"key_path", p.key_path},
                            {"value_name", p.value_name},
                            {"match", registry_match_to_string(p.match)},
                            {"expected_value", p.expected_value}};
+            } else if constexpr (std::is_same_v<T, AdapterCountRule>) {
+                payload = {{"type", "adapter_count"},
+                           {"comparison", comparison_to_string(p.comparison)},
+                           {"count", p.count}};
+            } else {
+                payload = {{"type", "adapter_state"},
+                           {"adapter_name", p.adapter_name},
+                           {"expected", link_state_to_string(p.expected)}};
             }
         },
         value.payload);
@@ -136,6 +187,16 @@ void from_json(const nlohmann::json& j, Rule& value) {
         payload.at("value_name").get_to(rule.value_name);
         rule.match = registry_match_from_string(payload.at("match").get<std::string>());
         payload.at("expected_value").get_to(rule.expected_value);
+        value.payload = rule;
+    } else if (type == "adapter_count") {
+        AdapterCountRule rule;
+        rule.comparison = comparison_from_string(payload.at("comparison").get<std::string>());
+        payload.at("count").get_to(rule.count);
+        value.payload = rule;
+    } else if (type == "adapter_state") {
+        AdapterStateRule rule;
+        payload.at("adapter_name").get_to(rule.adapter_name);
+        rule.expected = link_state_from_string(payload.at("expected").get<std::string>());
         value.payload = rule;
     } else {
         throw std::runtime_error("unknown rule payload type: " + type);

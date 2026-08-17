@@ -13,7 +13,40 @@ Capabilities all_capabilities() {
         .add(Capability::Resources)
         .add(Capability::Processes)
         .add(Capability::Services)
-        .add(Capability::Registry);
+        .add(Capability::Registry)
+        .add(Capability::Network);
+}
+
+NetworkAdapter adapter(std::string name, LinkState link) {
+    NetworkAdapter entry;
+    entry.name = std::move(name);
+    entry.id = "{" + entry.name + "}";
+    entry.type = AdapterType::Ethernet;
+    entry.link = link;
+    return entry;
+}
+
+Rule count_rule(Comparison comparison, int count) {
+    Rule rule;
+    rule.id = "n1";
+    rule.payload = AdapterCountRule{comparison, count};
+    return rule;
+}
+
+Rule adapter_state_rule(std::string name, LinkState expected,
+                        Presence expectation = Presence::MustBePresent) {
+    Rule rule;
+    rule.id = "n2";
+    rule.expectation = expectation;
+    rule.payload = AdapterStateRule{std::move(name), expected};
+    return rule;
+}
+
+HostFacts facts_with_adapters(std::vector<NetworkAdapter> adapters) {
+    HostFacts facts;
+    facts.host_id = "PC-001";
+    facts.resources.adapters = std::move(adapters);
+    return facts;
 }
 
 TemplateBundle bundle_with(Rule rule) {
@@ -304,4 +337,146 @@ TEST(CountByStatus, TalliesEachStatus) {
     EXPECT_EQ(count_by_status(report, CheckStatus::Fail), 1u);
     EXPECT_EQ(count_by_status(report, CheckStatus::NotApplicable), 1u);
     EXPECT_EQ(count_by_status(report, CheckStatus::Pass), 0u);
+}
+
+// --- network rules ----------------------------------------------------------
+
+TEST(EvaluateAdapterCount, PassesWhenEnoughAdaptersAreConnected) {
+    const ComplianceReport report =
+        evaluate(bundle_with(count_rule(Comparison::AtLeast, 2)),
+                 facts_with_adapters({adapter("smash-lan", LinkState::Connected),
+                                      adapter("smash-wifi", LinkState::Connected),
+                                      adapter("Bluetooth", LinkState::NoMedia)}),
+                 all_capabilities());
+
+    ASSERT_EQ(report.results.size(), 1u);
+    EXPECT_EQ(report.results.front().status, CheckStatus::Pass);
+    EXPECT_EQ(report.results.front().observed, "2 of 3 connected");
+}
+
+TEST(EvaluateAdapterCount, CountsOnlyFullyConnectedAdapters) {
+    // The states that are not Connected are each a different problem, but none
+    // of them is carrying traffic -- the same definition the fleet column uses.
+    const ComplianceReport report =
+        evaluate(bundle_with(count_rule(Comparison::AtLeast, 1)),
+                 facts_with_adapters({adapter("a", LinkState::NoMedia),
+                                      adapter("b", LinkState::Connecting),
+                                      adapter("c", LinkState::Disabled),
+                                      adapter("d", LinkState::Faulted)}),
+                 all_capabilities());
+
+    EXPECT_EQ(report.results.front().status, CheckStatus::Fail);
+    EXPECT_EQ(report.results.front().observed, "0 of 4 connected");
+}
+
+TEST(EvaluateAdapterCount, ExactlyRejectsBothTooFewAndTooMany) {
+    const auto status_for = [](int connected) {
+        std::vector<NetworkAdapter> adapters;
+        for (int i = 0; i < connected; ++i) {
+            adapters.push_back(adapter("nic" + std::to_string(i), LinkState::Connected));
+        }
+        return evaluate(bundle_with(count_rule(Comparison::Exactly, 2)),
+                        facts_with_adapters(std::move(adapters)), all_capabilities())
+            .results.front()
+            .status;
+    };
+
+    EXPECT_EQ(status_for(1), CheckStatus::Fail);
+    EXPECT_EQ(status_for(2), CheckStatus::Pass);
+    EXPECT_EQ(status_for(3), CheckStatus::Fail);
+}
+
+TEST(EvaluateAdapterCount, AtMostCatchesAnUnexpectedExtraConnection) {
+    // The reason AtMost exists: a lab machine quietly bridged onto a second
+    // network is exactly what a fleet check should notice.
+    const ComplianceReport report =
+        evaluate(bundle_with(count_rule(Comparison::AtMost, 1)),
+                 facts_with_adapters({adapter("smash-lan", LinkState::Connected),
+                                      adapter("tethered-phone", LinkState::Connected)}),
+                 all_capabilities());
+
+    EXPECT_EQ(report.results.front().status, CheckStatus::Fail);
+}
+
+TEST(EvaluateAdapterCount, PassesWithNoAdaptersWhenNoneAreRequired) {
+    const ComplianceReport report = evaluate(bundle_with(count_rule(Comparison::AtMost, 0)),
+                                             facts_with_adapters({}), all_capabilities());
+    EXPECT_EQ(report.results.front().status, CheckStatus::Pass);
+}
+
+TEST(EvaluateAdapterState, PassesWhenTheNamedAdapterIsInTheRequiredState) {
+    const ComplianceReport report =
+        evaluate(bundle_with(adapter_state_rule("smash-wifi", LinkState::Connected)),
+                 facts_with_adapters({adapter("smash-lan", LinkState::NoMedia),
+                                      adapter("smash-wifi", LinkState::Connected)}),
+                 all_capabilities());
+
+    EXPECT_EQ(report.results.front().status, CheckStatus::Pass);
+    EXPECT_EQ(report.results.front().observed, "Up");
+}
+
+TEST(EvaluateAdapterState, FailsWhenItIsInADifferentState) {
+    const ComplianceReport report =
+        evaluate(bundle_with(adapter_state_rule("smash-lan", LinkState::Connected)),
+                 facts_with_adapters({adapter("smash-lan", LinkState::NoMedia)}),
+                 all_capabilities());
+
+    EXPECT_EQ(report.results.front().status, CheckStatus::Fail);
+    EXPECT_EQ(report.results.front().observed, "No link")
+        << "the observed state is the whole point: 'not connected' would not say why";
+}
+
+TEST(EvaluateAdapterState, CanRequireAStateOtherThanConnected) {
+    // "the guest port must stay unplugged" is as reasonable as its opposite.
+    const ComplianceReport report =
+        evaluate(bundle_with(adapter_state_rule("guest-port", LinkState::NoMedia)),
+                 facts_with_adapters({adapter("guest-port", LinkState::NoMedia)}),
+                 all_capabilities());
+
+    EXPECT_EQ(report.results.front().status, CheckStatus::Pass);
+}
+
+TEST(EvaluateAdapterState, MustBeAbsentInvertsTheMatch) {
+    const auto status_for = [](LinkState actual) {
+        return evaluate(bundle_with(adapter_state_rule("guest-port", LinkState::Connected,
+                                                        Presence::MustBeAbsent)),
+                        facts_with_adapters({adapter("guest-port", actual)}), all_capabilities())
+            .results.front()
+            .status;
+    };
+
+    EXPECT_EQ(status_for(LinkState::Connected), CheckStatus::Fail);
+    EXPECT_EQ(status_for(LinkState::NoMedia), CheckStatus::Pass);
+}
+
+TEST(EvaluateAdapterState, MatchesTheNameCaseInsensitively) {
+    // Rules are typed by people; process and service rules match this way too.
+    const ComplianceReport report =
+        evaluate(bundle_with(adapter_state_rule("SMASH-WIFI", LinkState::Connected)),
+                 facts_with_adapters({adapter("smash-wifi", LinkState::Connected)}),
+                 all_capabilities());
+
+    EXPECT_EQ(report.results.front().status, CheckStatus::Pass);
+}
+
+TEST(EvaluateAdapterState, FailsRatherThanErrorsWhenTheAdapterIsMissing) {
+    // A removed or renamed NIC is exactly what a fleet check should catch, so
+    // it is a failure of the rule -- not an inability to tell.
+    const ComplianceReport report =
+        evaluate(bundle_with(adapter_state_rule("smash-lan", LinkState::Connected)),
+                 facts_with_adapters({adapter("smash-wifi", LinkState::Connected)}),
+                 all_capabilities());
+
+    EXPECT_EQ(report.results.front().status, CheckStatus::Fail);
+    EXPECT_EQ(report.results.front().observed, "no adapter named \"smash-lan\"");
+}
+
+TEST(EvaluateNetworkRules, AreNotApplicableWithoutTheNetworkCapability) {
+    const ComplianceReport report =
+        evaluate(bundle_with(count_rule(Comparison::AtLeast, 1)), facts_with_adapters({}),
+                 Capabilities{}.add(Capability::Resources));
+
+    ASSERT_EQ(report.results.size(), 1u);
+    EXPECT_EQ(report.results.front().status, CheckStatus::NotApplicable);
+    EXPECT_NE(report.results.front().observed.find("Network"), std::string::npos);
 }

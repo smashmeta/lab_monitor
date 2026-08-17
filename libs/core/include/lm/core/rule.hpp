@@ -33,7 +33,30 @@ struct RegistryRule {
     friend bool operator==(const RegistryRule&, const RegistryRule&) = default;
 };
 
-using RulePayload = std::variant<ProcessRule, ServiceRule, RegistryRule>;
+/// How many adapters must be up. Two payloads rather than one with a "which
+/// form is this" flag, for the same reason `Rule` has no `kind` field: a flag
+/// and the fields it selects are two sources of truth that can disagree.
+struct AdapterCountRule {
+    Comparison comparison = Comparison::AtLeast;
+    /// Compared against the number of adapters whose link is Connected. Only
+    /// Connected counts, via core::is_up() — the same definition the fleet
+    /// list's "1 / 4" column uses.
+    int count = 1;
+    friend bool operator==(const AdapterCountRule&, const AdapterCountRule&) = default;
+};
+
+/// One named adapter must be in a given link state.
+struct AdapterStateRule {
+    /// Matched against NetworkAdapter::name — what Network Connections calls
+    /// it, "smash-wifi" — case-insensitively, as process and service names are.
+    /// Not the GUID: rules are written by people.
+    std::string adapter_name;
+    LinkState expected = LinkState::Connected;
+    friend bool operator==(const AdapterStateRule&, const AdapterStateRule&) = default;
+};
+
+using RulePayload =
+    std::variant<ProcessRule, ServiceRule, RegistryRule, AdapterCountRule, AdapterStateRule>;
 
 struct Rule {
     RuleId id;
