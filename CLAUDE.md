@@ -40,14 +40,14 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 
 | Target | Responsibility | Tests |
 |---|---|---|
-| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 99 |
+| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 100 |
 | `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 51 |
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend | 28 |
 | `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 48 + 32 |
-| `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 16 |
+| `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 17 |
 | `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 22 |
 
-**296 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
+**298 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they need loopback multicast).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -322,6 +322,17 @@ Team choice. Boost is consequently confined to `program_options` in the two apps
 - **DDS `TRANSIENT_LOCAL` durability lives on the DataWriter, not on disk.** A
   restarted server has written nothing, which is why `start()` re-announces the
   published bundle at its existing revision (never bumping it).
+- **The client re-announces on a timer, and must.** `ClientAnnounce` is the only
+  carrier of a client's `Capabilities`, and the server can lose them:
+  `ClientRegistry::mark_lost()` erases the entry outright on a liveliness drop,
+  and the resource samples that keep arriving recreate it through `touch()`,
+  which knows nothing about capabilities. Announcing once at startup made that
+  permanent — the server showed the machine as unable to report adapters (`-` in
+  the column, "Not reported" in the pane) for the rest of its run, and only
+  restarting the *client* fixed it. `TRANSIENT_LOCAL` does not save you here: it
+  covers a server that has never seen the client, not one that saw it and then
+  forgot. Repeating every 10 s turns a permanent state into a blip, and lets an
+  upgraded agent's new capabilities reach a running server.
 - **Include hygiene**: the Linux leg compiles with libstdc++, far stricter than
   MSVC's STL about transitive includes. Include what you use, directly.
 

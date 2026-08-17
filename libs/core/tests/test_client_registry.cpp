@@ -64,6 +64,27 @@ TEST(ClientRegistry, MarkLostRemovesTheClient) {
     EXPECT_TRUE(registry.snapshot().empty());
 }
 
+TEST(ClientRegistry, ASampleAfterMarkLostBringsTheHostBackWithNoCapabilities) {
+    // Characterising the bug behind "the server says this client cannot report
+    // adapters": mark_lost erases the entry outright, and a resource sample
+    // recreates it through touch(), which knows nothing about capabilities.
+    // Nothing here restores them — only a fresh announce can, which is why the
+    // client re-announces on a timer rather than once at startup.
+    ClientRegistry registry;
+    registry.record_announce("PC-001", Capabilities{}.add(Capability::Network), kNow);
+    ASSERT_TRUE(registry.snapshot().front().caps.has(Capability::Network));
+
+    registry.mark_lost("PC-001");
+    registry.record_sample("PC-001", kNow);
+
+    ASSERT_EQ(registry.snapshot().size(), 1u);
+    EXPECT_FALSE(registry.snapshot().front().caps.has(Capability::Network));
+
+    registry.record_announce("PC-001", Capabilities{}.add(Capability::Network), kNow);
+    EXPECT_TRUE(registry.snapshot().front().caps.has(Capability::Network))
+        << "a re-announce has to restore them";
+}
+
 TEST(ClientRegistry, MarkLostForAnUnknownHostIsHarmless) {
     ClientRegistry registry;
     EXPECT_NO_THROW(registry.mark_lost("GHOST"));

@@ -59,12 +59,16 @@ MonitorWorker::MonitorWorker(std::unique_ptr<lm::platform::HostProbes> probes,
         [this](lm::transport::ConnectionState state) { emit connection_changed(static_cast<int>(state)); });
 }
 
+void MonitorWorker::announce() {
+    lm::transport::ClientAnnounce message;
+    message.host_id = probes_->host_id();
+    message.agent_version = kAgentVersion;
+    message.capabilities = probes_->capabilities().raw();
+    transport_->publish_announce(message);
+}
+
 void MonitorWorker::start() {
-    lm::transport::ClientAnnounce announce;
-    announce.host_id = probes_->host_id();
-    announce.agent_version = kAgentVersion;
-    announce.capabilities = probes_->capabilities().raw();
-    transport_->publish_announce(announce);
+    announce();
 
     // DdsClientTransport::handle_bundle invokes this handler on a Fast DDS
     // listener thread, never on this worker thread. on_bundle() assigns
@@ -100,6 +104,21 @@ void MonitorWorker::start() {
     slow_timer->setInterval(30000);
     connect(slow_timer, &QTimer::timeout, this, &MonitorWorker::evaluate_compliance);
     slow_timer->start();
+
+    // Re-announce on its own slow timer. The announce is TRANSIENT_LOCAL, so a
+    // server that starts later still receives the cached one -- but that only
+    // covers a server which has never seen this client. It does not cover a
+    // server that saw it, lost liveliness (which erases the registry entry,
+    // capabilities and all), and then kept receiving resource samples: those
+    // recreate the entry with no capabilities, and nothing would ever restore
+    // them. Repeating turns that permanent state into a ten-second blip.
+    //
+    // It also means an upgraded agent's new capabilities reach a running
+    // server without anyone restarting anything in the right order.
+    auto* announce_timer = new QTimer(this);
+    announce_timer->setInterval(10000);
+    connect(announce_timer, &QTimer::timeout, this, &MonitorWorker::announce);
+    announce_timer->start();
 }
 
 void MonitorWorker::sample_resources() {

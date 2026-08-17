@@ -25,6 +25,14 @@ public:
 public slots:
     /// Announces this client and subscribes to template updates.
     void start();
+    /// Re-publishes the announce. Called on a timer as well as at start,
+    /// because the announce is the only carrier of this client's capabilities
+    /// and the server can lose them: ClientRegistry::mark_lost() erases the
+    /// whole entry on a liveliness drop, and the resource samples that follow
+    /// recreate it with no capabilities at all. Announcing once meant those
+    /// never came back, and the server showed the machine as unable to report
+    /// adapters for the rest of its run.
+    void announce();
     /// Fast tick: samples resources and publishes them.
     void sample_resources();
     /// Slow tick: collects facts, evaluates the template, publishes the report.

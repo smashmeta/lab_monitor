@@ -110,6 +110,28 @@ TEST(MonitorWorker, AnnouncesItselfOnStart) {
     EXPECT_FALSE(announcements.front().agent_version.empty());
 }
 
+TEST(MonitorWorker, ReAnnouncesWithTheSameCapabilities) {
+    // The announce is the only carrier of this client's capabilities, and the
+    // server can lose them: a liveliness drop erases its whole registry entry,
+    // and the resource samples that follow recreate it with none. Announcing
+    // once made that permanent — the server showed the machine as unable to
+    // report adapters for the rest of its run.
+    Fixture fixture;
+
+    std::vector<ClientAnnounce> announcements;
+    const auto server = make_in_memory_server(fixture.bus);
+    server->on_announce([&](const ClientAnnounce& message) { announcements.push_back(message); });
+
+    fixture.worker->start();
+    fixture.worker->announce();
+
+    ASSERT_EQ(announcements.size(), 2u);
+    EXPECT_EQ(announcements.back().host_id, announcements.front().host_id);
+    EXPECT_EQ(announcements.back().capabilities, announcements.front().capabilities)
+        << "a re-announce that dropped a capability would be worse than none";
+    EXPECT_NE(announcements.back().capabilities, 0u);
+}
+
 TEST(MonitorWorker, PublishesResourceSamplesOnTick) {
     Fixture fixture;
     fixture.resources->next.cpu_percent = 44.0;
