@@ -152,6 +152,19 @@ void TokenEdit::rebuild_chips() {
         chips_.push_back(chip);
         ++position;
     }
+
+    // Inserting a chip pushes the input sideways. Left to itself that geometry
+    // settles on a later pass of the event loop, and the region the input
+    // vacates is not reliably invalidated when this widget is a cell widget
+    // inside an item view's viewport -- the committed name stayed on screen as
+    // dead pixels beside its own chip until the next click repainted the row.
+    // Settling the layout now, then invalidating both this widget and the patch
+    // of parent it occupies, repaints against the final positions.
+    layout_->activate();
+    update();
+    if (QWidget* parent = parentWidget()) {
+        parent->update(geometry());
+    }
 }
 
 void TokenEdit::refresh_unknown_hint() {

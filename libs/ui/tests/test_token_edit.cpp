@@ -208,6 +208,20 @@ TEST(TokenEdit, ClearsTheInputWhenLivingInATableCell) {
         << "left in the input: " << input->text().toStdString();
 }
 
+TEST(TokenEdit, PaintsItsOwnBackground) {
+    // Load-bearing: a widget that paints no background cannot erase anything it
+    // moves, so every layout change leaves the old pixels behind. QStyleSheetStyle
+    // sets WA_StyledBackground itself because #TokenEdit declares a background --
+    // delete that rule and the field goes transparent.
+    TokenEdit editor;
+    editor.resize(320, 34);
+    editor.show();
+    QApplication::processEvents();
+
+    EXPECT_TRUE(lm::ui::test::contains_colour(lm::ui::test::paint(editor), QColor(Theme::kSurface)))
+        << "the field paints no background of its own, so it cannot erase what it moves";
+}
+
 TEST(TokenEdit, PaintsAnUnknownValueInTheWarningColour) {
     // The property test above proves the widget's half of this. Only painting
     // proves the other half -- that a stylesheet rule actually matches the
