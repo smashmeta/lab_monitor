@@ -3,6 +3,7 @@
 #include <QCloseEvent>
 #include <QLabel>
 #include <QMap>
+#include <QPushButton>
 #include <QString>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -20,21 +21,30 @@
 /// every slot here is fed by a queued connection from MonitorWorker's
 /// signals, never by a direct call into the worker.
 ///
-/// By default, closing the window only hides it -- see closeEvent() -- so
-/// the tray remains the only way to quit. set_hide_on_close(false) switches
-/// to ordinary close-means-close behaviour, for when there is no tray (see
-/// main.cpp's QSystemTrayIcon::isSystemTrayAvailable() guard) and this
-/// window is therefore the app's only way to quit.
+/// Quitting is deliberate rather than incidental: the title bar's close button
+/// is disabled and the window carries its own Minimize and Close buttons, the
+/// second of which asks first. Stopping a monitoring agent means the server
+/// stops hearing from this machine, which is not something to do by reflex on
+/// the way to getting a window off the screen.
 class DetailWindow : public QWidget {
     Q_OBJECT
 
 public:
     explicit DetailWindow(QString host_id, QWidget* parent = nullptr);
 
-    /// true (the default) preserves the tray-app behaviour of hiding
-    /// instead of closing; false lets the window actually close, ending the
-    /// app if quitOnLastWindowClosed is also set.
-    void set_hide_on_close(bool hide_on_close) { hide_on_close_ = hide_on_close; }
+    /// Whether a system tray exists (main.cpp asks
+    /// QSystemTrayIcon::isSystemTrayAvailable()). With one, Minimize hides to
+    /// the tray and a close that slips past the disabled button — Alt+F4, the
+    /// system menu — only hides. Without one this window is the app's entire
+    /// UI, so Minimize has to leave a taskbar button behind and a close must
+    /// really close.
+    void set_tray_available(bool tray_available) { tray_available_ = tray_available; }
+
+signals:
+    /// The user confirmed the Close button. Wired to QApplication::quit in
+    /// main.cpp, the same place the tray's Quit action goes, so there is one
+    /// shutdown path rather than two.
+    void quit_requested();
 
 public slots:
     void set_connected(int state);
@@ -44,6 +54,11 @@ public slots:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+
+private slots:
+    void on_minimize_clicked();
+    /// Asks before quitting, then emits quit_requested().
+    void on_close_clicked();
 
 private:
     void sync_disk_bars(const std::vector<lm::core::DiskUsage>& disks);
@@ -61,9 +76,11 @@ private:
     QMap<QString, lm::ui::MeterBar*> disk_bars_;
 
     QTreeWidget* compliance_tree_;
+    QPushButton* minimize_button_;
+    QPushButton* close_button_;
 
     QString host_id_;
     bool connected_ = false;
     quint64 applied_revision_ = 0;
-    bool hide_on_close_ = true;
+    bool tray_available_ = true;
 };

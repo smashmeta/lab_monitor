@@ -44,10 +44,10 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 | `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 36 |
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend | 23 |
 | `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit` | 43 + 32 |
-| `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 8 |
+| `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 16 |
 | `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 22 |
 
-**261 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
+**269 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they need loopback multicast).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -125,6 +125,27 @@ list with every host named in a template assignment. Without this, assigning a
 template to a machine left it sitting in **Unexpected** forever, since only the
 explicit list reached `reconcile()`. Explicit entries win so a typed address is
 never dropped.
+
+### The client quits deliberately, never incidentally
+`DetailWindow` drops `Qt::WindowCloseButtonHint` and carries its own **Minimize**
+and **Close Program** buttons; the second asks first, defaulting to No, and names
+the consequence (this machine stops reporting) rather than asking "are you sure?".
+
+Windows only **greys** the title bar's X — disabling it is as far as the platform
+goes, there is no way to remove it while keeping a native title bar. So
+`closeEvent()` still has to handle Alt+F4 and the system menu, and still hides
+rather than quits.
+
+`set_tray_available()` (was `set_hide_on_close()`) drives both behaviours from
+the one fact that decides them: with a tray, Minimize hides and a stray close
+hides; without one this window is the app's entire UI, so Minimize must leave a
+taskbar button and a close must really close. Both quit routes — the tray's Quit
+and the window's confirmed button — land on the same `QApplication::quit`.
+
+Covered in `apps/client/tests/test_detail_window.cpp`, which is why
+`lab_monitor_client_tests` now builds widgets and runs under a `QApplication`.
+The modal is tested by scheduling the answer with a zero-timer *before* the click
+that opens it — `QMessageBox::question` blocks until something clicks it.
 
 ### Percentages are coloured by their reading, state by `RowHealth`
 `Theme::color_for_load()` maps 0–100% onto the palette's green, amber and red,

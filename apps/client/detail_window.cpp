@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QFont>
 #include <QHBoxLayout>
+#include <QMessageBox>
 #include <QSet>
 #include <QTreeWidgetItem>
 
@@ -40,9 +41,19 @@ DetailWindow::DetailWindow(QString host_id, QWidget* parent)
       memory_bar_(new lm::ui::MeterBar(this)),
       disk_layout_(new QVBoxLayout()),
       compliance_tree_(new QTreeWidget(this)),
+      minimize_button_(new QPushButton(QStringLiteral("Minimize"), this)),
+      close_button_(new QPushButton(QStringLiteral("Close Program"), this)),
       host_id_(std::move(host_id)) {
     setWindowTitle(hostname_label_->text());
     resize(480, 560);
+
+    // No close button in the title bar: quitting a monitoring agent is done
+    // through the Close Program button below, which asks first. Windows draws
+    // the X regardless and only greys it out -- disabled is as far as the
+    // platform goes -- so closeEvent() still has to handle Alt+F4 and the
+    // system menu.
+    setWindowFlags(Qt::Window | Qt::CustomizeWindowHint | Qt::WindowTitleHint |
+                   Qt::WindowSystemMenuHint | Qt::WindowMinimizeButtonHint);
 
     auto* root = new QVBoxLayout(this);
 
@@ -79,6 +90,17 @@ DetailWindow::DetailWindow(QString host_id, QWidget* parent)
     compliance_tree_->setHeaderLabels(
         {QStringLiteral("Rule"), QStringLiteral("Status"), QStringLiteral("Observed")});
     root->addWidget(compliance_tree_, 1);
+
+    // Right-aligned, with Close last: the destructive one sits where the eye
+    // stops rather than where the cursor lands on the way past.
+    auto* buttons = new QHBoxLayout();
+    buttons->addStretch();
+    buttons->addWidget(minimize_button_);
+    buttons->addWidget(close_button_);
+    root->addLayout(buttons);
+
+    connect(minimize_button_, &QPushButton::clicked, this, &DetailWindow::on_minimize_clicked);
+    connect(close_button_, &QPushButton::clicked, this, &DetailWindow::on_close_clicked);
 
     rebuild_template_label();
     set_connected(static_cast<int>(lm::transport::ConnectionState::Disconnected));
@@ -203,8 +225,40 @@ void DetailWindow::set_applied_revision(quint64 revision) {
     rebuild_template_label();
 }
 
+void DetailWindow::on_minimize_clicked() {
+    // To the tray when there is one -- the tray icon is then how it comes
+    // back, and leaving a taskbar button as well would be two of the same
+    // thing. Without a tray, hiding would strand the user with no way to
+    // reach the window again, so it minimises normally instead.
+    if (tray_available_) {
+        hide();
+    } else {
+        showMinimized();
+    }
+}
+
+void DetailWindow::on_close_clicked() {
+    // Names the consequence rather than asking "are you sure?": what matters
+    // is that the server stops hearing from this machine, not that a window
+    // is about to disappear.
+    const QMessageBox::StandardButton answer = QMessageBox::question(
+        this, QStringLiteral("Close Lab Monitor"),
+        QStringLiteral("Close Lab Monitor on %1?\n\n"
+                        "Monitoring stops and this machine stops reporting to the server "
+                        "until the client is started again.")
+            .arg(host_id_),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+
+    if (answer == QMessageBox::Yes) {
+        emit quit_requested();
+    }
+}
+
 void DetailWindow::closeEvent(QCloseEvent* event) {
-    if (hide_on_close_) {
+    // Reached by Alt+F4 and the system menu, since the platform only greys the
+    // title bar's X rather than removing it. With a tray this hides, matching
+    // Minimize; without one the window is the whole app and must really close.
+    if (tray_available_) {
         hide();
         event->ignore();
         return;

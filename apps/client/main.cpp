@@ -181,7 +181,7 @@ int main(int argc, char** argv) {
 
         const QString qt_host_id = QString::fromStdString(host_id);
         auto* window = new DetailWindow(qt_host_id);
-        window->set_hide_on_close(tray_available);
+        window->set_tray_available(tray_available);
         auto* tray = new TrayController(qt_host_id, window);
 
         // Cross-thread connections resolve to Qt::QueuedConnection by default
@@ -198,7 +198,11 @@ int main(int argc, char** argv) {
 
         QObject::connect(tray, &TrayController::reporting_paused_changed, worker,
                           &MonitorWorker::set_reporting_paused);
+        // Both quit routes -- the tray's Quit action and the window's confirmed
+        // Close Program button -- land on the same shutdown, so the worker
+        // teardown below runs identically whichever one the user reached for.
         QObject::connect(tray, &TrayController::quit_requested, &app, &QApplication::quit);
+        QObject::connect(window, &DetailWindow::quit_requested, &app, &QApplication::quit);
 
         // Context must be &app (GUI thread), never `worker`: the 4-arg connect
         // overload runs the functor on the *context* object's thread when

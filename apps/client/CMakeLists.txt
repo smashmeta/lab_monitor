@@ -1,4 +1,4 @@
-find_package(Qt5 COMPONENTS Widgets REQUIRED)
+find_package(Qt5 COMPONENTS Widgets Test REQUIRED)
 find_package(Boost REQUIRED COMPONENTS program_options)
 find_package(spdlog CONFIG REQUIRED)
 
@@ -19,9 +19,14 @@ copy_runtime_dependencies(lab_monitor_client)
 
 lm_add_test(lab_monitor_client_tests
   NO_GTEST_MAIN
-  SOURCES ${CMAKE_SOURCE_DIR}/libs/ui/tests/main.cpp
+  # widget_main.cpp, not main.cpp: DetailWindow is a real widget, so this needs
+  # a QApplication and a platform plugin (see libs/ui/tests/widget_main.cpp for
+  # why offscreen is not an option on Windows).
+  SOURCES ${CMAKE_SOURCE_DIR}/libs/ui/tests/widget_main.cpp
           tests/test_monitor_worker.cpp
+          tests/test_detail_window.cpp
           monitor_worker.cpp
+          detail_window.cpp
   # spdlog::spdlog is required here, beyond the brief's original LINK list:
   # monitor_worker.cpp (compiled into this test binary too) calls
   # spdlog::error(), and spdlog's vcpkg build is not header-only -- its
@@ -29,5 +34,7 @@ lm_add_test(lab_monitor_client_tests
   # actually linked, not merely reachable via vcpkg's global include path.
   # lm_ui joins the list because RuleDetail/describe() moved there, so both
   # apps can render rules the same way rather than the client owning it.
-  LINK lm_core lm_platform lm_transport lm_ui Qt5::Core spdlog::spdlog)
+  # Qt5::Widgets for DetailWindow itself, Qt5::Test for QSignalSpy and QTest's
+  # key simulation against the confirmation dialog.
+  LINK lm_core lm_platform lm_transport lm_ui Qt5::Widgets Qt5::Test spdlog::spdlog)
 target_include_directories(lab_monitor_client_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
