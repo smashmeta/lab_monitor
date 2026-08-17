@@ -55,9 +55,10 @@ void MeterBar::paintEvent(QPaintEvent* /*event*/) {
     if (fill_rect.width() > 0.0) {
         QPainterPath fill;
         fill.addRoundedRect(fill_rect, radius, radius);
-        const QColor color =
-            displayed_value_ >= 90.0 ? QColor(Theme::kMissing) : QColor(Theme::kAccent);
-        painter.fillPath(fill, color);
+        // A ramp rather than the old blue-until-90-then-red step: 89% and 91%
+        // are not different situations, and the step hid the whole climb up to
+        // it. Animated with the value, so the bar changes colour as it fills.
+        painter.fillPath(fill, Theme::color_for_load(displayed_value_));
     }
 
     painter.setPen(QColor(Theme::kText));

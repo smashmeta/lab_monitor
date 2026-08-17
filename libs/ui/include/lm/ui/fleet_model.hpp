@@ -90,6 +90,11 @@ private:
 
     [[nodiscard]] int index_of(const core::HostId& host_id) const;
 
+    /// The percentage a resource column is reporting, or nullopt when it has
+    /// nothing to report. One source for both the number and the colour, so the
+    /// two can never disagree about what the machine is doing.
+    [[nodiscard]] static std::optional<double> load_percent(const Row& row, int column);
+
     std::vector<Row> rows_;  ///< always sorted by entry.host_id
 };
 

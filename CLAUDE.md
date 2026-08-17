@@ -43,11 +43,11 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 | `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 97 |
 | `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 36 |
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend | 23 |
-| `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit` | 40 + 28 |
+| `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit` | 43 + 32 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 8 |
 | `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 22 |
 
-**254 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
+**261 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they need loopback multicast).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -125,6 +125,26 @@ list with every host named in a template assignment. Without this, assigning a
 template to a machine left it sitting in **Unexpected** forever, since only the
 explicit list reached `reconcile()`. Explicit entries win so a typed address is
 never dropped.
+
+### Percentages are coloured by their reading, state by `RowHealth`
+`Theme::color_for_load()` maps 0–100% onto the palette's green, amber and red,
+and everything percentage-based uses it: the fleet list's CPU, Memory and Disk
+cells, both detail panes' CPU sparkline, and every `MeterBar`.
+
+`FleetModel::data()` still paints whole rows by `RowHealth` — but the three
+percentage columns override that with their own reading, because a machine can
+be perfectly compliant and out of disk, which is exactly what a health colour
+hides. The override applies **only while the host is `Online`**: the last sample
+from a host that has gone quiet is stale, and painting it green would read as a
+live, idle machine. `load_percent()` is the single source for both the number
+and the colour, so they cannot disagree.
+
+Consequences worth knowing. The status hues now do double duty — a red CPU cell
+and a red `Missing` host are the same colour meaning different things — which is
+why every percentage cell also shows its number. And a state change must emit
+`dataChanged` across the **whole row**, not just the columns whose text moved:
+health colours every cell, and the percentage cells additionally swap between
+their load colour and the health one as a host starts and stops reporting.
 
 ### Rule ids are generated, never typed
 The Add Rule flow used to open with a "Unique rule id:" prompt. `RuleId` is the

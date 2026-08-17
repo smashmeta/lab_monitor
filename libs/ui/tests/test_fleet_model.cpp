@@ -67,17 +67,65 @@ TEST(FleetModel, ColoursTheCpuCellByItsLoadRatherThanTheRowHealth) {
         << "the CPU cell must not still be taking the row's colour";
 }
 
-TEST(FleetModel, LeavesEveryOtherColumnOnTheRowHealthColour) {
+TEST(FleetModel, ColoursMemoryAndDiskByTheirOwnReadingsToo) {
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    lm::transport::ResourceSampleMessage message = sample_for(QStringLiteral("PC-001"), 5.0);
+    message.sample.mem_total_bytes = 1000;
+    message.sample.mem_used_bytes = 800;  // 80%
+    // {mount, total, free}: 75% used, then 97% used.
+    message.sample.disks.push_back(DiskUsage{"C:\\", 1000, 250});
+    message.sample.disks.push_back(DiskUsage{"D:\\", 1000, 30});
+    model.apply_sample(message);
+
+    EXPECT_EQ(foreground_at(model, 0, FleetModel::MemoryColumn), Theme::color_for_load(80.0));
+    // The fullest volume, not the first or an average: a machine with one full
+    // disk is in trouble however much room the others have.
+    EXPECT_EQ(foreground_at(model, 0, FleetModel::DiskColumn), Theme::color_for_load(97.0));
+}
+
+TEST(FleetModel, ColoursEachPercentageColumnIndependently) {
+    // An idle machine that is out of disk has to show green CPU and red disk in
+    // the same row, or the whole point of the colour is lost.
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    lm::transport::ResourceSampleMessage message = sample_for(QStringLiteral("PC-001"), 2.0);
+    message.sample.mem_total_bytes = 1000;
+    message.sample.mem_used_bytes = 500;
+    message.sample.disks.push_back(DiskUsage{"C:\\", 1000, 20});  // 98% full
+    model.apply_sample(message);
+
+    const QColor cpu = foreground_at(model, 0, FleetModel::CpuColumn);
+    const QColor disk = foreground_at(model, 0, FleetModel::DiskColumn);
+    EXPECT_LT(cpu.redF() - cpu.greenF(), 0.0) << "an idle CPU reads cool";
+    EXPECT_GT(disk.redF() - disk.greenF(), 0.0) << "a full disk reads hot";
+}
+
+TEST(FleetModel, LeavesTheNonPercentageColumnsOnTheRowHealthColour) {
     FleetModel model;
     model.apply(view_with({{"PC-001", HostState::Online}}));
     model.apply_sample(sample_for(QStringLiteral("PC-001"), 96.0));
 
     const QColor health = FleetModel::colour_for(model.health_of(0));
     for (const int column : {FleetModel::HostColumn, FleetModel::StateColumn,
-                             FleetModel::MemoryColumn, FleetModel::DiskColumn,
                              FleetModel::RevisionColumn, FleetModel::LastSeenColumn}) {
         EXPECT_EQ(foreground_at(model, 0, column), health) << "column " << column;
     }
+}
+
+TEST(FleetModel, KeepsTheHealthColourOnAPercentageColumnWithNothingToReport) {
+    // No disks in the sample at all: the cell shows "-", so there is no reading
+    // for it to be coloured by.
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+    model.apply_sample(sample_for(QStringLiteral("PC-001"), 96.0));
+
+    EXPECT_EQ(model.data(model.index(0, FleetModel::DiskColumn), Qt::DisplayRole).toString(),
+              QStringLiteral("-"));
+    EXPECT_EQ(foreground_at(model, 0, FleetModel::DiskColumn),
+              FleetModel::colour_for(model.health_of(0)));
 }
 
 TEST(FleetModel, TracksTheLoadColourAsTheReadingChanges) {

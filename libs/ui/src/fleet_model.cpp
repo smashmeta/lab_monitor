@@ -69,14 +69,15 @@ QVariant FleetModel::data(const QModelIndex& index, int role) const {
     // Colour the whole row by health, so an operator scanning the list sees
     // which machines need attention without reading a single word.
     if (role == Qt::ForegroundRole) {
-        // Except the CPU cell, which reports its own number: a machine can be
-        // perfectly compliant and pegged at 100%, and the row's health colour
-        // hides precisely that. Only while the host is actually reporting,
-        // though -- the last sample from a host that has gone quiet is stale,
-        // and painting it green would read as a live idle machine.
-        if (index.column() == CpuColumn && row.has_resources &&
-            row.entry.state == core::HostState::Online) {
-            return Theme::color_for_load(row.resources.cpu_percent);
+        // Except the percentage columns, which report their own reading: a
+        // machine can be perfectly compliant and out of disk, and the row's
+        // health colour hides precisely that. Only while the host is actually
+        // reporting, though -- the last sample from one that has gone quiet is
+        // stale, and painting it green would read as a live, idle machine.
+        if (row.entry.state == core::HostState::Online) {
+            if (const std::optional<double> percent = load_percent(row, index.column())) {
+                return Theme::color_for_load(*percent);
+            }
         }
         return colour_for(health_of(index.row()));
     }
@@ -92,26 +93,11 @@ QVariant FleetModel::data(const QModelIndex& index, int role) const {
         case StateColumn:
             return QString::fromStdString(core::to_string(row.entry.state));
         case CpuColumn:
-            return row.has_resources
-                       ? QString::number(row.resources.cpu_percent, 'f', 1) + QStringLiteral("%")
-                       : QStringLiteral("-");
-        case MemoryColumn: {
-            if (!row.has_resources || row.resources.mem_total_bytes == 0) {
-                return QStringLiteral("-");
-            }
-            const double percent = 100.0 * static_cast<double>(row.resources.mem_used_bytes) /
-                                   static_cast<double>(row.resources.mem_total_bytes);
-            return QString::number(percent, 'f', 1) + QStringLiteral("%");
-        }
+        case MemoryColumn:
         case DiskColumn: {
-            if (!row.has_resources || row.resources.disks.empty()) {
-                return QStringLiteral("-");
-            }
-            double worst = 0.0;
-            for (const auto& disk : row.resources.disks) {
-                worst = std::max(worst, disk.used_percent());
-            }
-            return QString::number(worst, 'f', 1) + QStringLiteral("%");
+            const std::optional<double> percent = load_percent(row, index.column());
+            return percent ? QString::number(*percent, 'f', 1) + QStringLiteral("%")
+                           : QStringLiteral("-");
         }
         case RevisionColumn:
             return row.entry.stale ? QStringLiteral("Stale") : QStringLiteral("Current");
@@ -264,6 +250,36 @@ void FleetModel::apply_sample(const transport::ResourceSampleMessage& sample) {
     target.resources = sample.sample;
     target.has_resources = true;
     emit dataChanged(index(row, CpuColumn), index(row, DiskColumn));
+}
+
+std::optional<double> FleetModel::load_percent(const Row& row, int column) {
+    if (!row.has_resources) {
+        return std::nullopt;
+    }
+    switch (column) {
+        case CpuColumn:
+            return row.resources.cpu_percent;
+        case MemoryColumn:
+            if (row.resources.mem_total_bytes == 0) {
+                return std::nullopt;
+            }
+            return 100.0 * static_cast<double>(row.resources.mem_used_bytes) /
+                   static_cast<double>(row.resources.mem_total_bytes);
+        case DiskColumn: {
+            if (row.resources.disks.empty()) {
+                return std::nullopt;
+            }
+            // The fullest volume: a machine with one full disk is in trouble
+            // however much room the others have left.
+            double worst = 0.0;
+            for (const core::DiskUsage& disk : row.resources.disks) {
+                worst = std::max(worst, disk.used_percent());
+            }
+            return worst;
+        }
+        default:
+            return std::nullopt;
+    }
 }
 
 int FleetModel::index_of(const core::HostId& host_id) const {
