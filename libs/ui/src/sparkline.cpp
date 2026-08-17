@@ -1,6 +1,7 @@
 #include "lm/ui/sparkline.hpp"
 
 #include <algorithm>
+#include <utility>
 
 #include <QColor>
 #include <QPainter>
@@ -18,14 +19,35 @@ constexpr int kDefaultCapacity = 60;
 Sparkline::Sparkline(QWidget* parent) : Sparkline(kDefaultCapacity, parent) {}
 
 Sparkline::Sparkline(int capacity, QWidget* parent)
-    : QWidget(parent), capacity_(capacity > 1 ? capacity : kDefaultCapacity) {
+    : QWidget(parent), capacity_(capacity > 1 ? capacity : kDefaultCapacity), color_(Theme::kAccent) {
     samples_.reserve(capacity_);
+}
+
+void Sparkline::set_color(const QColor& color) {
+    if (color == color_ || !color.isValid()) {
+        return;
+    }
+    color_ = color;
+    update();
 }
 
 void Sparkline::push(double value) {
     samples_.append(value);
     while (samples_.size() > capacity_) {
         samples_.removeFirst();
+    }
+    if (ramp_) {
+        color_ = ramp_(value);
+    }
+    update();
+}
+
+void Sparkline::set_color_ramp(std::function<QColor(double)> ramp) {
+    ramp_ = std::move(ramp);
+    // Applied to the reading already on screen, so the colour is right before
+    // the next sample rather than one interval late.
+    if (ramp_ && !samples_.isEmpty()) {
+        color_ = ramp_(samples_.back());
     }
     update();
 }
@@ -76,12 +98,11 @@ void Sparkline::paintEvent(QPaintEvent* /*event*/) {
     fill.lineTo(left_pad, bounds.bottom());
     fill.closeSubpath();
 
-    QColor accent(Theme::kAccent);
-    QColor fill_color = accent;
+    QColor fill_color = color_;
     fill_color.setAlpha(40);
     painter.fillPath(fill, fill_color);
 
-    painter.setPen(QPen(accent, 1.5));
+    painter.setPen(QPen(color_, 1.5));
     painter.drawPath(line);
 }
 

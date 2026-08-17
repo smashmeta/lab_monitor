@@ -8,6 +8,8 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+
 #include "lm/core/fleet.hpp"
 #include "lm/core/types.hpp"
 
@@ -90,6 +92,25 @@ QColor color_for(core::CheckStatus status) {
         case core::CheckStatus::Error:        return QColor(kUnexpected);
     }
     return QColor(kNotApplicable);
+}
+
+namespace {
+
+QColor lerp(const QColor& from, const QColor& to, double t) {
+    return QColor::fromRgbF(from.redF() + (to.redF() - from.redF()) * t,
+                            from.greenF() + (to.greenF() - from.greenF()) * t,
+                            from.blueF() + (to.blueF() - from.blueF()) * t);
+}
+
+}  // namespace
+
+QColor color_for_load(double percent) {
+    const double t = std::clamp(percent, 0.0, 100.0) / 100.0;
+    // Two segments, via amber. A straight green-to-red interpolation passes
+    // through a muddy olive at the midpoint -- exactly where a machine is
+    // getting busy and the colour most needs to read clearly.
+    return t < 0.5 ? lerp(QColor(kOnline), QColor(kOffline), t * 2.0)
+                    : lerp(QColor(kOffline), QColor(kMissing), (t - 0.5) * 2.0);
 }
 
 QString glyph_for(core::HostState state) {

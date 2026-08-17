@@ -1,4 +1,4 @@
-find_package(Qt5 COMPONENTS Widgets Svg Test REQUIRED)
+﻿find_package(Qt5 COMPONENTS Widgets Svg Test REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 
 set(CMAKE_AUTOMOC ON)
@@ -48,6 +48,7 @@ lm_add_test(lm_ui_tests
 lm_add_test(lm_ui_widget_tests
   NO_GTEST_MAIN
   SOURCES tests/widget_main.cpp tests/test_selection_colours.cpp tests/test_token_edit.cpp
+          tests/test_sparkline.cpp
   LINK lm_ui Qt5::Test)
 # offscreen would keep this headless, but vcpkg's applocal deployment copies
 # only the plugins it can see the binary needs -- which is qwindows alone, so
@@ -57,3 +58,7 @@ lm_add_test(lm_ui_widget_tests
 if(NOT WIN32)
   set_tests_properties(lm_ui_widget_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
+
+
+
+

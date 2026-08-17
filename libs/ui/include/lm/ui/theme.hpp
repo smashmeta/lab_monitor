@@ -26,6 +26,7 @@ inline constexpr const char* kTextMuted = "#9aa0a6";   ///< secondary text
 inline constexpr const char* kAccent = "#8ab4f8";      ///< Chrome's blue
 inline constexpr const char* kAccentPressed = "#aecbfa";
 
+
 // Status colours from the same family, so they read as part of one palette
 // rather than as warning lights bolted on.
 inline constexpr const char* kOnline = "#81c995";
@@ -38,6 +39,16 @@ void apply(QApplication& app);
 
 [[nodiscard]] QColor color_for(core::HostState state);
 [[nodiscard]] QColor color_for(core::CheckStatus status);
+
+/// A load reading as a colour: green at 0%, amber through the middle, red at
+/// 100%, interpolated between the palette's own status colours so nothing
+/// foreign to the window appears. Out-of-range values clamp.
+///
+/// Note this deliberately spends the status hues on a *measurement*. It reads
+/// naturally — idle is green, saturated is red — but it does mean a red CPU
+/// line and a red Missing host are the same colour meaning different things,
+/// which is why the line stays inside a pane already labelled "CPU".
+[[nodiscard]] QColor color_for_load(double percent);
 
 /// A distinct shape per state, so hue is never the only signal.
 [[nodiscard]] QString glyph_for(core::HostState state);

@@ -61,6 +61,11 @@ DetailWindow::DetailWindow(QString host_id, QWidget* parent)
     // Resource strip: CPU sparkline, memory bar, one bar per disk volume.
     auto* resources = new QVBoxLayout();
     resources->addWidget(new QLabel(QStringLiteral("CPU"), this));
+    // Green when idle through to red when saturated, so the line reports the
+    // current load by colour as well as by height -- which matters here,
+    // because the chart's vertical axis auto-scales to the window it is showing
+    // and so says nothing about the absolute level on its own.
+    cpu_sparkline_->set_color_ramp(&lm::ui::Theme::color_for_load);
     resources->addWidget(cpu_sparkline_);
     resources->addWidget(make_gauge_row(this, QStringLiteral("Memory"), memory_bar_));
     resources->addLayout(disk_layout_);

@@ -273,6 +273,10 @@ void FleetWindow::build_fleet_tab() {
 
     detail_layout->addWidget(new QLabel(QStringLiteral("CPU"), detail_panel));
     detail_cpu_sparkline_ = new lm::ui::Sparkline(detail_panel);
+    // Green when idle through to red when saturated, matching the client's
+    // pane. The chart's vertical axis auto-scales to the window it is showing,
+    // so height alone says nothing about the absolute level.
+    detail_cpu_sparkline_->set_color_ramp(&lm::ui::Theme::color_for_load);
     detail_layout->addWidget(detail_cpu_sparkline_);
 
     detail_memory_bar_ = new lm::ui::MeterBar(detail_panel);
