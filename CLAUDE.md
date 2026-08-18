@@ -45,9 +45,9 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend | 28 |
 | `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 48 + 32 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 17 |
-| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 30 |
+| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 34 |
 
-**341 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
+**345 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they need loopback multicast).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -213,6 +213,37 @@ the other tabs follow:
 - **Rows are ordered failing → error → not applicable**, and hosts worst-first.
 - The font is deliberately larger than the rest of the window, where the fleet
   table is instead sized to fit ~35 rows for someone at the keyboard.
+
+### The Compliance tab lists the whole fleet, not the report cache
+`rebuild_compliance_table()` walks `ServerController::fleet()` and looks each
+host's report up, rather than iterating `report_cache()`. Driving it off the
+cache had two consequences on a display nobody walks over to. A host that had
+**never reported** — `Missing` — was simply absent, and absence on a wall reads
+as "nothing wrong with it". A host that reported once and then **died** kept its
+last score on the glass forever, because the cache only ever grows: a dead
+machine sat there at a green `5 / 5`.
+
+So `Missing` and `Offline` hosts get their own group, above the failing ones
+(the Fleet tab already ranks them that way, and two views disagreeing about
+which host is most urgent is worse than either order). Their row says
+`Missing — never reported` or `Offline — last seen 14:22:07`, and their single
+child line is **"Not reporting — no rules are being checked"**, never
+`0 / 0 rules passed`, which reads as a clean bill of health. A cached report from
+before the machine went quiet is shown only as `last known 3 / 5`. Silence also
+counts in the headline (`· 2 not reporting`) and paints it red — an unreachable
+machine is a red line, not a quiet one. The colour comes from
+`FleetModel::colour_for()`, so the two tabs cannot paint the same host
+differently.
+
+An `Online` host with no report yet is listed too, saying so, rather than
+appearing only once it has evaluated something.
+
+This is why `on_announce()` and `on_report()` now call `reconcile_now()`: the tab
+reads liveness and the report together, so a host whose first report has just
+arrived would otherwise be drawn as silent for up to a second. `reconcile_now()`
+emits the new `fleet_changed()` — compared on the host → state mapping alone,
+because `last_seen` advances on every sample and comparing whole entries would
+fire it every tick and rebuild the tree once a second.
 
 ### The Compliance tab scores against what was *checked*
 `core::summarise()` reduces a report to counts, and `ComplianceSummary::checked()`

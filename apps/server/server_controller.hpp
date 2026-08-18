@@ -83,6 +83,12 @@ public:
         return report_cache_;
     }
 
+    /// The most recent reconciliation. FleetModel holds the same information
+    /// but only exposes it a cell at a time through data(); a view that needs
+    /// to reason about liveness — the Compliance tab, which has to say that a
+    /// host is silent rather than leave it out — wants the entries themselves.
+    [[nodiscard]] const lm::core::FleetView& fleet() const { return fleet_; }
+
 public slots:
     /// Recomputes can_publish() and emits draft_publishable_changed(). Call
     /// after mutating draft() from the outside.
@@ -100,6 +106,11 @@ public slots:
 
 signals:
     void counts_changed(lm::core::FleetCounts counts);
+    /// A host appeared, departed, or changed state. Deliberately not emitted on
+    /// every reconcile: last_seen advances on each sample, so a view that
+    /// compared whole entries would fire once a second and rebuild anything
+    /// listening to it just as often.
+    void fleet_changed();
     void expected_hosts_changed();
     void resource_sample_received(QString host_id, lm::core::ResourceSample sample);
     void compliance_report_received(QString host_id, lm::core::ComplianceReport report);
@@ -139,6 +150,7 @@ private:
     lm::ui::SampleCoalescer coalescer_;
     QTimer reconcile_timer_;
 
+    lm::core::FleetView fleet_;
     std::vector<lm::core::ExpectedHost> expected_;
     lm::core::TemplateBundle draft_;
     lm::core::TemplateBundle published_;

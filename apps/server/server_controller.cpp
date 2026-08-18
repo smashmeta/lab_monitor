@@ -183,10 +183,18 @@ void ServerController::publish() {
 void ServerController::on_announce(const lm::transport::ClientAnnounce& announce) {
     registry_.record_announce(announce.host_id, lm::core::Capabilities(announce.capabilities),
                                lm::core::Clock::now());
+    // Hearing from a machine is the evidence that moves it out of Missing, so
+    // reflect it now rather than up to a second later on the timer. Announces
+    // arrive every 10 s per client, so this costs nothing.
+    reconcile_now();
 }
 
 void ServerController::on_report(const lm::transport::ComplianceReportMessage& report) {
     registry_.record_report(report.report.host_id, report.report.applied_revision, lm::core::Clock::now());
+    // Before the signal below, not after: the Compliance tab reads liveness and
+    // the report together, and a host whose first report has just arrived would
+    // otherwise still be drawn as silent.
+    reconcile_now();
 
     const QString host_id = QString::fromStdString(report.report.host_id);
     report_cache_.insert(host_id, report.report);
@@ -234,10 +242,24 @@ void ServerController::apply_coalesced(QVector<lm::transport::ResourceSampleMess
 
 void ServerController::reconcile_now() {
     options_.current_revision = published_.revision;
-    const lm::core::FleetView view = lm::core::reconcile(
+    lm::core::FleetView view = lm::core::reconcile(
         effective_expected_hosts(), registry_.snapshot(), lm::core::Clock::now(), options_);
     model_.apply(view);
-    emit counts_changed(view.counts);
+
+    // Only the host -> state mapping, not the whole view: last_seen moves on
+    // every sample, so comparing entries outright would report a change on
+    // every tick of the 1 s timer. reconcile() returns them in a deterministic
+    // order, so equal states really do mean an unchanged fleet.
+    const bool states_changed = !std::ranges::equal(
+        fleet_.entries, view.entries, [](const lm::core::FleetEntry& lhs, const lm::core::FleetEntry& rhs) {
+            return lhs.host_id == rhs.host_id && lhs.state == rhs.state;
+        });
+
+    fleet_ = std::move(view);
+    emit counts_changed(fleet_.counts);
+    if (states_changed) {
+        emit fleet_changed();
+    }
 }
 
 QString ServerController::expected_hosts_path() const {

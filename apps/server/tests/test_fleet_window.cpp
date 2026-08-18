@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QCompleter>
+#include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
@@ -116,6 +117,18 @@ QStringList rows_under(QTreeWidgetItem* host) {
         rows << host->child(i)->text(0) + QStringLiteral("|") + host->child(i)->text(1);
     }
     return rows;
+}
+
+/// The compliance tab's headline, found by what it says rather than by an
+/// object name — it is the only label in the window that scores the fleet.
+QString compliance_headline(const Harness& harness) {
+    for (QLabel* label : harness.window->findChildren<QLabel*>()) {
+        if (label->text().contains(QStringLiteral("fully compliant")) ||
+            label->text().contains(QStringLiteral("No host has reported"))) {
+            return label->text();
+        }
+    }
+    return {};
 }
 
 ComplianceReport report_for(const std::string& host, std::vector<CheckStatus> statuses) {
@@ -248,6 +261,60 @@ TEST(FleetWindowCompliance, ListsTheWorstHostsFirst) {
 TEST(FleetWindowCompliance, StartsEmptyBeforeAnyHostReports) {
     Harness harness;
     EXPECT_EQ(compliance_tree(harness)->topLevelItemCount(), 0);
+}
+
+TEST(FleetWindowCompliance, ListsAnExpectedHostThatHasNeverReported) {
+    // A machine nobody can hear from cannot be compliant, and a tab that simply
+    // leaves it out says, on a wall display, that nothing is wrong with it.
+    Harness harness;
+    harness.controller->start();
+    harness.controller->add_expected_host("PC-dead", "10.0.0.9");
+
+    QTreeWidget* tree = compliance_tree(harness);
+    ASSERT_EQ(tree->topLevelItemCount(), 1);
+    EXPECT_EQ(tree->topLevelItem(0)->text(0).toStdString(), "PC-dead");
+    EXPECT_TRUE(tree->topLevelItem(0)->text(1).contains(QStringLiteral("Missing")))
+        << tree->topLevelItem(0)->text(1).toStdString();
+}
+
+TEST(FleetWindowCompliance, SaysNoRulesAreBeingCheckedOnASilentHost) {
+    // Not "0 / 0 rules passed", which reads as a clean bill of health.
+    Harness harness;
+    harness.controller->start();
+    harness.controller->add_expected_host("PC-dead", "");
+
+    QTreeWidgetItem* host = compliance_tree(harness)->topLevelItem(0);
+    ASSERT_NE(host, nullptr);
+    EXPECT_FALSE(host->text(1).contains(QStringLiteral("rules passed"))) << "a silent host has no score";
+
+    const QStringList rows = rows_under(host);
+    ASSERT_EQ(rows.size(), 1);
+    EXPECT_TRUE(rows.first().contains(QStringLiteral("no rules are being checked")))
+        << rows.first().toStdString();
+}
+
+TEST(FleetWindowCompliance, PutsSilentHostsAboveFailingOnes) {
+    // The fleet tab already ranks Missing above everything else: a machine that
+    // is not answering is a bigger unknown than a rule known to be broken.
+    Harness harness;
+    harness.controller->start();
+    publish_report(harness, report_for("PC-loud", {CheckStatus::Fail, CheckStatus::Fail}));
+    harness.controller->add_expected_host("PC-dead", "");
+
+    QTreeWidget* tree = compliance_tree(harness);
+    ASSERT_EQ(tree->topLevelItemCount(), 2);
+    EXPECT_EQ(tree->topLevelItem(0)->text(0).toStdString(), "PC-dead");
+    EXPECT_EQ(tree->topLevelItem(1)->text(0).toStdString(), "PC-loud");
+}
+
+TEST(FleetWindowCompliance, CountsSilentHostsInTheHeadline) {
+    Harness harness;
+    harness.controller->start();
+    publish_report(harness, report_for("PC-loud", {CheckStatus::Pass}));
+    harness.controller->add_expected_host("PC-dead", "");
+
+    const QString headline = compliance_headline(harness);
+    EXPECT_TRUE(headline.contains(QStringLiteral("1 not reporting"))) << headline.toStdString();
 }
 
 TEST(FleetWindowAssignments, CreatesATemplateNamedInAnAssignment) {
