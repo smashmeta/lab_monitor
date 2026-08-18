@@ -45,9 +45,9 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend | 28 |
 | `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 48 + 32 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 17 |
-| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 26 |
+| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 30 |
 
-**324 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
+**328 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they need loopback multicast).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -178,6 +178,24 @@ modem.
 since creating entries there would be editing the machine's network config. That
 is what makes the disconnected-entry path genuinely tested on a machine with no
 dial-up configured.
+
+### The Compliance tab is written for a wall display
+It is read from across a room, on a screen nobody walks over to. That drives
+every choice in it, and none of them should be "tidied" toward the conventions
+the other tabs follow:
+
+- **Nothing hides behind interaction.** No tooltips carrying the real content,
+  no collapsed groups, no selection. Groups are expanded on creation and the
+  tree is `NoSelection` with `NoFocus`.
+- **Passing rules are counted, never listed.** A wall of green pushes the two red
+  lines that matter off the screen. The host row already says `3 / 5 rules
+  passed`; only failures, errors and not-applicable rules get their own line.
+- **A group that would be empty says "All N checked rules passing"** instead —
+  blank space reads as "no data" at a distance. Only when it would otherwise be
+  empty: a host with not-applicable rows does not need telling twice.
+- **Rows are ordered failing → error → not applicable**, and hosts worst-first.
+- The font is deliberately larger than the rest of the window, where the fleet
+  table is instead sized to fit ~35 rows for someone at the keyboard.
 
 ### The Compliance tab scores against what was *checked*
 `core::summarise()` reduces a report to counts, and `ComplianceSummary::checked()`

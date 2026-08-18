@@ -7,6 +7,7 @@
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTreeWidget>
 #include <QTest>
 
 #include <algorithm>
@@ -97,17 +98,24 @@ void type_and_commit(lm::ui::TokenEdit* editor, const QString& text) {
 
 namespace {
 
-/// The compliance tab's table — the only one with a "Not applicable" column.
-QTableWidget* compliance_table(const Harness& harness) {
-    for (QTableWidget* table : harness.window->findChildren<QTableWidget*>()) {
-        for (int column = 0; column < table->columnCount(); ++column) {
-            if (table->horizontalHeaderItem(column) != nullptr &&
-                table->horizontalHeaderItem(column)->text() == QStringLiteral("Not applicable")) {
-                return table;
-            }
+/// The compliance tab's tree — the only one headed "Host / rule".
+QTreeWidget* compliance_tree(const Harness& harness) {
+    for (QTreeWidget* tree : harness.window->findChildren<QTreeWidget*>()) {
+        if (tree->headerItem() != nullptr &&
+            tree->headerItem()->text(0) == QStringLiteral("Host / rule")) {
+            return tree;
         }
     }
     return nullptr;
+}
+
+/// Every row under a host, as "<text col 0>|<text col 1>".
+QStringList rows_under(QTreeWidgetItem* host) {
+    QStringList rows;
+    for (int i = 0; i < host->childCount(); ++i) {
+        rows << host->child(i)->text(0) + QStringLiteral("|") + host->child(i)->text(1);
+    }
+    return rows;
 }
 
 ComplianceReport report_for(const std::string& host, std::vector<CheckStatus> statuses) {
@@ -119,11 +127,6 @@ ComplianceReport report_for(const std::string& host, std::vector<CheckStatus> st
         report.results.push_back(CheckResult{"r" + std::to_string(n++), status, "", ""});
     }
     return report;
-}
-
-QString cell(QTableWidget* table, int row, int column) {
-    QTableWidgetItem* item = table->item(row, column);
-    return item == nullptr ? QString() : item->text();
 }
 
 /// Publishes a report the way a client does, rather than emitting the
@@ -139,31 +142,92 @@ void publish_report(Harness& harness, const ComplianceReport& report) {
 
 }  // namespace
 
-TEST(FleetWindowCompliance, ReportsPassedOverCheckedAsARatio) {
+TEST(FleetWindowCompliance, ScoresEachHostAsPassedOverChecked) {
     Harness harness;
-    ASSERT_NE(compliance_table(harness), nullptr) << "no compliance tab";
+    ASSERT_NE(compliance_tree(harness), nullptr) << "no compliance tab";
 
     harness.controller->start();
-    publish_report(harness, report_for("PC-001", {CheckStatus::Pass, CheckStatus::Pass, CheckStatus::Fail}));
+    publish_report(harness,
+                   report_for("PC-001", {CheckStatus::Pass, CheckStatus::Pass, CheckStatus::Fail}));
 
-    QTableWidget* table = compliance_table(harness);
-    ASSERT_EQ(table->rowCount(), 1);
-    EXPECT_EQ(cell(table, 0, 0).toStdString(), "PC-001");
-    EXPECT_EQ(cell(table, 0, 1).toStdString(), "2 / 3");
+    QTreeWidget* tree = compliance_tree(harness);
+    ASSERT_EQ(tree->topLevelItemCount(), 1);
+    EXPECT_EQ(tree->topLevelItem(0)->text(0).toStdString(), "PC-001");
+    EXPECT_EQ(tree->topLevelItem(0)->text(1).toStdString(), "2 / 3 rules passed");
 }
 
-TEST(FleetWindowCompliance, LeavesNotApplicableOutOfTheRatioButStillShowsIt) {
-    // A rule the client cannot evaluate can never pass, so counting it in the
-    // denominator would park the host at a score it can never improve.
+TEST(FleetWindowCompliance, ShowsEveryFailingRuleWithWhatWasObserved) {
+    // The whole point on a display nobody can click: what is wrong, and why,
+    // has to be on the glass already.
     Harness harness;
+    harness.controller->start();
 
+    ComplianceReport report;
+    report.host_id = "PC-001";
+    report.results = {CheckResult{"r1", CheckStatus::Pass, "running", ""},
+                      CheckResult{"r2", CheckStatus::Fail, "No link", ""},
+                      CheckResult{"r3", CheckStatus::Error, "read failed", "ACCESS_DENIED"}};
+    publish_report(harness, report);
+
+    QTreeWidgetItem* host = compliance_tree(harness)->topLevelItem(0);
+    const QStringList rows = rows_under(host);
+    ASSERT_EQ(rows.size(), 2) << "passing rules are counted, not listed";
+    EXPECT_TRUE(rows[0].contains(QStringLiteral("r2"))) << rows[0].toStdString();
+    EXPECT_TRUE(rows[0].contains(QStringLiteral("No link")));
+    EXPECT_TRUE(rows[1].contains(QStringLiteral("ACCESS_DENIED")))
+        << "an error's message is the only thing that explains it";
+}
+
+TEST(FleetWindowCompliance, PutsFailuresAboveErrorsAndNotApplicable) {
+    Harness harness;
+    harness.controller->start();
+
+    ComplianceReport report;
+    report.host_id = "PC-001";
+    report.results = {CheckResult{"na", CheckStatus::NotApplicable, "no capability", ""},
+                      CheckResult{"err", CheckStatus::Error, "read failed", ""},
+                      CheckResult{"bad", CheckStatus::Fail, "not running", ""}};
+    publish_report(harness, report);
+
+    const QStringList rows = rows_under(compliance_tree(harness)->topLevelItem(0));
+    ASSERT_EQ(rows.size(), 3);
+    EXPECT_TRUE(rows[0].contains(QStringLiteral("bad")));
+    EXPECT_TRUE(rows[1].contains(QStringLiteral("err")));
+    EXPECT_TRUE(rows[2].contains(QStringLiteral("na")));
+}
+
+TEST(FleetWindowCompliance, SaysSoExplicitlyWhenAHostIsFullyCompliant) {
+    // An empty group reads as "no data" from across a room.
+    Harness harness;
+    harness.controller->start();
+    publish_report(harness, report_for("PC-001", {CheckStatus::Pass, CheckStatus::Pass}));
+
+    const QStringList rows = rows_under(compliance_tree(harness)->topLevelItem(0));
+    ASSERT_EQ(rows.size(), 1);
+    EXPECT_TRUE(rows.first().contains(QStringLiteral("All 2 checked rules passing")))
+        << rows.first().toStdString();
+}
+
+TEST(FleetWindowCompliance, LeavesNotApplicableOutOfTheRatioButStillListsIt) {
+    // A rule the client cannot evaluate can never pass, so counting it in the
+    // denominator would park the host at a score it can never improve — but it
+    // still has to be visible, or the rule looks silently satisfied.
+    Harness harness;
     harness.controller->start();
     publish_report(harness, report_for("PC-001", {CheckStatus::Pass, CheckStatus::NotApplicable,
-                              CheckStatus::NotApplicable}));
+                                                   CheckStatus::NotApplicable}));
 
-    QTableWidget* table = compliance_table(harness);
-    EXPECT_EQ(cell(table, 0, 1).toStdString(), "1 / 1");
-    EXPECT_EQ(cell(table, 0, 4).toStdString(), "2") << "the excluded rules must stay visible";
+    QTreeWidgetItem* host = compliance_tree(harness)->topLevelItem(0);
+    EXPECT_EQ(host->text(1).toStdString(), "1 / 1 rules passed");
+    EXPECT_EQ(rows_under(host).size(), 2) << "the excluded rules must stay on screen";
+}
+
+TEST(FleetWindowCompliance, EveryGroupIsExpandedBecauseNobodyCanClickIt) {
+    Harness harness;
+    harness.controller->start();
+    publish_report(harness, report_for("PC-001", {CheckStatus::Fail}));
+
+    EXPECT_TRUE(compliance_tree(harness)->topLevelItem(0)->isExpanded());
 }
 
 TEST(FleetWindowCompliance, ListsTheWorstHostsFirst) {
@@ -175,15 +239,15 @@ TEST(FleetWindowCompliance, ListsTheWorstHostsFirst) {
     publish_report(harness, report_for("PC-aaa", {CheckStatus::Pass}));
     publish_report(harness, report_for("PC-zzz", {CheckStatus::Fail, CheckStatus::Fail}));
 
-    QTableWidget* table = compliance_table(harness);
-    ASSERT_EQ(table->rowCount(), 2);
-    EXPECT_EQ(cell(table, 0, 0).toStdString(), "PC-zzz");
-    EXPECT_EQ(cell(table, 1, 0).toStdString(), "PC-aaa");
+    QTreeWidget* tree = compliance_tree(harness);
+    ASSERT_EQ(tree->topLevelItemCount(), 2);
+    EXPECT_EQ(tree->topLevelItem(0)->text(0).toStdString(), "PC-zzz");
+    EXPECT_EQ(tree->topLevelItem(1)->text(0).toStdString(), "PC-aaa");
 }
 
 TEST(FleetWindowCompliance, StartsEmptyBeforeAnyHostReports) {
     Harness harness;
-    EXPECT_EQ(compliance_table(harness)->rowCount(), 0);
+    EXPECT_EQ(compliance_tree(harness)->topLevelItemCount(), 0);
 }
 
 TEST(FleetWindowAssignments, CreatesATemplateNamedInAnAssignment) {

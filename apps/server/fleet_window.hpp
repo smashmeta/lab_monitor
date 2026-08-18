@@ -153,7 +153,9 @@ private:
 
     QTabWidget* tabs_;
 
-    QTableWidget* compliance_table_;
+    /// One expanded group per host, listing only what is wrong. Read-only and
+    /// oversized on purpose: this tab is written for a wall display.
+    QTreeWidget* compliance_tree_;
     QLabel* compliance_summary_label_;
 
     QListWidget* template_list_;

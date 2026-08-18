@@ -433,32 +433,75 @@ void FleetWindow::build_compliance_tab() {
     auto* layout = new QVBoxLayout(page);
 
     compliance_summary_label_ = new QLabel(page);
-    compliance_summary_label_->setProperty("muted", true);
+    QFont summary_font = compliance_summary_label_->font();
+    summary_font.setPointSize(summary_font.pointSize() + 3);
+    summary_font.setBold(true);
+    compliance_summary_label_->setFont(summary_font);
     layout->addWidget(compliance_summary_label_);
 
-    compliance_table_ = new QTableWidget(0, 6, page);
-    compliance_table_->setHorizontalHeaderLabels({QStringLiteral("Host"), QStringLiteral("Passed"),
-                                                   QStringLiteral("Failing"), QStringLiteral("Errors"),
-                                                   QStringLiteral("Not applicable"),
-                                                   QStringLiteral("Revision")});
-    compliance_table_->horizontalHeader()->setStretchLastSection(true);
-    compliance_table_->verticalHeader()->setVisible(false);
-    compliance_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    compliance_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    compliance_table_->setShowGrid(false);
-    compliance_table_->setAlternatingRowColors(true);
-    compliance_table_->verticalHeader()->setDefaultSectionSize(22);
-    // Same reason the fleet table has one: without it a selected row loses the
-    // colour that says how the host is doing.
-    compliance_table_->setItemDelegate(new lm::ui::KeepForegroundDelegate(compliance_table_));
-    layout->addWidget(compliance_table_, 1);
+    // A tree rather than a table, and read-only: this tab is written for a
+    // wall display nobody walks over to. Nothing may hide behind a tooltip, a
+    // click or a scroll -- what is wrong has to be on the glass already.
+    compliance_tree_ = new QTreeWidget(page);
+    compliance_tree_->setColumnCount(2);
+    compliance_tree_->setHeaderLabels({QStringLiteral("Host / rule"), QStringLiteral("Observed")});
+    compliance_tree_->setRootIsDecorated(false);
+    compliance_tree_->setUniformRowHeights(true);
+    compliance_tree_->setSelectionMode(QAbstractItemView::NoSelection);
+    compliance_tree_->setFocusPolicy(Qt::NoFocus);
+    compliance_tree_->header()->setSectionResizeMode(0, QHeaderView::Interactive);
+    compliance_tree_->header()->setStretchLastSection(true);
+
+    // Bigger than the rest of the window: the fleet table is sized to fit ~35
+    // rows for someone at the keyboard, this is meant to be read across a room.
+    QFont tree_font = compliance_tree_->font();
+    tree_font.setPointSize(tree_font.pointSize() + 2);
+    compliance_tree_->setFont(tree_font);
+
+    layout->addWidget(compliance_tree_, 1);
 
     tabs_->addTab(page, QStringLiteral("Compliance"));
     rebuild_compliance_table();
 }
 
+namespace {
+
+/// Failing first, then errors, then the ones that could not be checked. Passes
+/// never appear individually — see rebuild_compliance_table().
+int severity_rank(lm::core::CheckStatus status) {
+    switch (status) {
+        case lm::core::CheckStatus::Fail:          return 0;
+        case lm::core::CheckStatus::Error:         return 1;
+        case lm::core::CheckStatus::NotApplicable: return 2;
+        case lm::core::CheckStatus::Pass:          return 3;
+    }
+    return 4;
+}
+
+QColor colour_for_status(lm::core::CheckStatus status) {
+    switch (status) {
+        case lm::core::CheckStatus::Fail:  return QColor(lm::ui::Theme::kMissing);
+        case lm::core::CheckStatus::Error: return QColor(lm::ui::Theme::kUnexpected);
+        case lm::core::CheckStatus::Pass:  return QColor(lm::ui::Theme::kOnline);
+        default:                           return QColor(lm::ui::Theme::kTextMuted);
+    }
+}
+
+QString glyph_for_status(lm::core::CheckStatus status) {
+    switch (status) {
+        case lm::core::CheckStatus::Fail:          return QStringLiteral("✕");
+        case lm::core::CheckStatus::Error:         return QStringLiteral("!");
+        case lm::core::CheckStatus::Pass:          return QStringLiteral("✓");
+        case lm::core::CheckStatus::NotApplicable: return QStringLiteral("–");
+    }
+    return QStringLiteral("?");
+}
+
+}  // namespace
+
 void FleetWindow::rebuild_compliance_table() {
     const QMap<QString, lm::core::ComplianceReport>& reports = controller_->report_cache();
+    compliance_tree_->clear();
 
     // Worst first: the point of this tab is finding what needs attention, and a
     // host with three failures should not be below one with none because its
@@ -476,67 +519,110 @@ void FleetWindow::rebuild_compliance_table() {
         return lhs < rhs;
     });
 
-    compliance_table_->setRowCount(hosts.size());
     std::size_t total_failing = 0;
     std::size_t fully_compliant = 0;
 
-    for (int row = 0; row < hosts.size(); ++row) {
-        const lm::core::ComplianceReport& report = reports[hosts[row]];
+    for (const QString& host : hosts) {
+        const lm::core::ComplianceReport& report = reports[host];
         const lm::core::ComplianceSummary summary = lm::core::summarise(report);
         total_failing += summary.failing;
-        if (summary.failing == 0 && summary.errors == 0) {
+        const bool healthy = summary.failing == 0 && summary.errors == 0;
+        if (healthy) {
             ++fully_compliant;
         }
 
-        const auto set = [&](int column, const QString& text, const QColor& colour) {
-            auto* item = new QTableWidgetItem(text);
-            item->setForeground(colour);
-            if (column > 0) {
-                item->setTextAlignment(Qt::AlignCenter);
-            }
-            compliance_table_->setItem(row, column, item);
-        };
+        auto* host_item = new QTreeWidgetItem(compliance_tree_);
+        host_item->setText(0, host);
+        host_item->setText(1, QStringLiteral("%1 / %2 rules passed")
+                                   .arg(summary.passed)
+                                   .arg(summary.checked()));
+        QFont host_font = compliance_tree_->font();
+        host_font.setBold(true);
+        host_item->setFont(0, host_font);
+        host_item->setFont(1, host_font);
 
-        // Green at fully compliant through to red at none passing. Reusing the
-        // load ramp inverted rather than inventing a second scale: 100% passed
-        // is the good end here, where 100% load is the bad one.
-        const QColor colour = lm::ui::Theme::color_for_load(100.0 * (1.0 - summary.passed_ratio()));
+        const QColor host_colour =
+            lm::ui::Theme::color_for_load(100.0 * (1.0 - summary.passed_ratio()));
+        host_item->setForeground(0, host_colour);
+        host_item->setForeground(1, host_colour);
 
-        set(0, hosts[row], colour);
-        set(1, QStringLiteral("%1 / %2").arg(summary.passed).arg(summary.checked()), colour);
-        set(2, QString::number(summary.failing),
-            summary.failing > 0 ? QColor(lm::ui::Theme::kMissing) : QColor(lm::ui::Theme::kTextMuted));
-        set(3, QString::number(summary.errors),
-            summary.errors > 0 ? QColor(lm::ui::Theme::kUnexpected) : QColor(lm::ui::Theme::kTextMuted));
-        // Not a failing grade, so never coloured as one -- these are the rules
-        // the client could not evaluate at all.
-        set(4, QString::number(summary.not_applicable), QColor(lm::ui::Theme::kTextMuted));
-        set(5, QString::number(report.applied_revision), QColor(lm::ui::Theme::kTextMuted));
-
-        const QString tooltip =
-            QStringLiteral("%1\n\n%2 of %3 applicable rules passed\n%4 failing, %5 errors\n"
-                            "%6 not applicable (the client cannot evaluate these)")
-                .arg(hosts[row])
-                .arg(summary.passed)
-                .arg(summary.checked())
-                .arg(summary.failing)
-                .arg(summary.errors)
-                .arg(summary.not_applicable);
-        for (int column = 0; column < compliance_table_->columnCount(); ++column) {
-            if (QTableWidgetItem* item = compliance_table_->item(row, column)) {
-                item->setToolTip(tooltip);
-            }
+        // Rule descriptions live in the bundle this server published, recovered
+        // the same way the detail pane does -- and per host, since rules_for()
+        // is what decides which rules this machine was even given.
+        QHash<QString, lm::ui::RuleDetail> by_id;
+        for (const lm::core::Rule* rule :
+             lm::core::rules_for(controller_->published(), host.toStdString())) {
+            by_id.insert(QString::fromStdString(rule->id), lm::ui::describe(*rule));
         }
+
+        std::vector<const lm::core::CheckResult*> ordered;
+        ordered.reserve(report.results.size());
+        for (const lm::core::CheckResult& result : report.results) {
+            ordered.push_back(&result);
+        }
+        std::ranges::sort(ordered, [&](const lm::core::CheckResult* lhs,
+                                        const lm::core::CheckResult* rhs) {
+            if (severity_rank(lhs->status) != severity_rank(rhs->status)) {
+                return severity_rank(lhs->status) < severity_rank(rhs->status);
+            }
+            return lhs->rule_id < rhs->rule_id;
+        });
+
+        for (const lm::core::CheckResult* result : ordered) {
+            // Passing rules are counted, never listed. On a shared display a
+            // wall of green pushes the two red lines that matter off the
+            // screen; the host row already says how many passed.
+            if (result->status == lm::core::CheckStatus::Pass) {
+                continue;
+            }
+
+            const QString id = QString::fromStdString(result->rule_id);
+            const auto detail = by_id.constFind(id);
+            const QString label = detail != by_id.constEnd() ? detail->label : id;
+
+            auto* row = new QTreeWidgetItem(host_item);
+            row->setText(0, QStringLiteral("%1  %2").arg(glyph_for_status(result->status), label));
+
+            QString observed = QString::fromStdString(result->observed);
+            const QString message = QString::fromStdString(result->message);
+            if (!message.isEmpty() && message != observed) {
+                observed = observed.isEmpty() ? message
+                                              : QStringLiteral("%1 - %2").arg(observed, message);
+            }
+            row->setText(1, observed);
+
+            const QColor colour = colour_for_status(result->status);
+            row->setForeground(0, colour);
+            row->setForeground(1, colour);
+        }
+
+        // Only when nothing else is listed, which is the entire purpose of this
+        // line: an empty group reads as "no data" from across a room. A host
+        // whose group already holds its not-applicable rules does not need to
+        // be told again that the rest passed -- the host row says so.
+        if (host_item->childCount() == 0) {
+            auto* row = new QTreeWidgetItem(host_item);
+            row->setText(0, QStringLiteral("%1  All %2 checked rules passing")
+                                 .arg(glyph_for_status(lm::core::CheckStatus::Pass))
+                                 .arg(summary.checked()));
+            row->setForeground(0, QColor(lm::ui::Theme::kOnline));
+            row->setForeground(1, QColor(lm::ui::Theme::kOnline));
+        }
+
+        host_item->setExpanded(true);
     }
 
-    compliance_table_->resizeColumnsToContents();
+    compliance_tree_->resizeColumnToContents(0);
     compliance_summary_label_->setText(
         hosts.isEmpty()
-            ? QStringLiteral("No host has reported compliance yet.")
-            : QStringLiteral("%1 of %2 reporting hosts fully compliant · %3 failing checks in total")
+            ? QStringLiteral("No host has reported compliance yet")
+            : QStringLiteral("%1 of %2 hosts fully compliant · %3 failing checks")
                   .arg(fully_compliant)
                   .arg(hosts.size())
                   .arg(total_failing));
+    compliance_summary_label_->setStyleSheet(
+        QStringLiteral("color: %1;")
+            .arg(total_failing == 0 ? lm::ui::Theme::kOnline : lm::ui::Theme::kMissing));
 }
 
 QString FleetWindow::selected_host_id() const {
