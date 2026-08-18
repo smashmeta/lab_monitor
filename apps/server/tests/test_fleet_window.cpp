@@ -95,6 +95,97 @@ void type_and_commit(lm::ui::TokenEdit* editor, const QString& text) {
 
 }  // namespace
 
+namespace {
+
+/// The compliance tab's table — the only one with a "Not applicable" column.
+QTableWidget* compliance_table(const Harness& harness) {
+    for (QTableWidget* table : harness.window->findChildren<QTableWidget*>()) {
+        for (int column = 0; column < table->columnCount(); ++column) {
+            if (table->horizontalHeaderItem(column) != nullptr &&
+                table->horizontalHeaderItem(column)->text() == QStringLiteral("Not applicable")) {
+                return table;
+            }
+        }
+    }
+    return nullptr;
+}
+
+ComplianceReport report_for(const std::string& host, std::vector<CheckStatus> statuses) {
+    ComplianceReport report;
+    report.host_id = host;
+    report.applied_revision = 4;
+    int n = 0;
+    for (const CheckStatus status : statuses) {
+        report.results.push_back(CheckResult{"r" + std::to_string(n++), status, "", ""});
+    }
+    return report;
+}
+
+QString cell(QTableWidget* table, int row, int column) {
+    QTableWidgetItem* item = table->item(row, column);
+    return item == nullptr ? QString() : item->text();
+}
+
+/// Publishes a report the way a client does, rather than emitting the
+/// controller's signal directly: the table is built from the controller's
+/// report cache, which only the real receive path fills.
+void publish_report(Harness& harness, const ComplianceReport& report) {
+    const auto client = make_in_memory_client(harness.bus);
+    ComplianceReportMessage message;
+    message.report = report;
+    client->publish_report(message);
+    QApplication::processEvents();
+}
+
+}  // namespace
+
+TEST(FleetWindowCompliance, ReportsPassedOverCheckedAsARatio) {
+    Harness harness;
+    ASSERT_NE(compliance_table(harness), nullptr) << "no compliance tab";
+
+    harness.controller->start();
+    publish_report(harness, report_for("PC-001", {CheckStatus::Pass, CheckStatus::Pass, CheckStatus::Fail}));
+
+    QTableWidget* table = compliance_table(harness);
+    ASSERT_EQ(table->rowCount(), 1);
+    EXPECT_EQ(cell(table, 0, 0).toStdString(), "PC-001");
+    EXPECT_EQ(cell(table, 0, 1).toStdString(), "2 / 3");
+}
+
+TEST(FleetWindowCompliance, LeavesNotApplicableOutOfTheRatioButStillShowsIt) {
+    // A rule the client cannot evaluate can never pass, so counting it in the
+    // denominator would park the host at a score it can never improve.
+    Harness harness;
+
+    harness.controller->start();
+    publish_report(harness, report_for("PC-001", {CheckStatus::Pass, CheckStatus::NotApplicable,
+                              CheckStatus::NotApplicable}));
+
+    QTableWidget* table = compliance_table(harness);
+    EXPECT_EQ(cell(table, 0, 1).toStdString(), "1 / 1");
+    EXPECT_EQ(cell(table, 0, 4).toStdString(), "2") << "the excluded rules must stay visible";
+}
+
+TEST(FleetWindowCompliance, ListsTheWorstHostsFirst) {
+    // The tab exists to find what needs attention; alphabetical order would
+    // bury a host with three failures under one with none.
+    Harness harness;
+
+    harness.controller->start();
+    publish_report(harness, report_for("PC-aaa", {CheckStatus::Pass}));
+    publish_report(harness, report_for("PC-zzz", {CheckStatus::Fail, CheckStatus::Fail}));
+
+    QTableWidget* table = compliance_table(harness);
+    ASSERT_EQ(table->rowCount(), 2);
+    EXPECT_EQ(cell(table, 0, 0).toStdString(), "PC-zzz");
+    EXPECT_EQ(cell(table, 1, 0).toStdString(), "PC-aaa");
+}
+
+TEST(FleetWindowCompliance, StartsEmptyBeforeAnyHostReports) {
+    Harness harness;
+    EXPECT_EQ(compliance_table(harness)->rowCount(), 0);
+}
+
 TEST(FleetWindowAssignments, CreatesATemplateNamedInAnAssignment) {
     Harness harness;
     lm::ui::TokenEdit* editor = harness.assignment_editor();

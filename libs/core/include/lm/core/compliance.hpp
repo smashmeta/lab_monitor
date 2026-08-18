@@ -39,4 +39,32 @@ struct ComplianceReport {
 /// reported but do not mark a host as non-compliant.
 [[nodiscard]] bool is_compliant(const ComplianceReport& report);
 
+/// One report reduced to counts, for "12 of 15 rules passed".
+struct ComplianceSummary {
+    std::size_t passed = 0;
+    std::size_t failing = 0;
+    std::size_t errors = 0;
+    std::size_t not_applicable = 0;
+
+    /// The rules this host could actually be judged on.
+    ///
+    /// NotApplicable is excluded deliberately. A rule the client cannot
+    /// evaluate can never pass, so counting it in the denominator would park a
+    /// Linux machine at "5 of 10" forever for the crime of having no registry —
+    /// and that number would never improve however compliant it became. The
+    /// excluded ones stay visible in their own count rather than vanishing.
+    [[nodiscard]] std::size_t checked() const { return passed + failing + errors; }
+    [[nodiscard]] std::size_t total() const { return checked() + not_applicable; }
+
+    /// passed / checked(), in [0, 1]. A ratio rather than a percentage because
+    /// that is how this is reported — "12 / 15", not "80%" — and one
+    /// representation is enough. 1.0 when nothing was checked: nothing is
+    /// failing, and a host with no applicable rules is not non-compliant.
+    [[nodiscard]] double passed_ratio() const;
+
+    friend bool operator==(const ComplianceSummary&, const ComplianceSummary&) = default;
+};
+
+[[nodiscard]] ComplianceSummary summarise(const ComplianceReport& report);
+
 }  // namespace lm::core

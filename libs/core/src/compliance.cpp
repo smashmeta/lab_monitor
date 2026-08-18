@@ -215,4 +215,20 @@ bool is_compliant(const ComplianceReport& report) {
     return count_by_status(report, CheckStatus::Fail) == 0;
 }
 
+double ComplianceSummary::passed_ratio() const {
+    if (checked() == 0) {
+        return 1.0;
+    }
+    return static_cast<double>(passed) / static_cast<double>(checked());
+}
+
+ComplianceSummary summarise(const ComplianceReport& report) {
+    ComplianceSummary summary;
+    summary.passed = count_by_status(report, CheckStatus::Pass);
+    summary.failing = count_by_status(report, CheckStatus::Fail);
+    summary.errors = count_by_status(report, CheckStatus::Error);
+    summary.not_applicable = count_by_status(report, CheckStatus::NotApplicable);
+    return summary;
+}
+
 }  // namespace lm::core

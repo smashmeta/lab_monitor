@@ -190,6 +190,7 @@ FleetWindow::FleetWindow(ServerController* controller, QWidget* parent)
     setCentralWidget(tabs_);
 
     build_fleet_tab();
+    build_compliance_tab();
     build_templates_tab();
 
     // The proxy sorts most-urgent-first without the source FleetModel ever
@@ -427,6 +428,117 @@ void FleetWindow::build_templates_tab() {
     tabs_->addTab(page, QStringLiteral("Templates"));
 }
 
+void FleetWindow::build_compliance_tab() {
+    auto* page = new QWidget();
+    auto* layout = new QVBoxLayout(page);
+
+    compliance_summary_label_ = new QLabel(page);
+    compliance_summary_label_->setProperty("muted", true);
+    layout->addWidget(compliance_summary_label_);
+
+    compliance_table_ = new QTableWidget(0, 6, page);
+    compliance_table_->setHorizontalHeaderLabels({QStringLiteral("Host"), QStringLiteral("Passed"),
+                                                   QStringLiteral("Failing"), QStringLiteral("Errors"),
+                                                   QStringLiteral("Not applicable"),
+                                                   QStringLiteral("Revision")});
+    compliance_table_->horizontalHeader()->setStretchLastSection(true);
+    compliance_table_->verticalHeader()->setVisible(false);
+    compliance_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    compliance_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    compliance_table_->setShowGrid(false);
+    compliance_table_->setAlternatingRowColors(true);
+    compliance_table_->verticalHeader()->setDefaultSectionSize(22);
+    // Same reason the fleet table has one: without it a selected row loses the
+    // colour that says how the host is doing.
+    compliance_table_->setItemDelegate(new lm::ui::KeepForegroundDelegate(compliance_table_));
+    layout->addWidget(compliance_table_, 1);
+
+    tabs_->addTab(page, QStringLiteral("Compliance"));
+    rebuild_compliance_table();
+}
+
+void FleetWindow::rebuild_compliance_table() {
+    const QMap<QString, lm::core::ComplianceReport>& reports = controller_->report_cache();
+
+    // Worst first: the point of this tab is finding what needs attention, and a
+    // host with three failures should not be below one with none because its
+    // name sorts later.
+    QStringList hosts = reports.keys();
+    std::sort(hosts.begin(), hosts.end(), [&](const QString& lhs, const QString& rhs) {
+        const auto left = lm::core::summarise(reports[lhs]);
+        const auto right = lm::core::summarise(reports[rhs]);
+        if (left.failing != right.failing) {
+            return left.failing > right.failing;
+        }
+        if (left.errors != right.errors) {
+            return left.errors > right.errors;
+        }
+        return lhs < rhs;
+    });
+
+    compliance_table_->setRowCount(hosts.size());
+    std::size_t total_failing = 0;
+    std::size_t fully_compliant = 0;
+
+    for (int row = 0; row < hosts.size(); ++row) {
+        const lm::core::ComplianceReport& report = reports[hosts[row]];
+        const lm::core::ComplianceSummary summary = lm::core::summarise(report);
+        total_failing += summary.failing;
+        if (summary.failing == 0 && summary.errors == 0) {
+            ++fully_compliant;
+        }
+
+        const auto set = [&](int column, const QString& text, const QColor& colour) {
+            auto* item = new QTableWidgetItem(text);
+            item->setForeground(colour);
+            if (column > 0) {
+                item->setTextAlignment(Qt::AlignCenter);
+            }
+            compliance_table_->setItem(row, column, item);
+        };
+
+        // Green at fully compliant through to red at none passing. Reusing the
+        // load ramp inverted rather than inventing a second scale: 100% passed
+        // is the good end here, where 100% load is the bad one.
+        const QColor colour = lm::ui::Theme::color_for_load(100.0 * (1.0 - summary.passed_ratio()));
+
+        set(0, hosts[row], colour);
+        set(1, QStringLiteral("%1 / %2").arg(summary.passed).arg(summary.checked()), colour);
+        set(2, QString::number(summary.failing),
+            summary.failing > 0 ? QColor(lm::ui::Theme::kMissing) : QColor(lm::ui::Theme::kTextMuted));
+        set(3, QString::number(summary.errors),
+            summary.errors > 0 ? QColor(lm::ui::Theme::kUnexpected) : QColor(lm::ui::Theme::kTextMuted));
+        // Not a failing grade, so never coloured as one -- these are the rules
+        // the client could not evaluate at all.
+        set(4, QString::number(summary.not_applicable), QColor(lm::ui::Theme::kTextMuted));
+        set(5, QString::number(report.applied_revision), QColor(lm::ui::Theme::kTextMuted));
+
+        const QString tooltip =
+            QStringLiteral("%1\n\n%2 of %3 applicable rules passed\n%4 failing, %5 errors\n"
+                            "%6 not applicable (the client cannot evaluate these)")
+                .arg(hosts[row])
+                .arg(summary.passed)
+                .arg(summary.checked())
+                .arg(summary.failing)
+                .arg(summary.errors)
+                .arg(summary.not_applicable);
+        for (int column = 0; column < compliance_table_->columnCount(); ++column) {
+            if (QTableWidgetItem* item = compliance_table_->item(row, column)) {
+                item->setToolTip(tooltip);
+            }
+        }
+    }
+
+    compliance_table_->resizeColumnsToContents();
+    compliance_summary_label_->setText(
+        hosts.isEmpty()
+            ? QStringLiteral("No host has reported compliance yet.")
+            : QStringLiteral("%1 of %2 reporting hosts fully compliant · %3 failing checks in total")
+                  .arg(fully_compliant)
+                  .arg(hosts.size())
+                  .arg(total_failing));
+}
+
 QString FleetWindow::selected_host_id() const {
     if (host_view_->selectionModel() == nullptr) {
         return {};
@@ -524,6 +636,10 @@ void FleetWindow::refresh_adapter_list(const lm::core::ResourceSample* sample) {
 }
 
 void FleetWindow::on_compliance_report(QString host_id, lm::core::ComplianceReport report) {
+    // The summary tab covers every host, so it refreshes whoever reported --
+    // unlike the detail pane below, which only concerns the selected one.
+    rebuild_compliance_table();
+
     if (host_id != selected_host_id()) {
         return;
     }

@@ -40,14 +40,14 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 
 | Target | Responsibility | Tests |
 |---|---|---|
-| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 116 |
+| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 122 |
 | `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 51 |
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend | 28 |
 | `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 48 + 32 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 17 |
-| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 22 |
+| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 26 |
 
-**314 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
+**324 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they need loopback multicast).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -178,6 +178,24 @@ modem.
 since creating entries there would be editing the machine's network config. That
 is what makes the disconnected-entry path genuinely tested on a machine with no
 dial-up configured.
+
+### The Compliance tab scores against what was *checked*
+`core::summarise()` reduces a report to counts, and `ComplianceSummary::checked()`
+is `passed + failing + errors` — **NotApplicable is excluded from the
+denominator**. A rule the client cannot evaluate can never pass, so counting it
+would park a Linux machine at "5 of 10" forever for having no registry, with no
+action able to improve it. The excluded rules keep their own visible column
+rather than disappearing.
+
+Errors *are* in the denominator even though `is_compliant()` ignores them:
+"could not check it" is not "passed" and must not be scored as one.
+
+The score is a ratio (`passed_ratio()`, 0–1) rather than a percentage, because
+that is how it is displayed — "3 / 5", not "60 %" — and one representation is
+enough. The row colour reuses `Theme::color_for_load()` inverted, since a fully
+compliant host is the good end where full load is the bad one. Rows sort
+worst-first: the tab exists to find what needs attention, and alphabetical order
+would bury a host with three failures under one with none.
 
 ### Network rules are two payloads, not one with a mode flag
 `AdapterCountRule` ("at least 2 connected") and `AdapterStateRule` ("smash-wifi

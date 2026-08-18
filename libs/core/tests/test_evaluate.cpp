@@ -480,3 +480,77 @@ TEST(EvaluateNetworkRules, AreNotApplicableWithoutTheNetworkCapability) {
     EXPECT_EQ(report.results.front().status, CheckStatus::NotApplicable);
     EXPECT_NE(report.results.front().observed.find("Network"), std::string::npos);
 }
+
+// --- summaries --------------------------------------------------------------
+
+namespace {
+
+ComplianceReport report_with(std::vector<CheckStatus> statuses) {
+    ComplianceReport report;
+    report.host_id = "PC-001";
+    int n = 0;
+    for (const CheckStatus status : statuses) {
+        report.results.push_back(CheckResult{"r" + std::to_string(n++), status, "", ""});
+    }
+    return report;
+}
+
+}  // namespace
+
+TEST(Summarise, CountsEachStatusSeparately) {
+    const ComplianceSummary summary = summarise(report_with(
+        {CheckStatus::Pass, CheckStatus::Pass, CheckStatus::Fail, CheckStatus::Error,
+         CheckStatus::NotApplicable}));
+
+    EXPECT_EQ(summary.passed, 2u);
+    EXPECT_EQ(summary.failing, 1u);
+    EXPECT_EQ(summary.errors, 1u);
+    EXPECT_EQ(summary.not_applicable, 1u);
+    EXPECT_EQ(summary.total(), 5u);
+}
+
+TEST(Summarise, ExcludesNotApplicableFromWhatWasChecked) {
+    // The whole point of separating them: a rule the client cannot evaluate can
+    // never pass, so counting it in the denominator would park a host at a
+    // score it can never improve.
+    const ComplianceSummary summary = summarise(report_with(
+        {CheckStatus::Pass, CheckStatus::Pass, CheckStatus::NotApplicable,
+         CheckStatus::NotApplicable}));
+
+    EXPECT_EQ(summary.checked(), 2u);
+    EXPECT_EQ(summary.total(), 4u);
+    EXPECT_DOUBLE_EQ(summary.passed_ratio(), 1.0)
+        << "two of two applicable rules pass; the other two could not be judged";
+}
+
+TEST(Summarise, ErrorsCountAgainstTheScoreWithoutBeingFailures) {
+    // is_compliant() ignores errors, but "could not check it" is not the same
+    // as "passed" and must not be scored as one.
+    const ComplianceSummary summary =
+        summarise(report_with({CheckStatus::Pass, CheckStatus::Error}));
+
+    EXPECT_EQ(summary.checked(), 2u);
+    EXPECT_DOUBLE_EQ(summary.passed_ratio(), 0.5);
+}
+
+TEST(Summarise, AnEmptyReportIsFullyCompliant) {
+    const ComplianceSummary summary = summarise(ComplianceReport{});
+    EXPECT_EQ(summary.checked(), 0u);
+    EXPECT_DOUBLE_EQ(summary.passed_ratio(), 1.0)
+        << "a host with no applicable rules is not failing any";
+}
+
+TEST(Summarise, AllNotApplicableIsAlsoFullyCompliant) {
+    const ComplianceSummary summary =
+        summarise(report_with({CheckStatus::NotApplicable, CheckStatus::NotApplicable}));
+    EXPECT_EQ(summary.checked(), 0u);
+    EXPECT_DOUBLE_EQ(summary.passed_ratio(), 1.0);
+}
+
+TEST(Summarise, AgreesWithIsCompliant) {
+    EXPECT_TRUE(is_compliant(report_with({CheckStatus::Pass, CheckStatus::Error})));
+    EXPECT_EQ(summarise(report_with({CheckStatus::Pass, CheckStatus::Error})).failing, 0u);
+
+    EXPECT_FALSE(is_compliant(report_with({CheckStatus::Fail})));
+    EXPECT_EQ(summarise(report_with({CheckStatus::Fail})).failing, 1u);
+}
