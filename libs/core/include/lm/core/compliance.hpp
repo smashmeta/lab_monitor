@@ -15,7 +15,14 @@ struct CheckResult {
     CheckStatus status = CheckStatus::NotApplicable;
     /// Human-readable description of what was actually observed.
     std::string observed;
-    /// Populated only when status == CheckStatus::Error.
+    /// Why this result is what it is, in the reader's terms.
+    ///
+    /// For Error, the cause. For Fail, **what was expected instead** — without
+    /// it a failure only ever states the observation ("2 of 4 connected"),
+    /// leaving the reader to work out which rule that violates. That is a
+    /// guessing game on a wall display, where the rule's own description is the
+    /// only other text on the row. Empty for Pass and NotApplicable, whose
+    /// `observed` already says everything.
     std::string message;
     friend bool operator==(const CheckResult&, const CheckResult&) = default;
 };

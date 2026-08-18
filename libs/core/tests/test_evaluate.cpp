@@ -554,3 +554,179 @@ TEST(Summarise, AgreesWithIsCompliant) {
     EXPECT_FALSE(is_compliant(report_with({CheckStatus::Fail})));
     EXPECT_EQ(summarise(report_with({CheckStatus::Fail})).failing, 1u);
 }
+
+// --- every failure says what was expected ------------------------------------
+//
+// A failure that only states the observation ("2 of 4 connected") makes the
+// reader work out which rule it violates. On a wall display the description is
+// the only other text on the row, so the result has to carry the expectation.
+
+namespace {
+
+/// By value, not by reference: every caller passes the temporary that
+/// evaluate() returns, and a reference into it would dangle the moment the
+/// full expression ends.
+CheckResult only_result(const ComplianceReport& report) {
+    EXPECT_EQ(report.results.size(), 1u);
+    return report.results.empty() ? CheckResult{} : report.results.front();
+}
+
+}  // namespace
+
+TEST(FailureMessages, AdapterCountNamesTheThresholdItWanted) {
+    const CheckResult result = only_result(evaluate(
+        bundle_with(count_rule(Comparison::AtLeast, 3)),
+        facts_with_adapters({adapter("a", LinkState::Connected), adapter("b", LinkState::NoMedia)}),
+        all_capabilities()));
+
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_EQ(result.observed, "1 of 2 connected");
+    EXPECT_EQ(result.message, "expected at least 3 connected");
+}
+
+TEST(FailureMessages, AdapterCountPhrasesEveryComparison) {
+    const auto message_for = [](Comparison comparison, int count) {
+        return only_result(evaluate(bundle_with(count_rule(comparison, count)),
+                                     facts_with_adapters({adapter("a", LinkState::Connected)}),
+                                     all_capabilities()))
+            .message;
+    };
+
+    EXPECT_EQ(message_for(Comparison::AtLeast, 2), "expected at least 2 connected");
+    EXPECT_EQ(message_for(Comparison::Exactly, 2), "expected exactly 2 connected");
+    EXPECT_EQ(message_for(Comparison::AtMost, 0), "expected at most 0 connected");
+}
+
+TEST(FailureMessages, AdapterStateNamesTheAdapterAndTheState) {
+    const CheckResult result =
+        only_result(evaluate(bundle_with(adapter_state_rule("smash-lan", LinkState::Connected)),
+                             facts_with_adapters({adapter("smash-lan", LinkState::NoMedia)}),
+                             all_capabilities()));
+
+    EXPECT_EQ(result.observed, "No link");
+    EXPECT_EQ(result.message, "expected \"smash-lan\" to be Up");
+}
+
+TEST(FailureMessages, AdapterStateReadsTheRightWayRoundForMustBeAbsent) {
+    // "expected it to be Up" on a rule that wanted it down would be worse than
+    // saying nothing.
+    const CheckResult result = only_result(evaluate(
+        bundle_with(adapter_state_rule("guest", LinkState::Connected, Presence::MustBeAbsent)),
+        facts_with_adapters({adapter("guest", LinkState::Connected)}), all_capabilities()));
+
+    EXPECT_EQ(result.message, "expected \"guest\" not to be Up");
+}
+
+TEST(FailureMessages, AMissingAdapterStillSaysWhatWasWanted) {
+    const CheckResult result =
+        only_result(evaluate(bundle_with(adapter_state_rule("smash-lan", LinkState::Connected)),
+                             facts_with_adapters({}), all_capabilities()));
+
+    EXPECT_EQ(result.observed, "no adapter named \"smash-lan\"");
+    EXPECT_EQ(result.message, "expected \"smash-lan\" to be Up");
+}
+
+TEST(FailureMessages, MissingProcessNamesTheExecutable) {
+    const CheckResult result = only_result(evaluate(bundle_with(process_rule(Presence::MustBePresent)),
+                                               HostFacts{}, all_capabilities()));
+    EXPECT_EQ(result.observed, "not running");
+    EXPECT_EQ(result.message, "expected antivirus.exe to be running");
+}
+
+TEST(FailureMessages, AProcessThatShouldBeAbsentSaysSo) {
+    const CheckResult result = only_result(evaluate(bundle_with(process_rule(Presence::MustBeAbsent)),
+                                               facts_with_process("antivirus.exe"),
+                                               all_capabilities()));
+    EXPECT_EQ(result.message, "expected antivirus.exe not to be running");
+}
+
+TEST(FailureMessages, AVersionMismatchNamesTheConstraint) {
+    const VersionConstraint constraint{ComparisonOp::GreaterEqual, *parse_version("2.0")};
+    const CheckResult result =
+        only_result(evaluate(bundle_with(process_rule(Presence::MustBePresent, constraint)),
+                             facts_with_process("antivirus.exe", parse_version("1.4")),
+                             all_capabilities()));
+
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_EQ(result.observed, "running, version 1.4");
+    EXPECT_EQ(result.message, "expected version >= 2.0");
+}
+
+TEST(FailureMessages, RegistryEqualsQuotesTheValueItWanted) {
+    HostFacts facts;
+    facts.host_id = "PC-001";
+    facts.registry[R"(HKLM\SOFTWARE\Acme\\Version)"] = RegistryValue{true, "1.4", ""};
+
+    const CheckResult result = only_result(
+        evaluate(bundle_with(registry_rule(Presence::MustBePresent, RegistryMatch::Equals, "2.0")),
+                 facts, all_capabilities()));
+
+    EXPECT_EQ(result.observed, "1.4");
+    EXPECT_EQ(result.message, "expected the value to be \"2.0\"");
+}
+
+TEST(FailureMessages, RegistryContainsSaysWhatSubstringWasWanted) {
+    HostFacts facts;
+    facts.host_id = "PC-001";
+    facts.registry[R"(HKLM\SOFTWARE\Acme\\Version)"] = RegistryValue{true, "1.4", ""};
+
+    const CheckResult result = only_result(evaluate(
+        bundle_with(registry_rule(Presence::MustBePresent, RegistryMatch::Contains, "beta")), facts,
+        all_capabilities()));
+
+    EXPECT_EQ(result.message, "expected the value to contain \"beta\"");
+}
+
+TEST(FailureMessages, AnAbsentRegistryValueNamesTheKey) {
+    HostFacts facts;
+    facts.host_id = "PC-001";
+    facts.registry[R"(HKLM\SOFTWARE\Acme\\Version)"] = RegistryValue{false, "", ""};
+
+    const CheckResult result = only_result(
+        evaluate(bundle_with(registry_rule(Presence::MustBePresent, RegistryMatch::Exists, "")),
+                 facts, all_capabilities()));
+
+    EXPECT_EQ(result.observed, "value absent");
+    EXPECT_NE(result.message.find(R"(SOFTWARE\Acme)"), std::string::npos) << result.message;
+}
+
+TEST(FailureMessages, PassingResultsCarryNoExpectation) {
+    // Repeating the expectation beside a tick is noise, and the compliance
+    // views append the message to the observation unconditionally.
+    const CheckResult result = only_result(evaluate(bundle_with(process_rule(Presence::MustBePresent)),
+                                               facts_with_process("antivirus.exe"),
+                                               all_capabilities()));
+    EXPECT_EQ(result.status, CheckStatus::Pass);
+    EXPECT_TRUE(result.message.empty());
+}
+
+TEST(FailureMessages, EveryFailureCarriesOne) {
+    // The blanket guarantee: whatever fails, the row can explain itself.
+    HostFacts facts;
+    facts.host_id = "PC-001";
+    facts.registry[R"(HKLM\SOFTWARE\Acme\\Version)"] = RegistryValue{true, "1.4", ""};
+    facts.resources.adapters = {adapter("smash-lan", LinkState::NoMedia)};
+
+    TemplateBundle bundle;
+    bundle.baseline.rules = {
+        process_rule(Presence::MustBePresent),
+        service_rule(Presence::MustBePresent),
+        registry_rule(Presence::MustBePresent, RegistryMatch::Equals, "2.0"),
+        count_rule(Comparison::AtLeast, 1),
+        adapter_state_rule("smash-lan", LinkState::Connected),
+    };
+    // Distinct ids so every rule survives rules_for()'s dedup.
+    int n = 0;
+    for (Rule& rule : bundle.baseline.rules) {
+        rule.id = "rule-" + std::to_string(n++);
+    }
+
+    const ComplianceReport report = evaluate(bundle, facts, all_capabilities());
+    ASSERT_EQ(report.results.size(), 5u);
+    for (const CheckResult& result : report.results) {
+        EXPECT_EQ(result.status, CheckStatus::Fail) << result.rule_id;
+        EXPECT_FALSE(result.message.empty())
+            << result.rule_id << " failed without saying what was expected";
+        EXPECT_NE(result.message.find("expected"), std::string::npos) << result.message;
+    }
+}

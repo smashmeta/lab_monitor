@@ -19,13 +19,27 @@ bool equals_ignore_case(std::string_view lhs, std::string_view rhs) {
     });
 }
 
-CheckResult resolve(const Rule& rule, bool present, std::string observed) {
+/// `expected` is carried only on failure: a passing check needs no explaining,
+/// and repeating the expectation next to a tick is noise.
+CheckResult resolve(const Rule& rule, bool present, std::string observed,
+                    std::string expected = {}) {
     CheckResult result;
     result.rule_id = rule.id;
     result.observed = std::move(observed);
     const bool wanted = rule.expectation == Presence::MustBePresent;
     result.status = (present == wanted) ? CheckStatus::Pass : CheckStatus::Fail;
+    if (result.status == CheckStatus::Fail) {
+        result.message = std::move(expected);
+    }
     return result;
+}
+
+/// Picks the phrasing that matches the rule's own Presence, so a MustBeAbsent
+/// failure does not read backwards ("expected it to be running" on a rule that
+/// wanted it gone).
+std::string expected_text(const Rule& rule, std::string_view positive, std::string_view negative) {
+    return "expected " +
+           std::string(rule.expectation == Presence::MustBePresent ? positive : negative);
 }
 
 CheckResult error(const Rule& rule, std::string observed, std::string message) {
@@ -43,8 +57,12 @@ CheckResult evaluate_process(const Rule& rule, const ProcessRule& payload,
         return equals_ignore_case(info.executable, payload.executable);
     });
 
+    const std::string wanted =
+        expected_text(rule, payload.executable + " to be running",
+                      payload.executable + " not to be running");
+
     if (found == facts.processes.end()) {
-        return resolve(rule, false, "not running");
+        return resolve(rule, false, "not running", wanted);
     }
 
     // A version constraint only qualifies presence. For MustBeAbsent the process
@@ -59,10 +77,14 @@ CheckResult evaluate_process(const Rule& rule, const ProcessRule& payload,
         result.rule_id = rule.id;
         result.observed = "running, version " + to_string(*found->version);
         result.status = ok ? CheckStatus::Pass : CheckStatus::Fail;
+        if (!ok) {
+            result.message = "expected version " + to_string(rule.version->op) + " " +
+                             to_string(rule.version->value);
+        }
         return result;
     }
 
-    return resolve(rule, true, "running");
+    return resolve(rule, true, "running", wanted);
 }
 
 CheckResult evaluate_service(const Rule& rule, const ServiceRule& payload,
@@ -71,8 +93,12 @@ CheckResult evaluate_service(const Rule& rule, const ServiceRule& payload,
         return equals_ignore_case(info.name, payload.service_name);
     });
 
+    const std::string wanted =
+        expected_text(rule, "service " + payload.service_name + " to be installed",
+                      "service " + payload.service_name + " not to be installed");
+
     if (found == facts.services.end()) {
-        return resolve(rule, false, "not installed");
+        return resolve(rule, false, "not installed", wanted);
     }
 
     const std::string state = [&] {
@@ -88,12 +114,22 @@ CheckResult evaluate_service(const Rule& rule, const ServiceRule& payload,
         CheckResult result;
         result.rule_id = rule.id;
         result.observed = state;
-        result.status =
-            (found->state == *payload.expected_state) ? CheckStatus::Pass : CheckStatus::Fail;
+        const bool ok = found->state == *payload.expected_state;
+        result.status = ok ? CheckStatus::Pass : CheckStatus::Fail;
+        if (!ok) {
+            result.message = "expected state " + [&] {
+                switch (*payload.expected_state) {
+                    case ServiceState::Running: return std::string("Running");
+                    case ServiceState::Stopped: return std::string("Stopped");
+                    case ServiceState::Unknown: return std::string("Unknown");
+                }
+                return std::string("Unknown");
+            }();
+        }
         return result;
     }
 
-    return resolve(rule, true, state);
+    return resolve(rule, true, state, wanted);
 }
 
 CheckResult evaluate_registry(const Rule& rule, const RegistryRule& payload,
@@ -106,19 +142,26 @@ CheckResult evaluate_registry(const Rule& rule, const RegistryRule& payload,
         return error(rule, "read failed", entry->second.error);
     }
 
+    const std::string where = registry_key(payload);
     const RegistryValue& value = entry->second;
     if (!value.exists) {
-        return resolve(rule, false, "value absent");
+        return resolve(rule, false, "value absent",
+                       expected_text(rule, where + " to exist", where + " not to exist"));
     }
 
     switch (payload.match) {
         case RegistryMatch::Exists:
-            return resolve(rule, true, value.data);
+            return resolve(rule, true, value.data,
+                           expected_text(rule, where + " to exist", where + " not to exist"));
         case RegistryMatch::Equals:
-            return resolve(rule, value.data == payload.expected_value, value.data);
+            return resolve(rule, value.data == payload.expected_value, value.data,
+                           expected_text(rule, "the value to be \"" + payload.expected_value + "\"",
+                                          "the value not to be \"" + payload.expected_value + "\""));
         case RegistryMatch::Contains:
-            return resolve(rule, value.data.find(payload.expected_value) != std::string::npos,
-                           value.data);
+            return resolve(
+                rule, value.data.find(payload.expected_value) != std::string::npos, value.data,
+                expected_text(rule, "the value to contain \"" + payload.expected_value + "\"",
+                               "the value not to contain \"" + payload.expected_value + "\""));
     }
     return error(rule, value.data, "unhandled registry match mode");
 }
@@ -136,8 +179,15 @@ CheckResult evaluate_adapter_count(const Rule& rule, const AdapterCountRule& pay
     // The comparison carries the direction on its own, so Presence would only
     // be a second, contradictable way of saying the same thing. Ignored here,
     // as the version constraint is for service and registry rules.
-    result.status = satisfies(connected, payload.comparison, payload.count) ? CheckStatus::Pass
-                                                                             : CheckStatus::Fail;
+    const bool ok = satisfies(connected, payload.comparison, payload.count);
+    result.status = ok ? CheckStatus::Pass : CheckStatus::Fail;
+    if (!ok) {
+        // Without this the row reads "2 of 4 connected" and leaves the reader
+        // to guess which rule that breaks -- the report this feature was fixed
+        // for.
+        result.message = "expected " + to_string(payload.comparison) + " " +
+                         std::to_string(payload.count) + " connected";
+    }
     return result;
 }
 
@@ -148,18 +198,22 @@ CheckResult evaluate_adapter_state(const Rule& rule, const AdapterStateRule& pay
             return equals_ignore_case(adapter.name, payload.adapter_name);
         });
 
+    const std::string wanted = expected_text(
+        rule, "\"" + payload.adapter_name + "\" to be " + to_string(payload.expected),
+        "\"" + payload.adapter_name + "\" not to be " + to_string(payload.expected));
+
     if (found == facts.resources.adapters.end()) {
         // Fail rather than Error: the adapter genuinely is not in the state the
         // rule asked for, and "the NIC was removed" is exactly what a fleet
         // check should catch. Error is for "could not tell".
-        return resolve(rule, false, "no adapter named \"" + payload.adapter_name + "\"");
+        return resolve(rule, false, "no adapter named \"" + payload.adapter_name + "\"", wanted);
     }
 
     const bool matches = found->link == payload.expected;
     // MustBeAbsent inverts it: "the guest adapter must NOT be connected" is as
     // reasonable a rule as its opposite, and resolve() already means exactly
     // that for every other kind.
-    return resolve(rule, matches, to_string(found->link));
+    return resolve(rule, matches, to_string(found->link), wanted);
 }
 
 }  // namespace

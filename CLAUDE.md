@@ -40,14 +40,14 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 
 | Target | Responsibility | Tests |
 |---|---|---|
-| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 122 |
+| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 135 |
 | `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 51 |
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend | 28 |
 | `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 48 + 32 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 17 |
 | `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 30 |
 
-**328 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
+**341 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they need loopback multicast).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -178,6 +178,23 @@ modem.
 since creating entries there would be editing the machine's network config. That
 is what makes the disconnected-entry path genuinely tested on a machine with no
 dial-up configured.
+
+### Every failure says what was expected
+`CheckResult::message` carries the cause for an `Error` **and the expectation
+for a `Fail`** — "expected at least 1 connected", "expected version >= 2.0",
+"expected the value to be \"2.0\"". Without it a failure only ever states the
+observation ("2 of 4 connected"), leaving the reader to work out which rule that
+violates. That is a guessing game on a wall display, where the rule's own
+free-text description is the only other text on the row.
+
+`resolve()` takes the expectation and attaches it **only on failure**: repeating
+it beside a tick is noise, and both compliance views append `message` to
+`observed` unconditionally. `expected_text()` picks the phrasing from the rule's
+own `Presence`, so a `MustBeAbsent` failure does not read backwards.
+
+`FailureMessages.EveryFailureCarriesOne` is the blanket guarantee — it fails one
+rule of every kind at once and asserts each result explains itself. A new rule
+kind that forgets this trips it.
 
 ### The Compliance tab is written for a wall display
 It is read from across a room, on a screen nobody walks over to. That drives
