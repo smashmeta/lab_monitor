@@ -356,6 +356,63 @@
     table.fields td.t { white-space: normal; }
   }
 
+  /* ---- ownership tables ---- */
+  .owns {
+    max-width: 1000px;
+    margin-inline: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1.15rem;
+  }
+  .own {
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+  .own > header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.3rem 0.9rem;
+    padding: 0.75rem 1rem;
+    background: var(--raised);
+    border-bottom: 1px solid var(--line);
+  }
+  .own h3 {
+    font-family: var(--mono);
+    font-size: 0.98rem;
+    font-weight: 600;
+    margin: 0;
+    color: var(--accent);
+  }
+  .own .note { font-size: 0.8rem; color: var(--ink-muted); }
+
+  table.owners { min-width: 0; width: 100%; font-size: 0.87rem; }
+  table.owners th, table.owners td { padding: 0.5rem 1rem 0.5rem 0; }
+  table.owners tr > *:first-child { padding-left: 1rem; }
+  table.owners tbody tr:last-child > td { border-bottom: none; }
+  table.owners td.ty { font-family: var(--mono); color: var(--ink); white-space: nowrap; }
+  table.owners td.by { width: 32%; }
+  .hold {
+    display: block;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    margin-top: 0.15rem;
+  }
+  .hold.value  { color: var(--good); }
+  .hold.uniq   { color: var(--accent); }
+  .hold.qt     { color: var(--odd); }
+  .hold.borrow { color: var(--warn); }
+
+  @media (max-width: 760px) {
+    table.owners { min-width: 620px; }
+    .own { overflow-x: auto; }
+  }
+
   /* ---- argument cards ----
      Every card answers the same four questions in the same order, because
      those are the four things that are actually unclear about an argument:
@@ -618,6 +675,471 @@ flowchart TD
       core tests call plain functions with plain structs. Adding another
       dependency to <code>libs/core</code> is a design violation, not a
       convenience.
+    </p>
+  </div>
+
+  <h2>Who owns what</h2>
+
+  <p>
+    A dependency arrow says one library may name another's types. It does not
+    say who holds an instance, or who is allowed to reach for one. Those two
+    questions are where the real coupling lives, so here is every principal type
+    with its owner and its users &mdash; inside its own component and outside it.
+  </p>
+
+  <p>
+    Four kinds of holding appear, and the label under each owner says which:
+    <span class="hold value" style="display:inline; margin:0;">by value</span> a
+    direct member, destroyed with its owner;
+    <span class="hold uniq" style="display:inline; margin:0;">unique_ptr</span>
+    exclusive and injected through a constructor;
+    <span class="hold qt" style="display:inline; margin:0;">qt parent</span> a
+    child widget or object, deleted by its parent;
+    <span class="hold borrow" style="display:inline; margin:0;">borrowed</span> a
+    raw pointer that owns nothing and must outlive nothing.
+  </p>
+</div>
+
+<div class="wide owns" style="margin-top: 1.6rem;">
+
+  <section class="own">
+    <header>
+      <h3>lm_core</h3>
+      <span class="note">value types, and exactly one stateful class</span>
+    </header>
+    <table class="owners">
+      <thead>
+        <tr><th scope="col">Type</th><th scope="col">Owned by</th><th scope="col">Used by</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="ty">TemplateBundle<br/>Template, Rule</td>
+          <td class="by">
+            <code>ServerController</code> holds two &mdash; <code>draft_</code>
+            and <code>published_</code>. <code>MonitorWorker</code> holds one,
+            <code>bundle_</code>.
+            <span class="hold value">by value</span>
+          </td>
+          <td>
+            <strong>Inside:</strong> <code>rules_for()</code>,
+            <code>evaluate()</code>, the JSON codec, <code>make_rule_id()</code>.
+            <strong>Outside:</strong> <code>HostProbes::collect()</code> reads it
+            to decide what to probe; the Templates tab edits
+            <code>draft_</code> in place through a mutable accessor;
+            <code>lm_transport</code> serialises it.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">HostFacts</td>
+          <td class="by">
+            Nobody, for long. Returned by value from
+            <code>collect()</code> into a local.
+            <span class="hold value">by value</span>
+          </td>
+          <td>
+            <strong>Inside:</strong> <code>evaluate()</code> only.
+            <strong>Outside:</strong> <code>lm_platform</code> builds it. It
+            never leaves the client and never reaches the wire.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">ComplianceReport<br/>CheckResult</td>
+          <td class="by">
+            Transiently by <code>MonitorWorker</code>; then, on the server, by
+            <code>ServerController::report_cache_</code>, a
+            <code>QMap</code> keyed by host.
+            <span class="hold value">by value</span>
+          </td>
+          <td>
+            <strong>Inside:</strong> <code>summarise()</code>,
+            <code>is_compliant()</code>.
+            <strong>Outside:</strong> the client's tray and detail window; the
+            codec; on the server, <code>FleetModel::apply_compliance()</code>
+            and both compliance views.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">FleetView<br/>FleetEntry</td>
+          <td class="by">
+            <code>ServerController::fleet_</code>, replaced whole on each
+            reconcile.
+            <span class="hold value">by value</span>
+          </td>
+          <td>
+            <strong>Inside:</strong> nothing &mdash; it is an output.
+            <strong>Outside:</strong> <code>FleetModel::apply()</code> diffs it
+            into rows; the Compliance tab reads it directly for liveness; the
+            status ribbon takes its counts.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">ClientRegistry</td>
+          <td class="by">
+            <code>ServerController</code>, and nothing else, ever.
+            <span class="hold value">by value</span>
+          </td>
+          <td>
+            <strong>Nobody outside its owner.</strong> That is the point: it is
+            deliberately not thread-safe, so every DDS callback is marshalled
+            onto the GUI thread before touching it. Handing a reference to it
+            anywhere else would make that guarantee unenforceable.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">Capabilities</td>
+          <td class="by">
+            Everyone and no one &mdash; a <code>uint32_t</code> wrapper, copied
+            freely.
+            <span class="hold value">by value</span>
+          </td>
+          <td>
+            Set once by <code>HostProbes</code>, gates every rule in
+            <code>evaluate()</code>, rides every announce, lands on the server in
+            <code>DiscoveredClient</code> and then <code>FleetEntry</code>, and
+            is read by the fleet table's adapter column.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="own">
+    <header>
+      <h3>lm_platform</h3>
+      <span class="note">assembled in main(), then invisible</span>
+    </header>
+    <table class="owners">
+      <thead>
+        <tr><th scope="col">Type</th><th scope="col">Owned by</th><th scope="col">Used by</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="ty">HostProbes</td>
+          <td class="by">
+            <code>MonitorWorker</code>, injected through its constructor and
+            built in the client's <code>main()</code>.
+            <span class="hold uniq">unique_ptr</span>
+          </td>
+          <td>
+            <strong>Outside:</strong> only <code>MonitorWorker</code>, which
+            calls <code>collect()</code>, <code>sample_resources()</code> and
+            <code>capabilities()</code>. Nothing else in either application
+            knows it exists.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">ProbeSet<br/>IResourceProbe, IProcessProbe,<br/>IServiceProbe, IRegistryProbe,<br/>INetworkProbe</td>
+          <td class="by">
+            <code>HostProbes</code>, which takes the whole set by move at
+            construction.
+            <span class="hold uniq">unique_ptr</span>
+          </td>
+          <td>
+            <strong>Inside:</strong> <code>HostProbes</code> and nothing else.
+            <strong>Outside:</strong> nobody. <code>main()</code> builds the set
+            with <code>make_platform_probes()</code> and immediately gives it
+            away; after that no application code holds a probe. A null member
+            means the capability is unavailable, which is why capabilities are
+            intersected with the set at construction.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">fakes.hpp</td>
+          <td class="by">
+            The test that constructs them.
+            <span class="hold value">by value</span>
+          </td>
+          <td>
+            Shipped in the public header on purpose: <code>lm_core</code>'s tests
+            need no mocks, but anything testing a worker does, and a fake in the
+            library beats five hand-rolled ones in five test files.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="own">
+    <header>
+      <h3>lm_transport</h3>
+      <span class="note">one interface each way, one owner each</span>
+    </header>
+    <table class="owners">
+      <thead>
+        <tr><th scope="col">Type</th><th scope="col">Owned by</th><th scope="col">Used by</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="ty">IClientTransport</td>
+          <td class="by">
+            <code>MonitorWorker</code>, injected at construction. The concrete
+            type &mdash; Fast DDS or the in-memory bus &mdash; is chosen in
+            <code>main()</code> from <code>--offline</code> and never named
+            again.
+            <span class="hold uniq">unique_ptr</span>
+          </td>
+          <td>
+            <strong>Outside:</strong> only <code>MonitorWorker</code>. Its
+            destructor announcing a clean DDS departure is why the client deletes
+            the worker synchronously rather than through
+            <code>deleteLater()</code>.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">IServerTransport</td>
+          <td class="by">
+            <code>ServerController</code>, injected at construction and reset
+            explicitly in <code>stop()</code>.
+            <span class="hold uniq">unique_ptr</span>
+          </td>
+          <td>
+            <strong>Outside:</strong> only <code>ServerController</code>. The
+            explicit reset is ordered before any delete so no DDS-thread callback
+            can be in flight against an object about to die.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">MessageBus</td>
+          <td class="by">
+            The test that declares it &mdash; and it must outlive the controller
+            that was handed a client of it.
+            <span class="hold value">by value</span>
+          </td>
+          <td>
+            Tests only. It is what lets a full client-server conversation run
+            in-process, synchronously, with no multicast and no waiting.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="own">
+    <header>
+      <h3>lm_ui</h3>
+      <span class="note">where ownership is least obvious</span>
+    </header>
+    <table class="owners">
+      <thead>
+        <tr><th scope="col">Type</th><th scope="col">Owned by</th><th scope="col">Used by</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="ty">FleetModel</td>
+          <td class="by">
+            <code>ServerController</code> &mdash; <strong>not</strong> the
+            window.
+            <span class="hold value">by value</span>
+          </td>
+          <td>
+            <code>FleetWindow</code> reaches it through
+            <code>controller_-&gt;model()</code> and wraps it in a
+            <code>FleetProxyModel</code> that it does own, parented to itself.
+            <code>setSourceModel()</code> takes no ownership, so the window can
+            be destroyed and rebuilt without disturbing the rows. The controller
+            writes to the model from <code>apply()</code>,
+            <code>apply_sample()</code> and <code>apply_compliance()</code>; the
+            window only ever reads it.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">SampleCoalescer</td>
+          <td class="by">
+            <code>ServerController</code>.
+            <span class="hold value">by value</span>
+          </td>
+          <td>
+            Written from DDS threads (its <code>push()</code> is the one
+            thread-safe entry point in the controller), drained on the GUI thread
+            by its own timer. Nothing outside the controller touches it.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">MeterBar, Sparkline,<br/>AdapterList, StatusPill,<br/>TokenEdit</td>
+          <td class="by">
+            The window that creates them, through Qt's parent hierarchy.
+            <span class="hold qt">qt parent</span>
+          </td>
+          <td>
+            <code>DetailWindow</code> in the client and
+            <code>FleetWindow</code> in the server, from the same classes &mdash;
+            which is what stops the same reading looking like one thing on one
+            screen and something else on another. The raw pointers kept as window
+            members own nothing; Qt deletes the children with the parent.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">KeepForegroundDelegate</td>
+          <td class="by">
+            The view it is installed on.
+            <span class="hold qt">qt parent</span>
+          </td>
+          <td>
+            Both compliance trees. It exists because a stylesheet's
+            <code>::item</code> rule can silently overrule a delegate, so this
+            pins the foreground the model asked for.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">Theme</td>
+          <td class="by">
+            Nobody &mdash; constants and free functions, no instance.
+            <span class="hold value">by value</span>
+          </td>
+          <td>
+            Everything that paints, in both applications, plus this page: its
+            palette is read out of the same header.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">RuleDetail</td>
+          <td class="by">
+            Produced by <code>describe(rule)</code> into a
+            <code>QVector</code> that crosses the client's thread boundary by
+            value.
+            <span class="hold value">by value</span>
+          </td>
+          <td>
+            The client's detail window, which needs a rule's description
+            alongside a result that carries only its id. The server does the same
+            job differently &mdash; it still has the bundle, so it looks the
+            description up rather than being sent one.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="own">
+    <header>
+      <h3>lab_monitor_client</h3>
+      <span class="note">one object per thread, deleted in a fixed order</span>
+    </header>
+    <table class="owners">
+      <thead>
+        <tr><th scope="col">Type</th><th scope="col">Owned by</th><th scope="col">Used by</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="ty">MonitorWorker</td>
+          <td class="by">
+            <code>main()</code>, which deletes it by hand at
+            <code>aboutToQuit</code> after joining its thread.
+            <span class="hold borrow">borrowed</span>
+          </td>
+          <td>
+            Owns the probes, the transport and every timer. Talks to the GUI only
+            through queued signals; nothing on the GUI thread ever calls into it
+            directly. Deleted synchronously and not through
+            <code>deleteLater()</code>, because its thread is already joined and
+            nothing would ever drain that queue &mdash; the transport's
+            destructor, and the clean DDS departure it announces, would simply
+            never run.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">DetailWindow</td>
+          <td class="by">
+            <code>main()</code>. Parentless, so nothing else would ever delete
+            it.
+            <span class="hold borrow">borrowed</span>
+          </td>
+          <td>
+            The tray shows and hides it. It quits the application itself, through
+            its own confirmed Close Program button.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">TrayController</td>
+          <td class="by">
+            <code>main()</code>, and deleted <em>before</em> the window.
+            <span class="hold borrow">borrowed</span>
+          </td>
+          <td>
+            Holds a <code>DetailWindow*</code> it explicitly does not own, which
+            is exactly why the delete order is fixed. It caches the worker's last
+            known state so answering "Copy diagnostics" never reaches back across
+            the thread boundary.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="own">
+    <header>
+      <h3>lab_monitor_server</h3>
+      <span class="note">the window borrows the controller, never the reverse</span>
+    </header>
+    <table class="owners">
+      <thead>
+        <tr><th scope="col">Type</th><th scope="col">Owned by</th><th scope="col">Used by</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="ty">ServerController</td>
+          <td class="by">
+            <code>main()</code>, deleted <em>after</em> the window and only once
+            <code>stop()</code> has torn the transport down.
+            <span class="hold borrow">borrowed</span>
+          </td>
+          <td>
+            Owns the transport, the registry, the fleet model, the coalescer, the
+            expected-host list and both bundles. Everything the window knows it
+            learns from here, by signal or by accessor.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">FleetWindow</td>
+          <td class="by">
+            <code>main()</code>, deleted first.
+            <span class="hold borrow">borrowed</span>
+          </td>
+          <td>
+            Holds <code>controller_</code> as a raw pointer that owns nothing.
+            The relationship is strictly one-way: the controller emits and the
+            window listens, so the controller runs headless in tests with no
+            window at all &mdash; and the window is destroyed first precisely
+            because it is the one holding the borrowed pointer.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">StatusRibbon</td>
+          <td class="by">
+            <code>FleetWindow</code>.
+            <span class="hold qt">qt parent</span>
+          </td>
+          <td>
+            Fed straight from <code>counts_changed</code>. Its clicks push a
+            state filter back into the window's proxy model.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+</div>
+
+<div class="wrap">
+  <p style="margin-top: 1.6rem;">
+    Two patterns run through all of it. <strong>Every cross-component dependency
+    is injected, never reached for</strong> &mdash; probes and transports arrive
+    through a constructor, chosen once in <code>main()</code>, which is what lets
+    a test swap in a fake or an in-memory bus without either application knowing.
+    And <strong>every borrowed pointer points from the shorter-lived object to
+    the longer-lived one</strong>: the tray borrows the window and dies first,
+    the window borrows the controller and dies first. Where that ordering is
+    load-bearing, it is written down at the delete site rather than left to be
+    rediscovered.
+  </p>
+
+  <div class="rule" style="margin-top: 1.4rem;">
+    <p>
+      <strong>One honest wrinkle.</strong> The server links
+      <code>lm_platform</code> but does not use a single symbol from it &mdash;
+      no header from it is included anywhere in <code>apps/server</code>. It is a
+      dependency the module table above lists because the build file does, not
+      because the code needs it. Dropping it would cost the server nothing.
     </p>
   </div>
 
