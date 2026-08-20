@@ -572,17 +572,17 @@
         <td class="target">lm_core</td>
         <td>Rules, templates, JSON, <code>evaluate()</code>, <code>reconcile()</code>, <code>ClientRegistry</code></td>
         <td>nlohmann-json</td>
-        <td class="num">135</td>
+        <td class="num">168</td>
       </tr>
       <tr>
         <td class="target">lm_platform</td>
-        <td>OS probes behind interfaces &mdash; resources, processes, services, registry, network &mdash; plus public fakes</td>
+        <td>OS probes behind interfaces &mdash; resources, processes, services, registry, network, another DDS bus &mdash; plus public fakes</td>
         <td>lm_core</td>
-        <td class="num">51</td>
+        <td class="num">57</td>
       </tr>
       <tr>
         <td class="target">lm_transport</td>
-        <td><code>IClientTransport</code> / <code>IServerTransport</code>, hand-written FastCDR codecs, an in-memory bus, the Fast DDS backend</td>
+        <td><code>IClientTransport</code> / <code>IServerTransport</code>, hand-written FastCDR codecs, an in-memory bus, the Fast DDS backend, the XTypes probe</td>
         <td>lm_core, Fast&nbsp;DDS</td>
         <td class="num">28</td>
       </tr>
@@ -610,9 +610,8 @@
 
 <div class="wrap">
   <p style="margin-top: 1.1rem; font-size: 0.93rem; color: var(--ink-muted);">
-    345 unit tests in total, plus four Fast DDS loopback integration tests gated
-    behind <code>LM_BUILD_INTEGRATION_TESTS</code> because they need loopback
-    multicast.
+    383 unit tests in total, plus six Fast DDS integration tests gated behind
+    <code>LM_BUILD_INTEGRATION_TESTS</code> because they open real DDS domains.
   </p>
 
   <div class="rule" style="margin-top: 1.5rem;">
@@ -685,7 +684,7 @@ flowchart TD
       <strong>The load-bearing constraint: <code>lm_core</code> depends on
       nlohmann-json and nothing else.</strong> No Qt, no DDS, no syscalls, no
       Boost. That is what makes <code>evaluate()</code> and
-      <code>reconcile()</code> testable without a single mock &mdash; the 135
+      <code>reconcile()</code> testable without a single mock &mdash; the 168
       core tests call plain functions with plain structs. Adding another
       dependency to <code>libs/core</code> is a design violation, not a
       convenience.
@@ -1943,6 +1942,8 @@ flowchart TB
     R["RegistryRule<br/>looks up facts.registry"]
     AC["AdapterCountRule<br/>counts is_up(adapter.link)"]
     AS["AdapterStateRule<br/>matches one adapter by name"]
+    DT["DdsTopicRule<br/>is the topic on the bus at all"]
+    DV["DdsValueRule<br/>resolves a path in facts.dds"]
 
     RESOLVE["resolve(rule, present, observed, expected)<br/>Presence decides whether present means Pass"]
     OUT["CheckResult appended to report.results"]
@@ -1958,6 +1959,8 @@ flowchart TB
     DISPATCH --> R --> RESOLVE
     DISPATCH --> AC --> RESOLVE
     DISPATCH --> AS --> RESOLVE
+    DISPATCH --> DT --> RESOLVE
+    DISPATCH --> DV --> RESOLVE
     RESOLVE --> OUT
 
     classDef src fill:#292a2d,stroke:#5f6368,color:#e8eaed;
@@ -1966,7 +1969,7 @@ flowchart TB
     classDef out fill:#1f3328,stroke:#81c995,color:#e8eaed;
     class BASE,ASG,DEDUP,LIST src;
     class GATE,DISPATCH gate;
-    class P,S,R,AC,AS,RESOLVE ev;
+    class P,S,R,AC,AS,DT,DV,RESOLVE ev;
     class OUT,NA out;
 </pre>
     </div>
@@ -2307,11 +2310,111 @@ stateDiagram-v2
       to.</strong> No clock, no file, no socket, no static. Everything above
       &mdash; which rules apply, what the machine looks like, what it can report,
       who is expected, who has spoken, what time it is, how long the lease runs
-      &mdash; arrives as an argument. That is the whole reason 135 tests can
+      &mdash; arrives as an argument. That is the whole reason 168 tests can
       cover this without a mocking framework, and why a liveness bug can be
       reproduced by passing a different <code>now</code> rather than by waiting.
     </p>
   </div>
+
+  <h2>Reading someone else's bus</h2>
+
+  <p>
+    A client can be asked about a topic on a domain its <em>sibling</em>
+    application uses — "a <code>Basket</code> is published on domain 42",
+    "<code>Basket.items_</code> holds 2" — <strong>without lab_monitor ever
+    being given the IDL</strong>. The type is rebuilt at runtime from the XTypes
+    <code>TypeObject</code> the publisher advertises in discovery, so a rule
+    names only a domain, a topic and a path into the data.
+  </p>
+
+  <p>
+    Two payloads again, for the reason the network pair are two.
+    <code>DdsTopicRule</code> is answerable from <strong>discovery alone</strong>
+    — no type, no sample — so it still works against a publisher that describes
+    nothing and has never published. <code>DdsValueRule</code> reads one value
+    by path, and the grammar is an address rather than a query language:
+  </p>
+</div>
+
+<pre class="struct" style="margin-top: 1rem;">status              <span class="c">a field</span>
+owner.shift         <span class="c">nested</span>
+items_[0].sku       <span class="c">a sequence element</span>
+items_.length       <span class="c">how many — the motivating case</span></pre>
+
+<div class="wrap">
+  <p style="margin-top: 1.1rem;">
+    <code>length</code> is a projection in final position, not a flag on the
+    rule, so the path stays the single statement of what is being read — and a
+    field genuinely named <code>length</code> is still addressable when the path
+    continues past it.
+  </p>
+</div>
+
+<div class="wide" style="margin-top: 1.4rem;">
+  <figure class="diagram">
+    <div class="body">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"background":"#202124","primaryColor":"#292a2d","primaryTextColor":"#e8eaed","primaryBorderColor":"#5f6368","lineColor":"#9aa0a6","fontSize":"13px","clusterBkg":"#1b1c1f","clusterBorder":"#3c4043","edgeLabelBackground":"#202124"}}}%%
+flowchart LR
+    subgraph OTHER ["domain 42, the sibling application's bus"]
+        PUB["a Basket publisher<br/>lab_monitor has never<br/>compiled against it"]
+    end
+
+    subgraph PROBE ["lm_transport, on the client's worker thread"]
+        direction TB
+        DISC["discover a writer<br/>on the topic"]
+        TYPE["rebuild the type from<br/>its TypeObject"]
+        READ["take one sample<br/>by polling"]
+        JSON["project to JSON"]
+    end
+
+    subgraph PURE ["lm_core, no DDS at all"]
+        direction TB
+        PATH["resolve_path()"]
+        EVAL["evaluate()"]
+    end
+
+    RESULT["CheckResult"]
+
+    PUB --> DISC --> TYPE --> READ --> JSON
+    JSON --> PATH --> EVAL --> RESULT
+    DISC -.->|"topic present?<br/>answered here, no type needed"| EVAL
+
+    classDef ext fill:#202124,stroke:#3c4043,color:#9aa0a6;
+    classDef io fill:#31262f,stroke:#c58af9,color:#e8eaed;
+    classDef pure fill:#1f3328,stroke:#81c995,color:#e8eaed;
+    class PUB ext;
+    class DISC,TYPE,READ,JSON io;
+    class PATH,EVAL,RESULT pure;
+</pre>
+    </div>
+    <figcaption>The purple half is the only part that needs a bus. Everything green is testable against a JSON literal.</figcaption>
+  </figure>
+</div>
+
+<div class="wrap">
+  <div class="rule" style="margin-top: 1.5rem;">
+    <p>
+      <strong>The line is drawn so <code>lm_core</code> stays DDS-free.</strong>
+      <code>IDdsProbe</code> is declared in <code>lm_platform</code> with no DDS
+      type in its signature; the Fast DDS implementation lives in
+      <code>lm_transport</code>; the probe projects one sample to JSON and
+      everything after it is a pure predicate over a JSON document. That is why
+      almost every test of this feature needs no domain, no multicast and no
+      sibling application — the same trick the in-memory transport plays for the
+      wire.
+    </p>
+  </div>
+
+  <p style="margin-top: 1.4rem;">
+    Two things are worth knowing before relying on it. <strong>A publisher that
+    advertises only a type <em>name</em> cannot be read this way</strong> — and
+    the probe says exactly that, rather than reporting an empty topic. And a
+    topic that is present but silent is an <strong>Error</strong>, not a
+    failure: nothing is wrong with the machine and nothing can be said about the
+    value. A topic that is <em>missing</em> is a Fail, because data meant to be
+    on the bus and absent is what a fleet check is for.
+  </p>
 
   <h2>Boundaries worth knowing</h2>
 

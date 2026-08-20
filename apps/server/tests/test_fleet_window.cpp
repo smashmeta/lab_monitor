@@ -474,3 +474,84 @@ TEST(FleetWindowBaseline, LetsAStrayTemplateNamedBaselineBeRemoved) {
     EXPECT_TRUE(std::ranges::none_of(harness.controller->draft().templates,
                                       [](const lm::core::Template& t) { return t.name == "Baseline"; }));
 }
+
+namespace {
+
+/// The Templates tab's rule table -- the only QTableWidget headed "Rule id".
+QTableWidget* rule_table(const Harness& harness) {
+    for (QTableWidget* table : harness.window->findChildren<QTableWidget*>()) {
+        if (table->horizontalHeaderItem(0) != nullptr &&
+            table->horizontalHeaderItem(0)->text() == QStringLiteral("ID")) {
+            return table;
+        }
+    }
+    return nullptr;
+}
+
+/// Selects the template a rule was put into, since the rule table only ever
+/// shows the selected one.
+void select_template(const Harness& harness, const QString& name) {
+    QListWidget* list = harness.template_list();
+    ASSERT_NE(list, nullptr);
+    for (int i = 0; i < list->count(); ++i) {
+        if (list->item(i)->text().startsWith(name)) {
+            list->setCurrentRow(i);
+            QApplication::processEvents();
+            return;
+        }
+    }
+    FAIL() << "no template row named " << name.toStdString();
+}
+
+}  // namespace
+
+TEST(FleetWindowRules, ShowsADdsTopicRuleAsSomethingAnOperatorCanRead) {
+    Harness harness;
+    Rule rule;
+    rule.id = "dds-basket";
+    rule.payload = DdsTopicRule{42, "Basket"};
+    harness.controller->draft().templates.front().rules.push_back(rule);
+
+    select_template(harness, QStringLiteral("Lab Workstation"));
+    QTableWidget* table = rule_table(harness);
+    ASSERT_NE(table, nullptr) << "no rule table";
+    ASSERT_EQ(table->rowCount(), 1);
+
+    EXPECT_EQ(table->item(0, 1)->text().toStdString(), "DDS") << "the kind column must name the kind";
+    // Domain and topic together: the same topic name on two domains is two
+    // different things, and the domain is the half a reader will not guess.
+    EXPECT_EQ(table->item(0, 3)->text().toStdString(), "Basket on domain 42");
+    // Presence *does* apply to a topic rule, so here it still shows.
+    EXPECT_EQ(table->item(0, 2)->text().toStdString(), "Must be present");
+}
+
+TEST(FleetWindowRules, ShowsADdsValueRuleWithItsPathAndExpectation) {
+    Harness harness;
+    Rule rule;
+    rule.id = "dds-basket-items-length";
+    rule.payload = DdsValueRule{42, "Basket", "items_.length", DdsMatch::Equals, "2"};
+    harness.controller->draft().templates.front().rules.push_back(rule);
+
+    select_template(harness, QStringLiteral("Lab Workstation"));
+    QTableWidget* table = rule_table(harness);
+    ASSERT_NE(table, nullptr);
+    ASSERT_EQ(table->rowCount(), 1);
+
+    const std::string target = table->item(0, 3)->text().toStdString();
+    EXPECT_EQ(target, "Basket.items_.length on domain 42 equal to 2") << target;
+
+    // Not "Must be present". The match already carries the direction, Add Rule
+    // never asks for a presence here, and printing the default beside
+    // "equal to 2" would put a second, contradictable answer in the row.
+    EXPECT_EQ(table->item(0, 2)->text().toStdString(), "equal to 2");
+}
+
+TEST(FleetWindowRules, OffersBothDdsKindsInTheAddRuleDialog) {
+    // The dialog itself is a chain of modal prompts and cannot be driven here,
+    // but the list it offers is the contract: a kind missing from it is a rule
+    // nobody can create through the UI.
+    Harness harness;
+    const QStringList kinds = harness.window->rule_kind_choices();
+    EXPECT_TRUE(kinds.contains(QStringLiteral("DDS: topic is published"))) << kinds.join(", ").toStdString();
+    EXPECT_TRUE(kinds.contains(QStringLiteral("DDS: value on a topic"))) << kinds.join(", ").toStdString();
+}

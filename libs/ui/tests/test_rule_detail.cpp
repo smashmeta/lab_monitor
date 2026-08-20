@@ -129,3 +129,38 @@ TEST(DescribeRule, TooltipCarriesEveryFieldAnOperatorNeeds) {
     // The rule id stays available for support conversations, just not as the label.
     EXPECT_NE(tooltip.indexOf(QStringLiteral("p1")), -1) << tooltip.toStdString();
 }
+
+TEST(DescribeRule, DescribesADdsTopicRule) {
+    Rule rule;
+    rule.id = "dds-basket";
+    rule.payload = DdsTopicRule{42, "Basket"};
+
+    const RuleDetail detail = describe(rule);
+    EXPECT_EQ(detail.kind, QStringLiteral("DDS"));
+    EXPECT_EQ(detail.target, QStringLiteral("Basket on domain 42"));
+    EXPECT_FALSE(detail.constraint.isEmpty());
+}
+
+TEST(DescribeRule, DescribesADdsValueRuleWithItsPathAndMatch) {
+    Rule rule;
+    rule.id = "dds-basket-items-length";
+    rule.payload =
+        DdsValueRule{42, "Basket", "items_.length", DdsMatch::AtLeast, "2"};
+
+    const RuleDetail detail = describe(rule);
+    EXPECT_EQ(detail.kind, QStringLiteral("DDS"));
+    EXPECT_EQ(detail.target, QStringLiteral("Basket.items_.length on domain 42"));
+    EXPECT_EQ(detail.constraint, QStringLiteral("at least 2"));
+    // The match carries the direction, so a separate "Must be present" would be
+    // a second answer to a question already settled -- as with the adapter count.
+    EXPECT_EQ(detail.expectation, detail.constraint);
+}
+
+TEST(DescribeRule, NamesAnUnnamedDdsRuleByItsTarget) {
+    // A rule with no description still has to be identifiable at a glance.
+    Rule rule;
+    rule.id = "dds-basket";
+    rule.payload = DdsTopicRule{7, "Conveyor"};
+
+    EXPECT_EQ(describe(rule).label, QStringLiteral("DDS: Conveyor on domain 7"));
+}

@@ -54,6 +54,14 @@ class FleetWindow : public QMainWindow {
 public:
     explicit FleetWindow(ServerController* controller, QWidget* parent = nullptr);
 
+    /// The rule kinds Add Rule offers, in the order it offers them.
+    ///
+    /// Exposed because the dialog itself is a chain of modal prompts no test
+    /// can drive, while this list is the part that actually matters: a kind
+    /// missing from it is a rule nobody can create through the UI, however
+    /// completely the rest of the stack supports it.
+    [[nodiscard]] static QStringList rule_kind_choices();
+
 protected:
     void closeEvent(QCloseEvent* event) override;
 
