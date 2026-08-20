@@ -614,6 +614,20 @@
     behind <code>LM_BUILD_INTEGRATION_TESTS</code> because they need loopback
     multicast.
   </p>
+
+  <div class="rule" style="margin-top: 1.5rem;">
+    <p>
+      <strong>All four libraries are shared, and that is what those test counts
+      are worth.</strong> A test binary and an application load the same
+      <code>lm_core.dll</code> — not a second static copy of the same code, with
+      a second copy of every global inside it. Every executable and every DLL
+      builds into one directory, <code>build/&lt;preset&gt;/bin/&lt;config&gt;</code>,
+      because Windows resolves a DLL from the loading executable's own folder:
+      without that, each test binary would need its own copy and "the same
+      binary" would be a claim about copies rather than a fact. There is exactly
+      one <code>lm_core.dll</code> in the build tree.
+    </p>
+  </div>
 </div>
 
 <div class="wide" style="margin-top: 2rem;">
@@ -978,6 +992,24 @@ flowchart TD
             Both compliance trees. It exists because a stylesheet's
             <code>::item</code> rule can silently overrule a delegate, so this
             pins the foreground the model asked for.
+          </td>
+        </tr>
+        <tr>
+          <td class="ty">LM_UI_EXPORT<br/><span style="font-weight:400">export.hpp</span></td>
+          <td class="by">
+            Nobody &mdash; a preprocessor macro.
+            <span class="hold value">by value</span>
+          </td>
+          <td>
+            Every <code>Q_OBJECT</code> class here, and lm_ui's free functions.
+            It exists because the project-wide auto-export generates a
+            <code>.def</code> file covering functions but <em>not</em> global
+            data, and each <code>Q_OBJECT</code> class has one such symbol: moc's
+            <code>staticMetaObject</code>. Without it, anything outside the DLL
+            doing a <code>qobject_cast</code> or building a
+            <code>QSignalSpy</code> from a signal fails to link. This is the one
+            library that opts out of auto-export, because it is the one with Qt
+            classes in it.
           </td>
         </tr>
         <tr>

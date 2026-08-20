@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lm/ui/export.hpp"
+
 #include <QString>
 
 #include "lm/core/rule.hpp"
@@ -13,7 +15,7 @@ namespace lm::ui {
 /// holds the parsed TemplateBundle locally, so it can recover those here and
 /// hand them to the detail window, without widening the wire format or the
 /// lm_core contract that the server and every codec depend on.
-struct RuleDetail {
+struct LM_UI_EXPORT RuleDetail {
     QString id;
     /// What to show in the rule column: the authored description, or a
     /// generated summary when the author left it blank.
@@ -34,6 +36,6 @@ struct RuleDetail {
 };
 
 /// Builds the display fields for a rule. Pure: no Qt widgets, no I/O.
-[[nodiscard]] RuleDetail describe(const lm::core::Rule& rule);
+[[nodiscard]] LM_UI_EXPORT RuleDetail describe(const lm::core::Rule& rule);
 
 }  // namespace lm::ui

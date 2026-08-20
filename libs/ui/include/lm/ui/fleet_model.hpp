@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lm/ui/export.hpp"
+
 #include <QAbstractTableModel>
 #include <QColor>
 #include <QVector>
@@ -16,7 +18,7 @@ namespace lm::ui {
 /// Rows are held in a stable order (by host id) and are never reordered. Wrap
 /// this in a QSortFilterProxyModel with sortRole == SeverityRole to present the
 /// most-urgent-first order without churning rows in the view.
-class FleetModel : public QAbstractTableModel {
+class LM_UI_EXPORT FleetModel : public QAbstractTableModel {
     Q_OBJECT
 
 public:

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lm/ui/export.hpp"
+
 #include <QSize>
 #include <QWidget>
 
@@ -9,7 +11,7 @@ namespace lm::ui {
 
 /// A small rounded-rect badge showing a host's state as colour, glyph and
 /// caption text together, so the state reads correctly in greyscale too.
-class StatusPill : public QWidget {
+class LM_UI_EXPORT StatusPill : public QWidget {
     Q_OBJECT
 
 public:

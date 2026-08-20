@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lm/ui/export.hpp"
+
 #include <QObject>
 #include <QTimer>
 #include <QVector>
@@ -18,7 +20,7 @@ namespace lm::ui {
 /// Buffers incoming resource samples and emits them in batches, so a burst of
 /// DDS traffic produces one repaint instead of dozens. push() is safe to call
 /// from a Fast DDS callback thread; flushed() is emitted on the owning thread.
-class SampleCoalescer : public QObject {
+class LM_UI_EXPORT SampleCoalescer : public QObject {
     Q_OBJECT
 
 public:

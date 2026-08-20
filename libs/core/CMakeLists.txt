@@ -1,6 +1,6 @@
 find_package(nlohmann_json CONFIG REQUIRED)
 
-add_library(lm_core STATIC
+add_library(lm_core SHARED
   src/types.cpp
   src/version.cpp
   src/rule.cpp

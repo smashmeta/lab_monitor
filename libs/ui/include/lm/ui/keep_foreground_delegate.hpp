@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lm/ui/export.hpp"
+
 #include <QStyledItemDelegate>
 
 namespace lm::ui {
@@ -12,7 +14,7 @@ namespace lm::ui {
 /// losing exactly the information the colour was carrying. This overrides
 /// HighlightedText per item with the model's own colour, leaving the selection
 /// *background* to the style so the row is still obviously selected.
-class KeepForegroundDelegate : public QStyledItemDelegate {
+class LM_UI_EXPORT KeepForegroundDelegate : public QStyledItemDelegate {
     Q_OBJECT
 
 public:

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lm/ui/export.hpp"
+
 #include <QSize>
 #include <QWidget>
 
@@ -9,7 +11,7 @@ namespace lm::ui {
 
 /// A horizontal percentage bar that glides to new values via QVariantAnimation
 /// instead of snapping, so resource updates read as motion rather than flicker.
-class MeterBar : public QWidget {
+class LM_UI_EXPORT MeterBar : public QWidget {
     Q_OBJECT
 
 public:

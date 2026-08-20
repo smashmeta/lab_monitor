@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lm/ui/export.hpp"
+
 #include <QTreeWidget>
 
 #include <vector>
@@ -13,7 +15,7 @@ namespace lm::ui {
 /// Shared by both detail panes rather than written twice — the client and the
 /// server show the same list of the same facts, and two copies would drift the
 /// way the compliance list did before RuleDetail moved here.
-class AdapterList : public QTreeWidget {
+class LM_UI_EXPORT AdapterList : public QTreeWidget {
     Q_OBJECT
 
 public:

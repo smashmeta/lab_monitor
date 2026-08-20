@@ -4,7 +4,7 @@ find_package(spdlog CONFIG REQUIRED)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-add_library(lm_ui STATIC
+add_library(lm_ui SHARED
   src/adapter_list.cpp
   src/theme.cpp
   src/status_pill.cpp
@@ -30,6 +30,14 @@ add_library(lm_ui STATIC
 add_library(lm::ui ALIAS lm_ui)
 
 target_include_directories(lm_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# The only library that opts out of the project-wide auto-export, because it is
+# the only one with Q_OBJECT classes. Their moc-generated staticMetaObject is a
+# *data* symbol, which a generated .def file cannot carry, so lm_ui marks its
+# public API with LM_UI_EXPORT by hand (see include/lm/ui/export.hpp). Leaving
+# auto-export on as well would have the linker export each vtable twice and warn
+# LNK4197 on every build.
+set_target_properties(lm_ui PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS OFF)
 target_link_libraries(lm_ui
   PUBLIC lm_core lm_transport Qt5::Widgets Qt5::Svg
   # spdlog is private: only theme.cpp's failed-open log call needs it, and

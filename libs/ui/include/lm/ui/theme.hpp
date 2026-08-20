@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lm/ui/export.hpp"
+
 #include <QColor>
 #include <QString>
 
@@ -35,10 +37,10 @@ inline constexpr const char* kMissing = "#f28b82";
 inline constexpr const char* kUnexpected = "#c58af9";
 inline constexpr const char* kNotApplicable = "#9aa0a6";
 
-void apply(QApplication& app);
+LM_UI_EXPORT void apply(QApplication& app);
 
-[[nodiscard]] QColor color_for(core::HostState state);
-[[nodiscard]] QColor color_for(core::CheckStatus status);
+[[nodiscard]] LM_UI_EXPORT QColor color_for(core::HostState state);
+[[nodiscard]] LM_UI_EXPORT QColor color_for(core::CheckStatus status);
 
 /// A load reading as a colour: green at 0%, amber through the middle, red at
 /// 100%, interpolated between the palette's own status colours so nothing
@@ -48,11 +50,11 @@ void apply(QApplication& app);
 /// naturally — idle is green, saturated is red — but it does mean a red CPU
 /// line and a red Missing host are the same colour meaning different things,
 /// which is why the line stays inside a pane already labelled "CPU".
-[[nodiscard]] QColor color_for_load(double percent);
+[[nodiscard]] LM_UI_EXPORT QColor color_for_load(double percent);
 
 /// A distinct shape per state, so hue is never the only signal.
-[[nodiscard]] QString glyph_for(core::HostState state);
-[[nodiscard]] QString glyph_for(core::CheckStatus status);
+[[nodiscard]] LM_UI_EXPORT QString glyph_for(core::HostState state);
+[[nodiscard]] LM_UI_EXPORT QString glyph_for(core::CheckStatus status);
 
 }  // namespace Theme
 }  // namespace lm::ui

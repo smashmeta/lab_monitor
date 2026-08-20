@@ -14,6 +14,23 @@ set(CMAKE_COMPILE_WARNING_AS_ERROR ON)
 option(LM_BUILD_GUI "Build the Qt GUI applications" ON)
 option(LM_BUILD_INTEGRATION_TESTS "Build tests that open a real DDS domain" OFF)
 
+# The four libraries are SHARED so that a test binary and an application load
+# the *same* lm_core.dll, rather than each statically linking its own copy of
+# the code and its own copy of every global inside it. What the tests exercise
+# is then literally the file that ships.
+#
+# On Windows that needs symbols exported. Rather than annotate every public
+# class with a dllexport macro, CMake generates a .def file listing what each
+# DLL defines.
+set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+# Keep every DLL, import library and executable in one place per configuration.
+# Without this each target builds into its own directory and no test binary can
+# find the libraries it links, since Windows resolves DLLs from the executable's
+# own directory rather than from anything recorded at link time.
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 include(LabMonitorWarnings)
 include(LabMonitorRuntime)

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lm/ui/export.hpp"
+
 #include <QStringList>
 #include <QVector>
 #include <QWidget>
@@ -21,7 +23,7 @@ namespace lm::ui {
 /// or something to create on the spot is the caller's policy, expressed by
 /// reacting to tokens_changed(). That is what keeps this reusable for anything
 /// with a set of names, rather than being a template picker with a general name.
-class TokenEdit : public QWidget {
+class LM_UI_EXPORT TokenEdit : public QWidget {
     Q_OBJECT
 
 public:

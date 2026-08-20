@@ -1,5 +1,7 @@
 #pragma once
 
+#include "lm/ui/export.hpp"
+
 #include <QColor>
 #include <QSize>
 #include <QVector>
@@ -11,7 +13,7 @@ namespace lm::ui {
 
 /// A minimal rolling line chart: push() appends a sample to a fixed-capacity
 /// ring buffer and the widget repaints itself. No QtCharts dependency.
-class Sparkline : public QWidget {
+class LM_UI_EXPORT Sparkline : public QWidget {
     Q_OBJECT
 
 public:

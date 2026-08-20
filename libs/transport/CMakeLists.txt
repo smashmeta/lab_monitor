@@ -5,7 +5,7 @@ find_package(fastcdr CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(fastdds CONFIG REQUIRED)
 
-add_library(lm_transport STATIC
+add_library(lm_transport SHARED
   src/in_memory_transport.cpp
   src/codec.cpp
   src/fastdds/fast_dds_transport.cpp)

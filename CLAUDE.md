@@ -89,6 +89,39 @@ build. Qt 5.15 is upstream EOL (vcpkg carries KDE's patched branch). `lm_ui` avo
 version-specific APIs so the Qt 6 move stays cheap. **An upgrade is planned, not
 merely possible.**
 
+### The libraries are shared, not static
+`lm_core`, `lm_platform`, `lm_transport` and `lm_ui` are `SHARED`. A test binary
+and an application therefore load the **same** `lm_core.dll` rather than each
+statically linking its own copy of the code — and its own copy of every global
+inside it. What the suite exercises is literally the file that ships.
+
+`CMAKE_RUNTIME_OUTPUT_DIRECTORY` puts every executable and DLL in
+`build\<preset>\bin\<config>\`. Windows resolves a DLL from the loading
+executable's own directory, so without one shared directory each test binary
+would need its own copy of all four — and "the same binary" would become a claim
+about copies rather than a fact. There is exactly one `lm_core.dll` in the build
+tree; check with `find build -name "lm_*.dll"` if that is ever in doubt.
+
+**Do not confuse this with the gtest decision below.** They point opposite ways
+for opposite reasons and both are load-bearing: gtest is forced *static* because
+its `UnitTest` singleton must not be duplicated across a DLL boundary; ours are
+*shared* precisely so there is only one copy of them to begin with.
+
+`CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS` has CMake generate a `.def` file per DLL,
+which covers every function. It does **not** cover global data — and every
+`Q_OBJECT` class has one, the `staticMetaObject` moc generates. So `lm_ui` alone
+sets `WINDOWS_EXPORT_ALL_SYMBOLS OFF` and marks its public API with
+`LM_UI_EXPORT` (`libs/ui/include/lm/ui/export.hpp`) instead. Leaving both on
+exports each vtable twice and warns LNK4197 on every build.
+
+Only two classes actually broke when the switch was made — `SampleCoalescer` and
+`TokenEdit`, the two the apps and tests happened to reach through the
+meta-object system (`qobject_cast`, `QSignalSpy` on a signal). Every other
+`Q_OBJECT` class here is one `qobject_cast` away from the same unresolved
+external, which is why all eight carry the macro rather than just those two.
+**A new `Q_OBJECT` class in `lm_ui` needs `LM_UI_EXPORT` or it will link today
+and fail the first time someone casts to it.**
+
 ### vcpkg overlay port forcing gtest to static linkage
 `vcpkg-overlays/ports/gtest/` — see its README.
 
@@ -463,9 +496,13 @@ Team choice. Boost is consequently confined to `program_options` in the two apps
 ## Running
 
 ```
-build\windows\apps\server\Debug\lab_monitor_server.exe
-build\windows\apps\client\Debug\lab_monitor_client.exe
+build\windows\bin\Debug\lab_monitor_server.exe
+build\windows\bin\Debug\lab_monitor_client.exe
 ```
+
+Every binary lands in `build\windows\bin\<config>\` — both apps, all seven test
+executables, and the four `lm_*.dll` they load. That single directory is
+deliberate; see *The libraries are shared* below.
 
 Both accept `--domain-id`, `--config`, `--offline` (in-process transport, no DDS)
 and `--log-level`. The client **starts hidden** — look for the tray icon.

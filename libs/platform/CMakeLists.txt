@@ -1,4 +1,4 @@
-add_library(lm_platform STATIC
+add_library(lm_platform SHARED
   src/host_probes.cpp)
 add_library(lm::platform ALIAS lm_platform)
 
