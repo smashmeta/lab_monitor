@@ -7,6 +7,10 @@ usage and rule compliance back.
 
 Design spec: `docs/superpowers/specs/2026-08-11-lab-monitor-design.md`
 Implementation plan: `docs/superpowers/plans/2026-08-11-lab-monitor-foundation.md`
+Architecture overview: `docs/architecture.html` — the module layering, the four
+DDS topics and every field on them, drawn. Open it in a browser from the working
+tree. Its Mermaid comes from a CDN, so the diagrams need a network connection;
+without one each falls back to its own source text.
 
 ## Building — read this first
 

@@ -1,0 +1,1147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lab_monitor Architecture</title>
+<!--
+  A standalone copy of the architecture overview. Open it in a browser
+  straight from the working tree; nothing needs building.
+
+  The diagrams are Mermaid, loaded from a CDN, so they render as diagrams
+  only with a network connection. Without one the page still reads: every
+  diagram falls back to its own source text, which is legible enough to
+  follow. Vendoring Mermaid would put ~3 MB of minified JavaScript in the
+  repository to avoid that, which is the worse trade.
+-->
+<style>
+  /* Palette taken from the application's own tokens --
+     libs/ui/include/lm/ui/theme.hpp -- so the page and the product it
+     describes agree about what "online" looks like. */
+  :root {
+    --ground:      #f6f7f9;
+    --surface:     #ffffff;
+    --raised:      #eef0f4;
+    --line:        #d7dbe2;
+    --line-soft:   #e6e9ee;
+    --ink:         #1c1e21;
+    --ink-muted:   #5b6169;
+    --accent:      #1a5fc4;
+    --accent-soft: #e7effb;
+    --good:        #1e7a44;
+    --warn:        #8a6100;
+
+    /* The diagram panels keep the app's dark ground in both page themes:
+       they are pictures of a dark desktop tool, not charts. */
+    --panel:        #202124;
+    --panel-raised: #292a2d;
+    --panel-line:   #3c4043;
+    --panel-muted:  #9aa0a6;
+
+    --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", "DejaVu Sans Mono", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #17181a;
+      --surface:     #202124;
+      --raised:      #292a2d;
+      --line:        #3c4043;
+      --line-soft:   #2c2d31;
+      --ink:         #e8eaed;
+      --ink-muted:   #9aa0a6;
+      --accent:      #8ab4f8;
+      --accent-soft: #23303f;
+      --good:        #81c995;
+      --warn:        #fdd663;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #17181a;
+    --surface:     #202124;
+    --raised:      #292a2d;
+    --line:        #3c4043;
+    --line-soft:   #2c2d31;
+    --ink:         #e8eaed;
+    --ink-muted:   #9aa0a6;
+    --accent:      #8ab4f8;
+    --accent-soft: #23303f;
+    --good:        #81c995;
+    --warn:        #fdd663;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16.5px;
+    line-height: 1.65;
+    margin: 0;
+    padding: 0 1.25rem 6rem;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 70ch;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1.15rem;
+  }
+
+  /* Diagrams and the module table break the reading column. */
+  .wide {
+    max-width: 1120px;
+    margin-inline: auto;
+    width: 100%;
+  }
+
+  header.masthead {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 4.5rem 0 2rem;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0;
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(2rem, 5vw, 3rem);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    font-size: 1.1rem;
+    color: var(--ink-muted);
+    max-width: 62ch;
+    margin: 0;
+    text-wrap: pretty;
+  }
+
+  h2 {
+    font-family: var(--mono);
+    font-size: 1.3rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 3.5rem 0 0;
+    padding-top: 1.4rem;
+    border-top: 1px solid var(--line-soft);
+    text-wrap: balance;
+  }
+
+  p { margin: 0; text-wrap: pretty; }
+
+  a { color: var(--accent); text-underline-offset: 3px; }
+  a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.88em;
+    background: var(--raised);
+    border: 1px solid var(--line-soft);
+    border-radius: 3px;
+    padding: 0.08em 0.32em;
+  }
+
+  strong { font-weight: 650; }
+
+  ul { margin: 0; padding-left: 1.15rem; display: flex; flex-direction: column; gap: 0.7rem; }
+  li::marker { color: var(--ink-muted); }
+
+  /* ---- module table ---- */
+  .table-scroll { overflow-x: auto; }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.92rem;
+    min-width: 640px;
+  }
+  caption {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    padding-bottom: 0.6rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.62rem 0.9rem 0.62rem 0;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+  }
+  th {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    border-bottom-color: var(--line);
+  }
+  td.target { font-family: var(--mono); white-space: nowrap; color: var(--accent); }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; padding-right: 0; }
+  th.num { text-align: right; padding-right: 0; }
+
+  /* ---- diagram panels ---- */
+  figure.diagram {
+    margin: 0;
+    background: var(--panel);
+    border: 1px solid var(--panel-line);
+    border-radius: 6px;
+    overflow: hidden;
+    color-scheme: dark;
+  }
+  figure.diagram > .body { overflow-x: auto; padding: 1.75rem 1.5rem; }
+  figure.diagram .mermaid { display: flex; justify-content: center; min-width: min-content; }
+  figcaption {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.04em;
+    color: var(--panel-muted);
+    background: var(--panel-raised);
+    border-top: 1px solid var(--panel-line);
+    padding: 0.6rem 1.1rem;
+  }
+
+  /* ---- the four topics ---- */
+  .topics { display: grid; gap: 0; margin: 0.4rem 0 0; }
+  .topic {
+    display: grid;
+    grid-template-columns: minmax(0, 14rem) 1fr;
+    gap: 0.25rem 1.4rem;
+    padding: 0.85rem 0;
+    border-bottom: 1px solid var(--line-soft);
+    align-items: baseline;
+  }
+  .topic:last-child { border-bottom: none; }
+  .topic dt { font-family: var(--mono); font-size: 0.88rem; color: var(--ink); margin: 0; }
+  .topic dd { margin: 0; font-size: 0.95rem; color: var(--ink-muted); }
+  .qos {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.64rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0.14em 0.5em;
+    border-radius: 3px;
+    border: 1px solid currentColor;
+    margin-top: 0.35rem;
+  }
+  .qos.reliable { color: var(--good); }
+  .qos.lossy { color: var(--warn); }
+
+  /* ---- wire message field tables ---- */
+  .msgs {
+    max-width: 900px;
+    margin-inline: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+  }
+  .msg {
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+  .msg > header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.35rem 0.9rem;
+    padding: 0.8rem 1rem;
+    background: var(--raised);
+    border-bottom: 1px solid var(--line);
+  }
+  .msg h3 {
+    font-family: var(--mono);
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0;
+  }
+  .msg .dir {
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    color: var(--ink-muted);
+    letter-spacing: 0.03em;
+  }
+  .msg .qos { margin-top: 0; }
+
+  table.fields {
+    min-width: 0;
+    width: 100%;
+    font-size: 0.88rem;
+    border-collapse: collapse;
+  }
+  table.fields td {
+    padding: 0.52rem 1rem 0.52rem 0;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+  }
+  table.fields tr > td:first-child { padding-left: 1rem; }
+  table.fields tbody tr:last-child > td { border-bottom: none; }
+  td.f { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+  td.t {
+    font-family: var(--mono);
+    font-size: 0.92em;
+    color: var(--ink-muted);
+    white-space: nowrap;
+  }
+  td.d { color: var(--ink); width: 100%; }
+
+  .sub {
+    border-top: 1px solid var(--line);
+    background: var(--ground);
+  }
+  .sub > .sub-head {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    padding: 0.65rem 1rem 0.15rem;
+  }
+
+  @media (max-width: 700px) {
+    table.fields td.t { white-space: normal; }
+  }
+
+  .rule {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 0.9rem 1.1rem;
+    border-radius: 0 4px 4px 0;
+  }
+  .rule p { font-size: 0.96rem; }
+
+  .colophon {
+    margin-top: 2.5rem;
+    font-size: 0.88rem;
+    color: var(--ink-muted);
+    border-top: 1px solid var(--line-soft);
+    padding-top: 1.2rem;
+  }
+
+  @media (max-width: 620px) {
+    .topic { grid-template-columns: 1fr; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+  /* Until Mermaid has run, each diagram shows its own source rather than a
+     blank panel -- which is also what stays on screen when the CDN cannot be
+     reached. */
+  pre.mermaid {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: var(--panel-muted);
+    margin: 0;
+    white-space: pre;
+  }
+  pre.mermaid[data-processed="true"] { color: inherit; }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <p class="eyebrow">Four libraries, two applications</p>
+  <h1>lab_monitor Architecture</h1>
+  <p class="standfirst">
+    A central server discovers client machines over DDS, reconciles them against
+    an expected-host list, and distributes a template of compliance rules.
+    Clients report resource usage and rule compliance back. Here is how the
+    pieces are separated, and what actually crosses between them.
+  </p>
+</header>
+
+<div class="wrap">
+  <h2>The modules</h2>
+
+  <p>
+    Everything is layered so that <code>lm_core</code> sits at the bottom knowing
+    nothing about Qt, DDS or the operating system, and the two applications sit
+    at the top composing the rest. Each library owns one kind of knowledge.
+  </p>
+</div>
+
+<div class="wide table-scroll" style="margin-top: 1.15rem;">
+  <table>
+    <caption>Build targets, their dependencies, and their unit tests</caption>
+    <thead>
+      <tr>
+        <th scope="col">Target</th>
+        <th scope="col">What it knows</th>
+        <th scope="col">Depends on</th>
+        <th scope="col" class="num">Tests</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="target">lm_core</td>
+        <td>Rules, templates, JSON, <code>evaluate()</code>, <code>reconcile()</code>, <code>ClientRegistry</code></td>
+        <td>nlohmann-json</td>
+        <td class="num">135</td>
+      </tr>
+      <tr>
+        <td class="target">lm_platform</td>
+        <td>OS probes behind interfaces &mdash; resources, processes, services, registry, network &mdash; plus public fakes</td>
+        <td>lm_core</td>
+        <td class="num">51</td>
+      </tr>
+      <tr>
+        <td class="target">lm_transport</td>
+        <td><code>IClientTransport</code> / <code>IServerTransport</code>, hand-written FastCDR codecs, an in-memory bus, the Fast DDS backend</td>
+        <td>lm_core, Fast&nbsp;DDS</td>
+        <td class="num">28</td>
+      </tr>
+      <tr>
+        <td class="target">lm_ui</td>
+        <td>Shared Qt5 widgets and theme: <code>FleetModel</code>, <code>SampleCoalescer</code>, <code>TokenEdit</code>, <code>AdapterList</code>, meters, sparklines</td>
+        <td>lm_core, lm_transport, Qt5</td>
+        <td class="num">80</td>
+      </tr>
+      <tr>
+        <td class="target">lab_monitor_client</td>
+        <td>Hidden tray agent; a worker thread samples, evaluates and publishes</td>
+        <td>all four</td>
+        <td class="num">17</td>
+      </tr>
+      <tr>
+        <td class="target">lab_monitor_server</td>
+        <td>Fleet console: discovery, reconciliation, template authoring and publishing</td>
+        <td>all four</td>
+        <td class="num">34</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="wrap">
+  <p style="margin-top: 1.1rem; font-size: 0.93rem; color: var(--ink-muted);">
+    345 unit tests in total, plus four Fast DDS loopback integration tests gated
+    behind <code>LM_BUILD_INTEGRATION_TESTS</code> because they need loopback
+    multicast.
+  </p>
+</div>
+
+<div class="wide" style="margin-top: 2rem;">
+  <figure class="diagram">
+    <div class="body">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"background":"#202124","primaryColor":"#292a2d","primaryTextColor":"#e8eaed","primaryBorderColor":"#5f6368","lineColor":"#9aa0a6","fontSize":"14px","clusterBkg":"#1b1c1f","clusterBorder":"#3c4043","edgeLabelBackground":"#202124","tertiaryColor":"#35363a"}}}%%
+flowchart TD
+    subgraph APPS ["applications"]
+        direction LR
+        CLIENT["lab_monitor_client<br/>tray agent, starts hidden"]
+        SERVER["lab_monitor_server<br/>fleet console"]
+    end
+
+    subgraph LIBS ["libraries"]
+        direction LR
+        UI["lm_ui<br/>Qt5 widgets, theme, FleetModel"]
+        PLAT["lm_platform<br/>OS probes + fakes"]
+        TRANS["lm_transport<br/>ITransport, codecs, Fast DDS"]
+    end
+
+    CORE["lm_core<br/>rules, templates, evaluate(), reconcile()"]
+    JSON["nlohmann-json<br/>the only dependency lm_core has"]
+
+    CLIENT --> UI
+    CLIENT --> PLAT
+    CLIENT --> TRANS
+    SERVER --> UI
+    SERVER --> PLAT
+    SERVER --> TRANS
+
+    UI --> CORE
+    UI --> TRANS
+    PLAT --> CORE
+    TRANS --> CORE
+    CORE --> JSON
+
+    classDef app fill:#23303f,stroke:#8ab4f8,color:#e8eaed;
+    classDef lib fill:#292a2d,stroke:#5f6368,color:#e8eaed;
+    classDef core fill:#1f3328,stroke:#81c995,color:#e8eaed;
+    classDef ext fill:#202124,stroke:#3c4043,color:#9aa0a6;
+    class CLIENT,SERVER app;
+    class UI,PLAT,TRANS lib;
+    class CORE core;
+    class JSON ext;
+</pre>
+    </div>
+    <figcaption>Dependency direction. Nothing points back up; lm_core points only at JSON.</figcaption>
+  </figure>
+</div>
+
+<div class="wrap">
+  <div class="rule" style="margin-top: 1.6rem;">
+    <p>
+      <strong>The load-bearing constraint: <code>lm_core</code> depends on
+      nlohmann-json and nothing else.</strong> No Qt, no DDS, no syscalls, no
+      Boost. That is what makes <code>evaluate()</code> and
+      <code>reconcile()</code> testable without a single mock &mdash; the 135
+      core tests call plain functions with plain structs. Adding another
+      dependency to <code>libs/core</code> is a design violation, not a
+      convenience.
+    </p>
+  </div>
+
+  <h2>What crosses the wire</h2>
+
+  <p>
+    Four topics, and only four. Three flow client&nbsp;&rarr;&nbsp;server; one
+    flows back. Their quality-of-service settings differ because what they carry
+    differs: a resource sample is worthless a second later, while an announce is
+    the only carrier of a client's capabilities.
+  </p>
+
+  <dl class="topics">
+    <div class="topic">
+      <dt>ClientAnnounce<br/><span class="qos reliable">reliable &middot; transient local</span></dt>
+      <dd>
+        Host id and capabilities, every 10&nbsp;s. It repeats on a timer rather
+        than announcing once, because the server can forget: a liveliness drop
+        erases the registry entry outright, and the samples that keep arriving
+        recreate it knowing nothing about capabilities.
+      </dd>
+    </div>
+    <div class="topic">
+      <dt>ResourceSample<br/><span class="qos lossy">best effort &middot; volatile</span></dt>
+      <dd>
+        CPU, memory, per-mount disk and the full network adapter list, every
+        2&nbsp;s. Deliberately lossy: a dropped sample is replaced two seconds
+        later, and reliability would only build a queue of stale readings.
+      </dd>
+    </div>
+    <div class="topic">
+      <dt>ComplianceReport<br/><span class="qos reliable">reliable &middot; transient local</span></dt>
+      <dd>
+        One <code>CheckResult</code> per rule &mdash; id, status, what was
+        observed, what was expected &mdash; every 30&nbsp;s. It carries no rule
+        descriptions; both ends recover those from the bundle they already hold.
+      </dd>
+    </div>
+    <div class="topic">
+      <dt>TemplateBundle<br/><span class="qos reliable">reliable &middot; transient local</span></dt>
+      <dd>
+        Server&nbsp;&rarr;&nbsp;client, on publish. The one topic travelling
+        downward: the baseline, every template, and the per-host assignments.
+      </dd>
+    </div>
+  </dl>
+</div>
+
+<div class="wide" style="margin-top: 2rem;">
+  <figure class="diagram">
+    <div class="body">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"background":"#202124","primaryColor":"#292a2d","primaryTextColor":"#e8eaed","primaryBorderColor":"#5f6368","lineColor":"#9aa0a6","fontSize":"13px","actorBkg":"#292a2d","actorBorder":"#8ab4f8","actorTextColor":"#e8eaed","actorLineColor":"#3c4043","signalColor":"#9aa0a6","signalTextColor":"#e8eaed","labelBoxBkg":"#35363a","labelBoxBorderColor":"#3c4043","labelTextColor":"#e8eaed","loopTextColor":"#9aa0a6","noteBkgColor":"#35363a","noteTextColor":"#e8eaed","noteBorderColor":"#5f6368"}}}%%
+sequenceDiagram
+    participant C as lab_monitor_client
+    participant D as DDS domain
+    participant S as lab_monitor_server
+
+    Note over S: start() re-announces the saved<br/>bundle at its existing revision
+    S->>D: TemplateBundle (rev 7)
+
+    C->>D: ClientAnnounce (host id, capabilities)
+    D->>S: discovered, into ClientRegistry
+    D-->>C: TemplateBundle (rev 7, replayed on subscribe)
+
+    loop every 2 s
+        C->>D: ResourceSample
+        D->>S: SampleCoalescer, then FleetModel
+    end
+
+    loop every 30 s
+        C->>C: HostProbes::collect(), then evaluate()
+        C->>D: ComplianceReport
+        D->>S: report cache, then the Compliance tab
+    end
+
+    loop every 10 s
+        C->>D: ClientAnnounce (capabilities again)
+    end
+
+    Note over S: operator edits and presses Publish
+    S->>D: TemplateBundle (rev 8)
+    D->>C: re-evaluate against the new rules
+
+    D--)S: liveliness lost, host becomes Offline
+</pre>
+    </div>
+    <figcaption>The steady state: discovery, two report cadences, and a bundle travelling back down.</figcaption>
+  </figure>
+</div>
+
+<div class="wrap">
+  <h2>The fields on the wire</h2>
+
+  <p>
+    The four payloads are small and flat, which is why
+    <code>libs/transport/src/codec.cpp</code> encodes them by hand rather than
+    through <code>fastddsgen</code> &mdash; that is a Java tool, is not a vcpkg
+    port, and there is no JDK here. Fields are written in declaration order, and
+    <code>decode()</code> is hardened against hostile input: element counts read
+    off the wire drive a <em>capped</em> reserve rather than a resize, and both
+    <code>fastcdr::exception::Exception</code> (which does not derive from
+    <code>std::exception</code>) and <code>std::exception</code> are caught.
+  </p>
+</div>
+
+<div class="wide msgs" style="margin-top: 1.4rem;">
+
+  <section class="msg">
+    <header>
+      <h3>ClientAnnounce</h3>
+      <span class="dir">client &rarr; server &middot; every 10&nbsp;s</span>
+      <span class="qos reliable">reliable &middot; transient local &middot; keyed by host_id</span>
+    </header>
+    <table class="fields">
+      <tbody>
+        <tr>
+          <td class="f">host_id</td>
+          <td class="t">string</td>
+          <td class="d">
+            The machine's hostname, from <code>local_host_name()</code>. The key
+            on every other topic, and the join between a fleet row, a sample and
+            a report.
+          </td>
+        </tr>
+        <tr>
+          <td class="f">agent_version</td>
+          <td class="t">string</td>
+          <td class="d">
+            Which build of the client is running. Informational &mdash; nothing
+            branches on it yet.
+          </td>
+        </tr>
+        <tr>
+          <td class="f">capabilities</td>
+          <td class="t">uint32</td>
+          <td class="d">
+            <code>Capabilities::raw()</code>, a bitmask: Resources&nbsp;1,
+            Processes&nbsp;2, Services&nbsp;4, Registry&nbsp;8, Network&nbsp;16.
+            A rule whose capability is missing evaluates to
+            <code>NotApplicable</code> rather than Fail, and the server shows
+            <code>&ndash;</code> instead of a count. This single field is why the
+            announce repeats on a timer: it is the only carrier of it.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="msg">
+    <header>
+      <h3>ResourceSampleMessage</h3>
+      <span class="dir">client &rarr; server &middot; every 2&nbsp;s</span>
+      <span class="qos lossy">best effort &middot; volatile &middot; keep last 1</span>
+    </header>
+    <table class="fields">
+      <tbody>
+        <tr>
+          <td class="f">host_id</td>
+          <td class="t">string</td>
+          <td class="d">Which machine this reading came from.</td>
+        </tr>
+        <tr>
+          <td class="f">cpu_percent</td>
+          <td class="t">double</td>
+          <td class="d">
+            0&ndash;100. Computed as a delta against the previous probe, so the
+            first sample after a client starts reads&nbsp;0.
+          </td>
+        </tr>
+        <tr>
+          <td class="f">mem_total_bytes</td>
+          <td class="t">uint64</td>
+          <td class="d">Physical memory installed.</td>
+        </tr>
+        <tr>
+          <td class="f">mem_used_bytes</td>
+          <td class="t">uint64</td>
+          <td class="d">In use. The percentage is derived at the display, not sent.</td>
+        </tr>
+        <tr>
+          <td class="f">disks</td>
+          <td class="t">DiskUsage[]</td>
+          <td class="d">One entry per mount point. Network filesystems are excluded.</td>
+        </tr>
+        <tr>
+          <td class="f">adapters</td>
+          <td class="t">NetworkAdapter[]</td>
+          <td class="d">
+            Every network interface the machine's own UI lists. Empty either
+            because there are none or because the client cannot report them
+            &mdash; the two are told apart by <code>Capability::Network</code>,
+            never by the emptiness of this list.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="sub">
+      <p class="sub-head">DiskUsage &mdash; one per mount</p>
+      <table class="fields">
+        <tbody>
+          <tr>
+            <td class="f">mount</td>
+            <td class="t">string</td>
+            <td class="d">Drive letter or mount path.</td>
+          </tr>
+          <tr>
+            <td class="f">total_bytes</td>
+            <td class="t">uint64</td>
+            <td class="d">Capacity.</td>
+          </tr>
+          <tr>
+            <td class="f">free_bytes</td>
+            <td class="t">uint64</td>
+            <td class="d">
+              Free, not used &mdash; <code>used_percent()</code> is derived from
+              the pair so the number and its colour cannot disagree.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="sub">
+      <p class="sub-head">NetworkAdapter &mdash; one per interface</p>
+      <table class="fields">
+        <tbody>
+          <tr>
+            <td class="f">name</td>
+            <td class="t">string</td>
+            <td class="d">
+              What the machine's own UI calls it &mdash; "smash-wifi", the
+              renameable name in Windows' Network Connections. Not unique in
+              principle, which is what <code>id</code> is for. Rules match on
+              this, case-insensitively, because rules are typed by people.
+            </td>
+          </tr>
+          <tr>
+            <td class="f">description</td>
+            <td class="t">string</td>
+            <td class="d">The hardware behind it: "Intel(R) Centrino(R) Advanced-N 6205".</td>
+          </tr>
+          <tr>
+            <td class="f">id</td>
+            <td class="t">string</td>
+            <td class="d">
+              The system's stable identifier &mdash; a GUID on Windows,
+              <code>eth0</code> on Linux. Unique and unchanging where the name is
+              neither, so any future matching keys on it. Shown only on hover.
+            </td>
+          </tr>
+          <tr>
+            <td class="f">type</td>
+            <td class="t">enum</td>
+            <td class="d">
+              Unknown, Ethernet, WiFi, Loopback, Ppp, Tunnel, Modem, Other.
+              <em>Other</em> means a type was reported that we do not name;
+              <em>Unknown</em> means the platform did not say.
+            </td>
+          </tr>
+          <tr>
+            <td class="f">link</td>
+            <td class="t">enum</td>
+            <td class="d">
+              Unknown, Connected, NoMedia, Disconnected, Connecting, Disabled,
+              Faulted. Deliberately not a boolean: a port with nothing plugged
+              in, a card switched off, and an idle dial-up entry are three
+              different problems that "not connected" would flatten into one.
+              Only <code>Connected</code> counts as up.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="sub">
+      <p class="sub-head">Deliberately absent</p>
+      <table class="fields">
+        <tbody>
+          <tr>
+            <td class="f">IP addresses</td>
+            <td class="t">&mdash;</td>
+            <td class="d">
+              This message answers "what is this machine plugged into, and is it
+              up", not "how is it routed". Addresses would also churn the sample
+              under DHCP, defeating the equality check that suppresses no-op
+              updates.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="msg">
+    <header>
+      <h3>TemplateBundleMessage</h3>
+      <span class="dir">server &rarr; client &middot; on publish</span>
+      <span class="qos reliable">reliable &middot; transient local &middot; keep last 1</span>
+    </header>
+    <table class="fields">
+      <tbody>
+        <tr>
+          <td class="f">revision</td>
+          <td class="t">uint64</td>
+          <td class="d">
+            Bumped on every publish. A client that has already applied this
+            revision short-circuits, which is what makes a server restart's
+            re-announce free.
+          </td>
+        </tr>
+        <tr>
+          <td class="f">hash</td>
+          <td class="t">string</td>
+          <td class="d">Content hash of the bundle.</td>
+        </tr>
+        <tr>
+          <td class="f">json</td>
+          <td class="t">string</td>
+          <td class="d">
+            The whole bundle serialised: the baseline, every template, and the
+            per-host assignments. Revision and hash are duplicated in the
+            envelope precisely so a receiver can discard a message it already
+            holds <em>without parsing this</em>.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="msg">
+    <header>
+      <h3>ComplianceReportMessage</h3>
+      <span class="dir">client &rarr; server &middot; every 30&nbsp;s</span>
+      <span class="qos reliable">reliable &middot; transient local &middot; keyed by host_id</span>
+    </header>
+    <table class="fields">
+      <tbody>
+        <tr>
+          <td class="f">host_id</td>
+          <td class="t">string</td>
+          <td class="d">Which machine evaluated these rules.</td>
+        </tr>
+        <tr>
+          <td class="f">applied_revision</td>
+          <td class="t">uint64</td>
+          <td class="d">
+            Which bundle the results were produced against. This is how the
+            server tells a client that is still running old rules &mdash; the
+            fleet table's Stale column.
+          </td>
+        </tr>
+        <tr>
+          <td class="f">results</td>
+          <td class="t">CheckResult[]</td>
+          <td class="d">One entry per rule this host was given.</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="sub">
+      <p class="sub-head">CheckResult &mdash; one per rule</p>
+      <table class="fields">
+        <tbody>
+          <tr>
+            <td class="f">rule_id</td>
+            <td class="t">string</td>
+            <td class="d">
+              The <em>only</em> join back to the rule. No description travels, so
+              each end recovers the display text from the bundle it already
+              holds. Ids are generated from the rule's kind and target rather
+              than typed, because a reused id silently dropped a rule from
+              evaluation.
+            </td>
+          </tr>
+          <tr>
+            <td class="f">status</td>
+            <td class="t">enum</td>
+            <td class="d">
+              Pass, Fail, NotApplicable, Error. Only Fail counts against
+              compliance; NotApplicable is left out of the denominator entirely,
+              while Error stays in it &mdash; "could not check it" is not
+              "passed".
+            </td>
+          </tr>
+          <tr>
+            <td class="f">observed</td>
+            <td class="t">string</td>
+            <td class="d">
+              What was actually seen, in the reader's terms: "2 of 4 connected",
+              "running, version 1.4".
+            </td>
+          </tr>
+          <tr>
+            <td class="f">message</td>
+            <td class="t">string</td>
+            <td class="d">
+              For an Error, the cause. For a Fail, <strong>what was expected
+              instead</strong> &mdash; "expected at least 1 connected". Without
+              it a failure states only the observation, leaving the reader to
+              work out which rule that violates. Empty for Pass, whose
+              <code>observed</code> already says everything.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</div>
+
+<div class="wrap">
+  <h2>Inside the client</h2>
+
+  <p>
+    The client starts hidden &mdash; there is only a tray icon until someone
+    opens the detail window. All probing and messaging happens on a worker
+    thread, which talks to the GUI exclusively through queued signals, so
+    nothing on the GUI thread ever blocks on a probe.
+  </p>
+</div>
+
+<div class="wide" style="margin-top: 1.2rem;">
+  <figure class="diagram">
+    <div class="body">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"background":"#202124","primaryColor":"#292a2d","primaryTextColor":"#e8eaed","primaryBorderColor":"#5f6368","lineColor":"#9aa0a6","fontSize":"13px","clusterBkg":"#1b1c1f","clusterBorder":"#3c4043","edgeLabelBackground":"#202124"}}}%%
+flowchart LR
+    subgraph GUI ["GUI thread"]
+        direction TB
+        TRAY["TrayController<br/>icon, menu, Quit"]
+        DETAIL["DetailWindow<br/>meters, sparkline, adapters,<br/>its own Minimize and Close Program"]
+    end
+
+    subgraph WORKER ["worker thread"]
+        direction TB
+        MW["MonitorWorker<br/>owns every timer"]
+        PROBES["HostProbes<br/>probes lazily: only the categories<br/>this host's own rules reference"]
+        EVAL["core::evaluate()"]
+    end
+
+    TRANSPORT["IClientTransport"]
+
+    MW -->|"2 s"| PROBES
+    MW -->|"30 s"| EVAL
+    PROBES --> EVAL
+    EVAL --> MW
+    MW <--> TRANSPORT
+
+    MW -.->|"queued signals"| DETAIL
+    MW -.->|"queued signals"| TRAY
+    TRAY --> DETAIL
+
+    classDef gui fill:#23303f,stroke:#8ab4f8,color:#e8eaed;
+    classDef work fill:#292a2d,stroke:#5f6368,color:#e8eaed;
+    classDef pure fill:#1f3328,stroke:#81c995,color:#e8eaed;
+    classDef io fill:#31262f,stroke:#c58af9,color:#e8eaed;
+    class TRAY,DETAIL gui;
+    class MW,PROBES work;
+    class EVAL pure;
+    class TRANSPORT io;
+</pre>
+    </div>
+    <figcaption>Dotted edges cross the thread boundary as queued connections. Solid edges are direct calls.</figcaption>
+  </figure>
+</div>
+
+<div class="wrap">
+  <h2>Inside the server</h2>
+
+  <p>
+    <code>ServerController</code> owns the transport, the registry, the
+    expected-host list and both bundles &mdash; the one that has been published
+    and the draft being edited. It lives entirely on the GUI thread. Fast DDS
+    invokes its callbacks on its own internal threads, and every one of them is
+    marshalled across before it touches the registry, because
+    <code>ClientRegistry</code> is deliberately not thread-safe.
+  </p>
+</div>
+
+<div class="wide" style="margin-top: 1.2rem;">
+  <figure class="diagram">
+    <div class="body">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"background":"#202124","primaryColor":"#292a2d","primaryTextColor":"#e8eaed","primaryBorderColor":"#5f6368","lineColor":"#9aa0a6","fontSize":"13px","clusterBkg":"#1b1c1f","clusterBorder":"#3c4043","edgeLabelBackground":"#202124"}}}%%
+flowchart TB
+    DDS["IServerTransport<br/>Fast DDS callbacks arrive<br/>on DDS threads"]
+
+    subgraph GUITHREAD ["GUI thread"]
+        direction TB
+        SC["ServerController"]
+        REG["ClientRegistry<br/>not thread-safe, by design"]
+        RECON["core::reconcile()<br/>expected, discovered, now"]
+        MODEL["FleetModel<br/>rows, health, load colours"]
+        CACHE["report cache<br/>last report per host"]
+
+        subgraph WINDOW ["FleetWindow"]
+            direction LR
+            T1["Fleet<br/>table + detail pane"]
+            T2["Compliance<br/>written for a wall display"]
+            T3["Templates<br/>rules, assignments, Publish"]
+        end
+    end
+
+    DDS -->|"invokeMethod, queued"| SC
+    SC --> REG
+    SC -->|"1 s timer, and on every<br/>announce or report"| RECON
+    REG --> RECON
+    RECON --> MODEL
+    RECON -.->|"fleet_changed()"| T2
+    SC --> CACHE
+    CACHE --> T2
+    MODEL --> T1
+    T3 -->|"Publish"| SC
+    SC -->|"TemplateBundle"| DDS
+
+    classDef io fill:#31262f,stroke:#c58af9,color:#e8eaed;
+    classDef state fill:#292a2d,stroke:#5f6368,color:#e8eaed;
+    classDef pure fill:#1f3328,stroke:#81c995,color:#e8eaed;
+    classDef view fill:#23303f,stroke:#8ab4f8,color:#e8eaed;
+    class DDS io;
+    class SC,REG,MODEL,CACHE state;
+    class RECON pure;
+    class T1,T2,T3 view;
+</pre>
+    </div>
+    <figcaption>One controller, one reconcile, three tabs reading from it.</figcaption>
+  </figure>
+</div>
+
+<div class="wrap">
+  <h2>The two functions everything else serves</h2>
+
+  <p>
+    Strip away the threads, the widgets and the wire and the system reduces to
+    two pure functions in <code>lm_core</code>. Both take every input as an
+    argument &mdash; including the clock &mdash; and return a value. Neither
+    reads a file, opens a socket, or touches global state, which is why they
+    carry the bulk of the test suite.
+  </p>
+</div>
+
+<div class="wide" style="margin-top: 1.2rem;">
+  <figure class="diagram">
+    <div class="body">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"background":"#202124","primaryColor":"#292a2d","primaryTextColor":"#e8eaed","primaryBorderColor":"#5f6368","lineColor":"#9aa0a6","fontSize":"13px","clusterBkg":"#1b1c1f","clusterBorder":"#3c4043","edgeLabelBackground":"#202124"}}}%%
+flowchart LR
+    subgraph EV ["on the client"]
+        direction LR
+        B1["TemplateBundle"] --> E["evaluate()"]
+        F1["HostFacts<br/>from the probes"] --> E
+        C1["Capabilities"] --> E
+        E --> R1["ComplianceReport<br/>Pass, Fail, Error, NotApplicable"]
+    end
+
+    subgraph RC ["on the server"]
+        direction LR
+        X1["expected hosts<br/>the list, plus every assignment"] --> RR["reconcile()"]
+        X2["discovered clients"] --> RR
+        X3["now + liveliness lease"] --> RR
+        RR --> R2["FleetView<br/>Missing, Offline, Unexpected, Online"]
+    end
+
+    classDef pure fill:#1f3328,stroke:#81c995,color:#e8eaed;
+    classDef data fill:#292a2d,stroke:#5f6368,color:#e8eaed;
+    class E,RR pure;
+    class B1,F1,C1,R1,X1,X2,X3,R2 data;
+</pre>
+    </div>
+    <figcaption>Pure in, pure out. The clock is an argument, never a call.</figcaption>
+  </figure>
+</div>
+
+<div class="wrap">
+  <h2>Boundaries worth knowing</h2>
+
+  <ul>
+    <li>
+      <strong>Everything reaches the network through <code>ITransport</code>.</strong>
+      Fast DDS is one implementation; an in-memory bus is another, and that is
+      what lets the whole client-server conversation run inside a unit test with
+      no multicast and no waiting. It also keeps a second backend &mdash; OpenDDS
+      was the original spec &mdash; addable rather than a rewrite.
+    </li>
+    <li>
+      <strong>Every OS call sits behind a probe interface</strong>, with public
+      fakes shipped in <code>lm/platform/fakes.hpp</code>. A null probe means the
+      capability is unavailable, and capabilities are intersected with the probes
+      actually supplied &mdash; so a client can never advertise something it
+      cannot serve.
+    </li>
+    <li>
+      <strong>A rule's id is the only join between the two ends.</strong> The
+      wire carries results, not descriptions; each side recovers the display text
+      from the bundle it holds. Ids are generated from the rule's kind and target
+      rather than typed, because a reused id silently dropped a rule from
+      evaluation.
+    </li>
+    <li>
+      <strong><code>lm_ui</code> is shared by both applications</strong> &mdash;
+      the theme, the meters, the sparkline, the adapter list. The client's detail
+      window and the server's detail pane are built from the same widgets, so a
+      reading cannot look like one thing on one screen and something else on
+      another.
+    </li>
+  </ul>
+
+  <p class="colophon">
+    Drawn from the <code>CMakeLists.txt</code> of each target, from
+    <code>libs/transport/include/lm/transport/messages.hpp</code> and
+    <code>libs/core/include/lm/core/host_facts.hpp</code> for the wire fields,
+    from <code>libs/transport/src/fastdds/fast_dds_transport.cpp</code> for the
+    per-topic QoS, from <code>apps/client/monitor_worker.cpp</code> for the timer
+    cadences, and from <code>CLAUDE.md</code> for the reasoning behind each
+    boundary.
+  </p>
+</div>
+<script type="module">
+  try {
+    const mermaid = (await import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs")).default;
+    mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+  } catch (error) {
+    // Offline, or the CDN is blocked. The diagram sources stay on screen, so
+    // say why rather than leaving the reader wondering.
+    for (const block of document.querySelectorAll("figure.diagram > .body")) {
+      const note = document.createElement("p");
+      note.textContent =
+        "Diagram source shown as text: Mermaid could not be loaded from the network.";
+      note.style.cssText =
+        "font-family:var(--mono);font-size:0.72rem;color:var(--panel-muted);margin:0 0 0.9rem;";
+      block.prepend(note);
+    }
+  }
+</script>
+</body>
+</html>
