@@ -8,11 +8,15 @@ find_package(fastdds CONFIG REQUIRED)
 add_library(lm_transport SHARED
   src/in_memory_transport.cpp
   src/codec.cpp
-  src/fastdds/fast_dds_transport.cpp)
+  src/fastdds/fast_dds_transport.cpp
+  src/fastdds/dds_probe.cpp)
 add_library(lm::transport ALIAS lm_transport)
 
 target_include_directories(lm_transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(lm_transport PUBLIC lm_core PRIVATE fastdds fastcdr lm_warnings)
+# lm_platform is PUBLIC because dds_probe.hpp returns a lm::platform::IDdsProbe:
+# the interface is declared there (DDS-free, so lm_platform still depends only
+# on lm_core) while the implementation lives here, where Fast DDS is linked.
+target_link_libraries(lm_transport PUBLIC lm_core lm_platform PRIVATE fastdds fastcdr lm_warnings)
 
 lm_add_test(lm_transport_tests
   SOURCES tests/test_in_memory_transport.cpp tests/test_codec.cpp
@@ -24,5 +28,13 @@ if(LM_BUILD_INTEGRATION_TESTS)
   # needs fastdds linked itself -- lm_transport only links it PRIVATE.
   lm_add_test(lm_transport_dds_tests
     SOURCES tests/test_fastdds_loopback.cpp
+    LINK lm_transport fastdds)
+
+  # The one test that proves the no-IDL claim end to end: it publishes a type
+  # built at runtime and reads it back through the probe, which has no
+  # compile-time knowledge of it either. Gated with the rest because it opens a
+  # real domain.
+  lm_add_test(lm_dds_probe_tests
+    SOURCES tests/test_dds_probe_loopback.cpp
     LINK lm_transport fastdds)
 endif()

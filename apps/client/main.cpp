@@ -23,6 +23,7 @@
 #include "detail_window.hpp"
 #include "lm/core/types.hpp"
 #include "lm/platform/probes.hpp"
+#include "lm/transport/dds_probe.hpp"
 #include "lm/transport/fast_dds_transport.hpp"
 #include "lm/transport/in_memory_transport.hpp"
 #include "lm/ui/theme.hpp"
@@ -140,8 +141,22 @@ int main(int argc, char** argv) {
         // --offline selects the in-memory transport.
         lm::transport::MessageBus offline_bus;
 
-        auto probes = std::make_unique<lm::platform::HostProbes>(
-            host_id, lm::platform::make_platform_probes(), lm::core::platform_capabilities());
+        lm::platform::ProbeSet probe_set = lm::platform::make_platform_probes();
+        // The DDS probe is assembled here rather than inside
+        // make_platform_probes() because it is the one probe that is not about
+        // this platform at all: it reads a bus the *monitored application*
+        // uses, its implementation lives in lm_transport, and --offline means
+        // "do not touch DDS", which has to be honoured for it too. Leaving it
+        // null drops Capability::Dds, and every DDS rule then reports
+        // NotApplicable rather than failing.
+        lm::core::Capabilities capabilities = lm::core::platform_capabilities();
+        if (!options.offline) {
+            probe_set.dds = lm::transport::make_dds_probe();
+            capabilities.add(lm::core::Capability::Dds);
+        }
+
+        auto probes = std::make_unique<lm::platform::HostProbes>(host_id, std::move(probe_set),
+                                                                 capabilities);
 
         std::unique_ptr<lm::transport::IClientTransport> transport;
         if (options.offline) {

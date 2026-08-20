@@ -125,10 +125,21 @@ QString target_label(const lm::core::Rule& rule) {
                 return QStringLiteral("%1 %2 adapters connected")
                     .arg(QString::fromStdString(lm::core::to_string(payload.comparison)))
                     .arg(payload.count);
-            } else {
+            } else if constexpr (std::is_same_v<T, lm::core::AdapterStateRule>) {
                 return QStringLiteral("%1 link %2")
                     .arg(QString::fromStdString(payload.adapter_name),
                           QString::fromStdString(lm::core::to_string(payload.expected)));
+            } else if constexpr (std::is_same_v<T, lm::core::DdsTopicRule>) {
+                return QStringLiteral("%1 on domain %2")
+                    .arg(QString::fromStdString(payload.topic_name))
+                    .arg(payload.domain_id);
+            } else {
+                return QStringLiteral("%1.%2 on domain %3 %4 %5")
+                    .arg(QString::fromStdString(payload.topic_name),
+                          QString::fromStdString(payload.path))
+                    .arg(payload.domain_id)
+                    .arg(QString::fromStdString(lm::core::to_string(payload.match)),
+                          QString::fromStdString(payload.expected_value));
             }
         },
         rule.payload);

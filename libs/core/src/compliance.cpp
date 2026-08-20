@@ -3,10 +3,17 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
 #include <variant>
+
+#include <nlohmann/json.hpp>
+
+#include "lm/core/json_path.hpp"
 
 namespace lm::core {
 namespace {
@@ -216,6 +223,168 @@ CheckResult evaluate_adapter_state(const Rule& rule, const AdapterStateRule& pay
     return resolve(rule, matches, to_string(found->link), wanted);
 }
 
+/// Shared by both DDS evaluators: finds what the probe reported for this
+/// topic, or explains why nothing can be said about it.
+///
+/// Every branch here is an Error rather than a Fail. "The probe never ran",
+/// "the type was never advertised" and "nobody has published yet" are all
+/// statements about the *check*, not about the machine — the same distinction
+/// that makes an unprobed registry value an Error.
+const DdsTopicSample* find_topic(const HostFacts& facts, std::uint32_t domain_id,
+                                 const std::string& topic_name) {
+    const auto entry = facts.dds.find(dds_key(domain_id, topic_name));
+    return entry == facts.dds.end() ? nullptr : &entry->second;
+}
+
+std::string on_domain(std::uint32_t domain_id, const std::string& topic_name) {
+    return "\"" + topic_name + "\" on domain " + std::to_string(domain_id);
+}
+
+CheckResult evaluate_dds_topic(const Rule& rule, const DdsTopicRule& payload,
+                               const HostFacts& facts) {
+    const DdsTopicSample* sample = find_topic(facts, payload.domain_id, payload.topic_name);
+    if (sample == nullptr) {
+        return error(rule, "not probed", "the DDS bus was not read on this host");
+    }
+    if (!sample->error.empty()) {
+        return error(rule, "look failed", sample->error);
+    }
+
+    // Presence of a topic needs no sample and no type: discovery alone answers
+    // it, which is why this rule still works against a publisher that describes
+    // nothing about its data.
+    return resolve(rule, sample->topic_found,
+                   sample->topic_found ? "present on the bus" : "not on the bus",
+                   expected_text(rule, on_domain(payload.domain_id, payload.topic_name) + " to exist",
+                                  on_domain(payload.domain_id, payload.topic_name) +
+                                      " not to exist"));
+}
+
+/// Names what a JSON value actually is, for the message when a numeric
+/// comparison meets something that is not a number.
+std::string document_kind(const nlohmann::json& value) {
+    if (value.is_string()) return "text";
+    if (value.is_boolean()) return "a true/false value";
+    if (value.is_array()) return "a sequence";
+    if (value.is_object()) return "a structure";
+    if (value.is_null()) return "nothing";
+    return "a value of another kind";
+}
+
+/// Renders a JSON value the way a person would read it, so `observed` says
+/// `Ready` and `2` rather than `"Ready"` and `2.0`.
+std::string readable(const nlohmann::json& value) {
+    if (value.is_string()) {
+        return value.get<std::string>();
+    }
+    if (value.is_number_integer()) {
+        return std::to_string(value.get<std::int64_t>());
+    }
+    if (value.is_number_float()) {
+        std::string text = std::to_string(value.get<double>());
+        // Trim the trailing zeros std::to_string always produces: "12.000000"
+        // is the same number as "12" and reads far better on a wall display.
+        while (text.size() > 1 && text.back() == '0') {
+            text.pop_back();
+        }
+        if (!text.empty() && text.back() == '.') {
+            text.pop_back();
+        }
+        return text;
+    }
+    return value.dump();
+}
+
+CheckResult evaluate_dds_value(const Rule& rule, const DdsValueRule& payload,
+                               const HostFacts& facts) {
+    const DdsTopicSample* sample = find_topic(facts, payload.domain_id, payload.topic_name);
+    if (sample == nullptr) {
+        return error(rule, "not probed", "the DDS bus was not read on this host");
+    }
+    if (!sample->error.empty()) {
+        return error(rule, "look failed", sample->error);
+    }
+    if (!sample->topic_found) {
+        // A missing topic *is* a finding, the same way a renamed NIC is: the
+        // rule asked about data that is meant to be on the bus and is not.
+        CheckResult result;
+        result.rule_id = rule.id;
+        result.status = CheckStatus::Fail;
+        result.observed = "topic not on the bus";
+        result.message = "expected " + on_domain(payload.domain_id, payload.topic_name) +
+                         " to be publishing";
+        return result;
+    }
+    if (!sample->has_sample) {
+        // The topic is there but nothing has been published since we started
+        // listening. Nothing is wrong with the machine, and nothing can be
+        // said about the value.
+        return error(rule, "no sample yet",
+                     "the topic is on the bus but nothing has been published on it");
+    }
+
+    nlohmann::json document;
+    try {
+        document = nlohmann::json::parse(sample->json);
+    } catch (const std::exception& parse_error) {
+        return error(rule, "unreadable sample",
+                     std::string("the sample could not be read as JSON: ") + parse_error.what());
+    }
+
+    const auto found = resolve_path(document, payload.path);
+    if (!found.has_value()) {
+        // A malformed path is the author's mistake and a missing field is a
+        // fact about the data, but neither one lets the rule be answered, so
+        // both are Errors that quote the reason verbatim.
+        return error(rule, payload.path.empty() ? "(whole sample)" : payload.path,
+                     found.error().message);
+    }
+
+    const std::string expectation =
+        "expected " + payload.path + " " + to_string(payload.match) + " " + payload.expected_value;
+
+    CheckResult result;
+    result.rule_id = rule.id;
+    result.observed = readable(*found);
+
+    const bool numeric_match = payload.match == DdsMatch::AtLeast || payload.match == DdsMatch::AtMost;
+    if (numeric_match || (payload.match == DdsMatch::Equals && found->is_number())) {
+        if (!found->is_number()) {
+            return error(rule, result.observed,
+                         "expected a number at " + payload.path + " to compare against " +
+                             payload.expected_value + ", found " + document_kind(*found));
+        }
+        double expected = 0.0;
+        try {
+            expected = std::stod(payload.expected_value);
+        } catch (const std::exception&) {
+            return error(rule, result.observed,
+                         "the rule's expected value \"" + payload.expected_value +
+                             "\" is not a number");
+        }
+        const double observed = found->get<double>();
+        const bool ok = payload.match == DdsMatch::AtLeast   ? observed >= expected
+                        : payload.match == DdsMatch::AtMost  ? observed <= expected
+                                                             : observed == expected;
+        result.status = ok ? CheckStatus::Pass : CheckStatus::Fail;
+        if (!ok) {
+            result.message = expectation;
+        }
+        return result;
+    }
+
+    // Textual from here: Equals against a non-number, and Contains.
+    const std::string observed = result.observed;
+    const bool ok = payload.match == DdsMatch::Contains
+                        ? observed.find(payload.expected_value) != std::string::npos
+                        : observed == payload.expected_value;
+    result.status = ok ? CheckStatus::Pass : CheckStatus::Fail;
+    if (!ok) {
+        result.message = expectation;
+    }
+    return result;
+}
+
 }  // namespace
 
 ComplianceReport evaluate(const TemplateBundle& bundle, const HostFacts& facts,
@@ -251,8 +420,12 @@ ComplianceReport evaluate(const TemplateBundle& bundle, const HostFacts& facts,
                     return evaluate_registry(*rule, payload, facts);
                 } else if constexpr (std::is_same_v<T, AdapterCountRule>) {
                     return evaluate_adapter_count(*rule, payload, facts);
-                } else {
+                } else if constexpr (std::is_same_v<T, AdapterStateRule>) {
                     return evaluate_adapter_state(*rule, payload, facts);
+                } else if constexpr (std::is_same_v<T, DdsTopicRule>) {
+                    return evaluate_dds_topic(*rule, payload, facts);
+                } else {
+                    return evaluate_dds_value(*rule, payload, facts);
                 }
             },
             rule->payload));

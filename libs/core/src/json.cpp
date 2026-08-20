@@ -63,6 +63,27 @@ Comparison comparison_from_string(const std::string& text) {
     throw std::runtime_error("unknown comparison: " + text);
 }
 
+// Wire names, deliberately not to_string(DdsMatch)'s display strings ("equal
+// to", "at least"): those are free to be reworded, while anything in a saved
+// bundle has to keep parsing.
+std::string dds_match_to_string(DdsMatch value) {
+    switch (value) {
+        case DdsMatch::Equals:   return "Equals";
+        case DdsMatch::Contains: return "Contains";
+        case DdsMatch::AtLeast:  return "AtLeast";
+        case DdsMatch::AtMost:   return "AtMost";
+    }
+    return "Equals";
+}
+
+DdsMatch dds_match_from_string(const std::string& text) {
+    if (text == "Equals")   return DdsMatch::Equals;
+    if (text == "Contains") return DdsMatch::Contains;
+    if (text == "AtLeast")  return DdsMatch::AtLeast;
+    if (text == "AtMost")   return DdsMatch::AtMost;
+    throw std::runtime_error("unknown DDS match: " + text);
+}
+
 std::string link_state_to_string(LinkState value) {
     switch (value) {
         case LinkState::Unknown:      return "Unknown";
@@ -142,10 +163,21 @@ void to_json(nlohmann::json& j, const Rule& value) {
                 payload = {{"type", "adapter_count"},
                            {"comparison", comparison_to_string(p.comparison)},
                            {"count", p.count}};
-            } else {
+            } else if constexpr (std::is_same_v<T, AdapterStateRule>) {
                 payload = {{"type", "adapter_state"},
                            {"adapter_name", p.adapter_name},
                            {"expected", link_state_to_string(p.expected)}};
+            } else if constexpr (std::is_same_v<T, DdsTopicRule>) {
+                payload = {{"type", "dds_topic"},
+                           {"domain_id", p.domain_id},
+                           {"topic_name", p.topic_name}};
+            } else {
+                payload = {{"type", "dds_value"},
+                           {"domain_id", p.domain_id},
+                           {"topic_name", p.topic_name},
+                           {"path", p.path},
+                           {"match", dds_match_to_string(p.match)},
+                           {"expected_value", p.expected_value}};
             }
         },
         value.payload);
@@ -197,6 +229,19 @@ void from_json(const nlohmann::json& j, Rule& value) {
         AdapterStateRule rule;
         payload.at("adapter_name").get_to(rule.adapter_name);
         rule.expected = link_state_from_string(payload.at("expected").get<std::string>());
+        value.payload = rule;
+    } else if (type == "dds_topic") {
+        DdsTopicRule rule;
+        payload.at("domain_id").get_to(rule.domain_id);
+        payload.at("topic_name").get_to(rule.topic_name);
+        value.payload = rule;
+    } else if (type == "dds_value") {
+        DdsValueRule rule;
+        payload.at("domain_id").get_to(rule.domain_id);
+        payload.at("topic_name").get_to(rule.topic_name);
+        payload.at("path").get_to(rule.path);
+        rule.match = dds_match_from_string(payload.at("match").get<std::string>());
+        payload.at("expected_value").get_to(rule.expected_value);
         value.payload = rule;
     } else {
         throw std::runtime_error("unknown rule payload type: " + type);

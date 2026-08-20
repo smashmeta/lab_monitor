@@ -37,6 +37,7 @@ std::string_view prefix_of(RuleKind kind) {
         case RuleKind::Service:  return "service";
         case RuleKind::Registry: return "registry";
         case RuleKind::Network:  return "network";
+        case RuleKind::Dds:      return "dds";
     }
     return "rule";
 }
@@ -56,6 +57,15 @@ std::string target_of(const Rule& rule) {
         // No target of its own -- the rule is about the fleet-visible count,
         // so "network-adapters" plus the usual -2, -3 is the best name for it.
         return "adapters";
+    }
+    if (const auto* topic = std::get_if<DdsTopicRule>(&rule.payload)) {
+        return topic->topic_name;
+    }
+    if (const auto* value = std::get_if<DdsValueRule>(&rule.payload)) {
+        // Topic and path together, so two rules against the same basket read as
+        // dds-basket-items-length and dds-basket-status rather than as
+        // dds-basket and dds-basket-2.
+        return value->path.empty() ? value->topic_name : value->topic_name + "-" + value->path;
     }
 
     const auto& registry = std::get<RegistryRule>(rule.payload);

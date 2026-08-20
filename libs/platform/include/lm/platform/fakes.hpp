@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
@@ -64,6 +65,24 @@ public:
         reads.push_back(key);
         const auto found = values.find(key);
         return found == values.end() ? core::RegistryValue{} : found->second;
+    }
+};
+
+class FakeDdsProbe : public IDdsProbe {
+public:
+    /// Keyed by core::dds_key(). An unlisted topic reads back as not on the
+    /// bus, which is a legitimate answer rather than a failure.
+    std::map<std::string, core::DdsTopicSample> topics;
+    /// Every (domain, topic) this probe was asked for, in order. The point of
+    /// recording it is that a template with several rules against one basket
+    /// must still open one reader, not one per rule.
+    std::vector<std::string> looks;
+
+    core::DdsTopicSample look(std::uint32_t domain_id, const std::string& topic_name) override {
+        const std::string key = core::dds_key(domain_id, topic_name);
+        looks.push_back(key);
+        const auto found = topics.find(key);
+        return found == topics.end() ? core::DdsTopicSample{} : found->second;
     }
 };
 

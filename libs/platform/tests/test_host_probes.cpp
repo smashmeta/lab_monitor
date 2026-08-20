@@ -44,6 +44,7 @@ struct Harness {
     FakeServiceProbe* services = nullptr;
     FakeRegistryProbe* registry = nullptr;
     FakeNetworkProbe* network = nullptr;
+    FakeDdsProbe* dds = nullptr;
     std::unique_ptr<HostProbes> probes;
 
     explicit Harness(Capabilities caps = Capabilities{}
@@ -51,18 +52,21 @@ struct Harness {
                                              .add(Capability::Processes)
                                              .add(Capability::Services)
                                              .add(Capability::Registry)
-                                             .add(Capability::Network)) {
+                                             .add(Capability::Network)
+                                             .add(Capability::Dds)) {
         auto resource_probe = std::make_unique<FakeResourceProbe>();
         auto process_probe = std::make_unique<FakeProcessProbe>();
         auto service_probe = std::make_unique<FakeServiceProbe>();
         auto registry_probe = std::make_unique<FakeRegistryProbe>();
         auto network_probe = std::make_unique<FakeNetworkProbe>();
+        auto dds_probe = std::make_unique<FakeDdsProbe>();
 
         resources = resource_probe.get();
         processes = process_probe.get();
         services = service_probe.get();
         registry = registry_probe.get();
         network = network_probe.get();
+        dds = dds_probe.get();
 
         ProbeSet set;
         set.resources = std::move(resource_probe);
@@ -70,6 +74,7 @@ struct Harness {
         set.services = std::move(service_probe);
         set.registry = std::move(registry_probe);
         set.network = std::move(network_probe);
+        set.dds = std::move(dds_probe);
 
         probes = std::make_unique<HostProbes>("PC-001", std::move(set), caps);
     }
@@ -218,4 +223,82 @@ TEST(HostProbes, SampleResourcesDoesNotTouchOtherProbes) {
 
 TEST(LocalHostName, IsNotEmpty) {
     EXPECT_FALSE(local_host_name().empty());
+}
+
+namespace {
+
+Rule dds_topic_rule(RuleId id, std::uint32_t domain, std::string topic) {
+    Rule rule;
+    rule.id = std::move(id);
+    rule.payload = DdsTopicRule{domain, std::move(topic)};
+    return rule;
+}
+
+Rule dds_value_rule(RuleId id, std::uint32_t domain, std::string topic, std::string path) {
+    Rule rule;
+    rule.id = std::move(id);
+    rule.payload = DdsValueRule{domain, std::move(topic), std::move(path), DdsMatch::Equals, "2"};
+    return rule;
+}
+
+}  // namespace
+
+TEST(HostProbes, LooksAtTheBusOnlyWhenADdsRuleExists) {
+    Harness harness;
+    (void)harness.probes->collect(bundle_for_pc001({process_rule("r1", "chrome.exe")}));
+    EXPECT_TRUE(harness.dds->looks.empty()) << "no DDS rule, so no participant should be created";
+}
+
+TEST(HostProbes, LooksAtEachTopicOnlyOnceWhenSeveralRulesShareIt) {
+    // Each look costs a participant and a discovery wait, so three rules about
+    // one basket must not mean three of them.
+    Harness harness;
+    (void)harness.probes->collect(bundle_for_pc001({
+        dds_topic_rule("r1", 42, "Basket"),
+        dds_value_rule("r2", 42, "Basket", "items_.length"),
+        dds_value_rule("r3", 42, "Basket", "status"),
+    }));
+    EXPECT_EQ(harness.dds->looks, std::vector<std::string>{dds_key(42, "Basket")});
+}
+
+TEST(HostProbes, TellsTheSameTopicOnTwoDomainsApart) {
+    Harness harness;
+    (void)harness.probes->collect(bundle_for_pc001({
+        dds_topic_rule("r1", 42, "Basket"),
+        dds_topic_rule("r2", 7, "Basket"),
+    }));
+    EXPECT_EQ(harness.dds->looks.size(), 2u);
+}
+
+TEST(HostProbes, RecordsWhatTheLookFound) {
+    Harness harness;
+    DdsTopicSample found;
+    found.topic_found = true;
+    found.has_sample = true;
+    found.json = R"({"items_":[1,2]})";
+    harness.dds->topics.emplace(dds_key(42, "Basket"), found);
+
+    const HostFacts facts = harness.probes->collect(bundle_for_pc001({dds_topic_rule("r1", 42, "Basket")}));
+    ASSERT_TRUE(facts.dds.contains(dds_key(42, "Basket")));
+    EXPECT_EQ(facts.dds.at(dds_key(42, "Basket")).json, found.json);
+}
+
+TEST(HostProbes, SkipsTheBusEntirelyWithoutTheCapability) {
+    Harness harness(Capabilities{}.add(Capability::Resources));
+    const HostFacts facts =
+        harness.probes->collect(bundle_for_pc001({dds_topic_rule("r1", 42, "Basket")}));
+    EXPECT_TRUE(harness.dds->looks.empty());
+    // Absent rather than empty: evaluate() reads "no entry" as "never probed",
+    // which is an Error, and must not be confused with "the topic is not there".
+    EXPECT_FALSE(facts.dds.contains(dds_key(42, "Basket")));
+}
+
+TEST(HostProbes, DropsTheDdsCapabilityWhenNoProbeIsSupplied) {
+    // What --offline relies on: no probe means the client never claims it can
+    // inspect a bus, and every DDS rule reports NotApplicable instead.
+    ProbeSet set;
+    set.resources = std::make_unique<FakeResourceProbe>();
+    HostProbes probes("PC-001", std::move(set),
+                      Capabilities{}.add(Capability::Resources).add(Capability::Dds));
+    EXPECT_FALSE(probes.capabilities().has(Capability::Dds));
 }

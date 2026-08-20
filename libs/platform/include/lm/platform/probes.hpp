@@ -40,6 +40,27 @@ public:
     virtual std::vector<core::NetworkAdapter> enumerate() = 0;
 };
 
+/// Reads one topic off a DDS domain the machine takes part in — a bus the
+/// monitored application uses, not the one lab_monitor reports on.
+///
+/// Declared here, with no DDS type anywhere in its signature, so lm_platform
+/// keeps depending on lm_core alone. The implementation lives in lm_transport,
+/// which already links Fast DDS, and is injected in the client's main() the
+/// same way every other probe is.
+class IDdsProbe {
+public:
+    virtual ~IDdsProbe() = default;
+
+    /// Blocking, with the implementation's own timeout. Called from the
+    /// client's worker thread, never the GUI thread.
+    ///
+    /// Never throws and never reports "no data" as an absent topic: the three
+    /// outcomes it can report — not on the bus, on the bus but silent, could
+    /// not be read — are what let a rule tell a real finding from a check that
+    /// could not be answered.
+    virtual core::DdsTopicSample look(std::uint32_t domain_id, const std::string& topic_name) = 0;
+};
+
 /// Null members mean the capability is unavailable on this platform.
 struct ProbeSet {
     std::unique_ptr<IResourceProbe> resources;
@@ -47,6 +68,7 @@ struct ProbeSet {
     std::unique_ptr<IServiceProbe> services;
     std::unique_ptr<IRegistryProbe> registry;
     std::unique_ptr<INetworkProbe> network;
+    std::unique_ptr<IDdsProbe> dds;
 };
 
 /// Assembles HostFacts snapshots. Probes lazily: only the categories the host's

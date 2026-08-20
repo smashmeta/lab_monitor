@@ -9,6 +9,7 @@ std::string to_string(Capability capability) {
         case Capability::Services:  return "Services";
         case Capability::Registry:  return "Registry";
         case Capability::Network:   return "Network";
+        case Capability::Dds:       return "DDS";
     }
     return "Unknown";
 }
@@ -49,6 +50,16 @@ std::string to_string(Comparison comparison) {
     return "at least";
 }
 
+std::string to_string(DdsMatch match) {
+    switch (match) {
+        case DdsMatch::Equals:   return "equal to";
+        case DdsMatch::Contains: return "containing";
+        case DdsMatch::AtLeast:  return "at least";
+        case DdsMatch::AtMost:   return "at most";
+    }
+    return "equal to";
+}
+
 bool satisfies(int observed, Comparison comparison, int expected) {
     switch (comparison) {
         case Comparison::AtLeast: return observed >= expected;
@@ -73,6 +84,7 @@ Capability required_capability(RuleKind kind) {
         case RuleKind::Service:  return Capability::Services;
         case RuleKind::Registry: return Capability::Registry;
         case RuleKind::Network:  return Capability::Network;
+        case RuleKind::Dds:      return Capability::Dds;
     }
     return Capability::Resources;
 }

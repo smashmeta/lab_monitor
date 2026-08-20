@@ -55,8 +55,44 @@ struct AdapterStateRule {
     friend bool operator==(const AdapterStateRule&, const AdapterStateRule&) = default;
 };
 
-using RulePayload =
-    std::variant<ProcessRule, ServiceRule, RegistryRule, AdapterCountRule, AdapterStateRule>;
+/// A topic must (or must not) be on a DDS domain at all.
+///
+/// Answerable from discovery alone — no knowledge of the type, and no sample
+/// needed. That is what makes it a separate payload from the one below rather
+/// than a mode of it: the two ask different questions of different machinery,
+/// and one of them still works against a publisher that describes nothing.
+struct DdsTopicRule {
+    /// The domain to look on. Deliberately unrelated to the monitoring domain:
+    /// the point is inspecting some *other* bus the machine takes part in.
+    std::uint32_t domain_id = 0;
+    std::string topic_name;
+    friend bool operator==(const DdsTopicRule&, const DdsTopicRule&) = default;
+};
+
+/// One value inside the latest sample on a topic, addressed by path.
+///
+/// The path is dotted, with `[n]` for sequence elements and a trailing
+/// `.length` for "how many": `items_.length`, `items_[0].price`, `status`.
+/// `length` is a projection rather than a flag on the rule — the path stays the
+/// single statement of what is being read, the same reason `Rule` derives its
+/// kind from its payload instead of storing one.
+///
+/// `Presence` does not apply here; `match` already carries the direction, as
+/// `Comparison` does for AdapterCountRule.
+struct DdsValueRule {
+    std::uint32_t domain_id = 0;
+    std::string topic_name;
+    std::string path;
+    DdsMatch match = DdsMatch::Equals;
+    /// Held as text and interpreted against the value actually found, so one
+    /// field serves `items_.length` and `status` alike. A numeric match against
+    /// a non-numeric value is an Error that says so, never a quiet Fail.
+    std::string expected_value;
+    friend bool operator==(const DdsValueRule&, const DdsValueRule&) = default;
+};
+
+using RulePayload = std::variant<ProcessRule, ServiceRule, RegistryRule, AdapterCountRule,
+                                  AdapterStateRule, DdsTopicRule, DdsValueRule>;
 
 struct Rule {
     RuleId id;
@@ -78,5 +114,11 @@ struct Rule {
 /// Canonical lookup key for HostFacts::registry, of the form
 /// "HKLM\<key_path>\\<value_name>".
 [[nodiscard]] std::string registry_key(const RegistryRule& rule);
+
+/// Canonical lookup key for HostFacts::dds, of the form "42/Basket". Two rules
+/// reading the same topic on the same domain share one probe result, which is
+/// what keeps a template with five checks against one basket from opening five
+/// readers.
+[[nodiscard]] std::string dds_key(std::uint32_t domain_id, const std::string& topic_name);
 
 }  // namespace lm::core

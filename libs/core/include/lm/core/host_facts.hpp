@@ -82,6 +82,29 @@ struct RegistryValue {
     friend bool operator==(const RegistryValue&, const RegistryValue&) = default;
 };
 
+/// What one look at a DDS topic found.
+///
+/// Three outcomes, deliberately separated rather than collapsed into "did we
+/// get data": the topic may not be on the bus at all, it may be there with
+/// nobody having published since we started listening, or the read may have
+/// failed outright. Only the first is a rule's business; the other two mean the
+/// check could not be answered.
+struct DdsTopicSample {
+    /// A writer for this topic was discovered on the domain. Answerable without
+    /// any knowledge of the type.
+    bool topic_found = false;
+    /// The most recent sample, projected to a JSON object. Empty when the topic
+    /// was found but nothing has arrived, which is not the same as an empty
+    /// sample — hence `has_sample`.
+    std::string json;
+    bool has_sample = false;
+    /// Set when the look itself failed: no type description was advertised, the
+    /// participant could not be created, the sample could not be projected.
+    /// Distinct from "the topic is not there", which is a legitimate answer.
+    std::string error;
+    friend bool operator==(const DdsTopicSample&, const DdsTopicSample&) = default;
+};
+
 struct HostFacts {
     HostId host_id;
     ResourceSample resources;
@@ -89,6 +112,8 @@ struct HostFacts {
     std::vector<ServiceInfo> services;
     /// Keyed by registry_key(). Absent entries mean the rule was never probed.
     std::map<std::string, RegistryValue> registry;
+    /// Keyed by dds_key(). Absent entries mean the rule was never probed.
+    std::map<std::string, DdsTopicSample> dds;
     friend bool operator==(const HostFacts&, const HostFacts&) = default;
 };
 

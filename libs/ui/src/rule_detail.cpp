@@ -95,11 +95,33 @@ RuleDetail describe(const lm::core::Rule& rule) {
                 // "Must be present" beside it would only invite the reader to
                 // wonder which one wins.
                 detail.expectation = detail.constraint;
-            } else {
+            } else if constexpr (std::is_same_v<T, lm::core::AdapterStateRule>) {
                 detail.kind = QStringLiteral("Network");
                 detail.target = to_qstring(payload.adapter_name);
                 detail.constraint =
                     QStringLiteral("link %1").arg(to_qstring(lm::core::to_string(payload.expected)));
+            } else if constexpr (std::is_same_v<T, lm::core::DdsTopicRule>) {
+                detail.kind = QStringLiteral("DDS");
+                // Domain and topic together: the same topic name on two domains
+                // is two different things, and the domain is the half a reader
+                // will not guess.
+                detail.target = QStringLiteral("%1 on domain %2")
+                                    .arg(to_qstring(payload.topic_name))
+                                    .arg(payload.domain_id);
+                detail.constraint = QStringLiteral("the topic is published");
+            } else {
+                detail.kind = QStringLiteral("DDS");
+                detail.target = QStringLiteral("%1.%2 on domain %3")
+                                    .arg(to_qstring(payload.topic_name))
+                                    .arg(to_qstring(payload.path))
+                                    .arg(payload.domain_id);
+                detail.constraint = QStringLiteral("%1 %2")
+                                        .arg(to_qstring(lm::core::to_string(payload.match)))
+                                        .arg(to_qstring(payload.expected_value));
+                // As with the adapter count, the match carries the direction,
+                // so a separate "Must be present" would only be a second
+                // answer to a question already settled.
+                detail.expectation = detail.constraint;
             }
         },
         rule.payload);

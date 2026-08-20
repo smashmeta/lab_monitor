@@ -11,10 +11,18 @@ using RuleId = std::string;
 using Clock = std::chrono::system_clock;
 using TimePoint = Clock::time_point;
 
-enum class RuleKind { Process, Service, Registry, Network };
+enum class RuleKind { Process, Service, Registry, Network, Dds };
 
 /// How an expected count is compared against the observed one.
 enum class Comparison { AtLeast, Exactly, AtMost };
+
+/// How a value read out of a DDS sample is compared against its expectation.
+///
+/// One enum rather than a numeric set and a textual set, because the *value* is
+/// what decides which apply: `AtLeast` against a string is not a different kind
+/// of rule, it is a rule that cannot be answered — and saying so is an Error
+/// with a real explanation rather than a silent Fail.
+enum class DdsMatch { Equals, Contains, AtLeast, AtMost };
 enum class Presence { MustBePresent, MustBeAbsent };
 enum class CheckStatus { Pass, Fail, NotApplicable, Error };
 enum class ServiceState { Running, Stopped, Unknown };
@@ -52,6 +60,10 @@ enum class Capability : std::uint32_t {
     /// Network adapter inventory. A client without it reports no adapters,
     /// which the server must not read as "this machine has none".
     Network   = 1u << 4,
+    /// Reading topics off a DDS domain other than the monitoring one. Absent
+    /// unless the client was built with a DDS probe and given one, which is
+    /// what keeps a --offline client from claiming it can inspect a bus.
+    Dds       = 1u << 5,
 };
 
 /// A set of capabilities a client advertises. Rules whose required capability
@@ -87,6 +99,9 @@ private:
 /// Reads as part of a sentence: "at least 2 connected".
 [[nodiscard]] std::string to_string(Comparison comparison);
 [[nodiscard]] bool satisfies(int observed, Comparison comparison, int expected);
+
+/// Reads as part of a sentence: "at least 2", "equal to Ready".
+[[nodiscard]] std::string to_string(DdsMatch match);
 
 /// The capabilities of the platform this binary was compiled for.
 [[nodiscard]] Capabilities platform_capabilities();

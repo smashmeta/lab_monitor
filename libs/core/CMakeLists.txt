@@ -6,6 +6,7 @@ add_library(lm_core SHARED
   src/rule.cpp
   src/template_bundle.cpp
   src/json.cpp
+  src/json_path.cpp
   src/compliance.cpp
   src/fleet.cpp
   src/client_registry.cpp)
@@ -21,7 +22,9 @@ lm_add_test(lm_core_tests
     tests/test_template_bundle.cpp
     tests/test_rule_id.cpp
     tests/test_json.cpp
+    tests/test_json_path.cpp
     tests/test_evaluate.cpp
+    tests/test_evaluate_dds.cpp
     tests/test_fleet.cpp
     tests/test_client_registry.cpp
   LINK lm_core)

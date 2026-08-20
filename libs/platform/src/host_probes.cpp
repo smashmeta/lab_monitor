@@ -1,5 +1,7 @@
 #include "lm/platform/probes.hpp"
 
+#include <cstdint>
+#include <map>
 #include <set>
 #include <string>
 #include <utility>
@@ -25,6 +27,9 @@ core::Capabilities intersect(core::Capabilities declared, const ProbeSet& probes
     }
     if (probes.network && declared.has(core::Capability::Network)) {
         result.add(core::Capability::Network);
+    }
+    if (probes.dds && declared.has(core::Capability::Dds)) {
+        result.add(core::Capability::Dds);
     }
     return result;
 }
@@ -58,6 +63,16 @@ core::HostFacts HostProbes::collect(const core::TemplateBundle& bundle) {
     bool needs_services = false;
     std::set<std::string> registry_keys;
     std::vector<const core::RegistryRule*> registry_rules;
+    // Deduplicated: several rules commonly read one topic -- "the basket
+    // exists", "it holds 2 items", "its status is Ready" -- and each look
+    // costs a DDS participant and a discovery wait, so they get one between
+    // them. std::map rather than a vector for the same reason registry keys
+    // use a set.
+    std::map<std::string, std::pair<std::uint32_t, std::string>> dds_topics;
+
+    const auto want_topic = [&](std::uint32_t domain_id, const std::string& topic_name) {
+        dds_topics.try_emplace(core::dds_key(domain_id, topic_name), domain_id, topic_name);
+    };
 
     for (const core::Rule* rule : rules) {
         switch (core::kind_of(*rule)) {
@@ -74,6 +89,21 @@ core::HostFacts HostProbes::collect(const core::TemplateBundle& bundle) {
                 }
                 break;
             }
+            case core::RuleKind::Dds:
+                if (const auto* topic = std::get_if<core::DdsTopicRule>(&rule->payload)) {
+                    want_topic(topic->domain_id, topic->topic_name);
+                } else {
+                    const auto& value = std::get<core::DdsValueRule>(rule->payload);
+                    want_topic(value.domain_id, value.topic_name);
+                }
+                break;
+            case core::RuleKind::Network:
+                // Nothing to gather. Adapters ride the resource sample, which
+                // has already been taken above, so unlike every other kind
+                // there is nothing to probe lazily against. Listed rather than
+                // left to a default so that adding a kind is a compile error
+                // here -- which is exactly how this case came to be written.
+                break;
         }
     }
 
@@ -86,6 +116,12 @@ core::HostFacts HostProbes::collect(const core::TemplateBundle& bundle) {
     if (caps_.has(core::Capability::Registry)) {
         for (const core::RegistryRule* rule : registry_rules) {
             facts.registry.emplace(core::registry_key(*rule), probes_.registry->read(*rule));
+        }
+    }
+    if (caps_.has(core::Capability::Dds)) {
+        for (const auto& [key, target] : dds_topics) {
+            const auto& [domain_id, topic_name] = target;
+            facts.dds.emplace(key, probes_.dds->look(domain_id, topic_name));
         }
     }
 
