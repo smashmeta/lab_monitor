@@ -30,6 +30,8 @@
     --accent-soft: #e7effb;
     --good:        #1e7a44;
     --warn:        #8a6100;
+    --bad:         #b3261e;
+    --odd:         #6b3fa0;
 
     /* The diagram panels keep the app's dark ground in both page themes:
        they are pictures of a dark desktop tool, not charts. */
@@ -55,6 +57,8 @@
       --accent-soft: #23303f;
       --good:        #81c995;
       --warn:        #fdd663;
+      --bad:         #f28b82;
+      --odd:         #c58af9;
     }
   }
 
@@ -70,6 +74,8 @@
     --accent-soft: #23303f;
     --good:        #81c995;
     --warn:        #fdd663;
+    --bad:         #f28b82;
+    --odd:         #c58af9;
   }
 
   * { box-sizing: border-box; }
@@ -146,6 +152,24 @@
     padding-top: 1.4rem;
     border-top: 1px solid var(--line-soft);
     text-wrap: balance;
+  }
+
+  h3 {
+    font-family: var(--mono);
+    font-size: 1.08rem;
+    font-weight: 600;
+    margin: 2.6rem 0 0;
+    color: var(--accent);
+    text-wrap: balance;
+  }
+
+  .lead {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    margin: 1.8rem 0 -0.4rem;
   }
 
   p { margin: 0; text-wrap: pretty; }
@@ -331,6 +355,89 @@
   @media (max-width: 700px) {
     table.fields td.t { white-space: normal; }
   }
+
+  /* ---- argument cards ----
+     Every card answers the same four questions in the same order, because
+     those are the four things that are actually unclear about an argument:
+     where it came from, how long it lives, what it means, what reads it. */
+  .args {
+    max-width: 900px;
+    margin-inline: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .arg {
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 5px 5px 0;
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .arg > header {
+    padding: 0.7rem 1rem;
+    background: var(--raised);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .arg h4 {
+    font-family: var(--mono);
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin: 0;
+  }
+  .arg h4 .ty { color: var(--ink-muted); font-weight: 400; }
+  .arg dl {
+    margin: 0;
+    display: grid;
+    grid-template-columns: 6.5rem 1fr;
+    gap: 0.1rem 1.1rem;
+    padding: 0.85rem 1rem;
+    font-size: 0.93rem;
+  }
+  .arg dt {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    padding-top: 0.35em;
+  }
+  .arg dd { margin: 0 0 0.55rem; }
+  .arg dd:last-of-type { margin-bottom: 0; }
+
+  @media (max-width: 620px) {
+    .arg dl { grid-template-columns: 1fr; gap: 0.1rem; }
+    .arg dt { padding-top: 0.5rem; }
+  }
+
+  /* ---- annotated struct listings ---- */
+  pre.struct {
+    font-family: var(--mono);
+    font-size: 0.84rem;
+    line-height: 1.6;
+    background: var(--panel);
+    color: #e8eaed;
+    border: 1px solid var(--panel-line);
+    border-radius: 5px;
+    padding: 1.1rem 1.25rem;
+    margin: 0;
+    overflow-x: auto;
+    max-width: 900px;
+    margin-inline: auto;
+  }
+  pre.struct .c { color: #9aa0a6; }
+  pre.struct .k { color: #c58af9; }
+  pre.struct .n { color: #8ab4f8; }
+  pre.struct .s { color: #81c995; }
+
+  /* ---- classification matrix ---- */
+  table.matrix { min-width: 0; max-width: 900px; margin-inline: auto; }
+  table.matrix td, table.matrix th { padding: 0.6rem 1rem 0.6rem 0; }
+  table.matrix td.state { font-family: var(--mono); white-space: nowrap; font-weight: 600; }
+  .st-missing    { color: var(--bad); }
+  .st-offline    { color: var(--ink-muted); }
+  .st-unexpected { color: var(--odd); }
+  .st-online     { color: var(--good); }
 
   .rule {
     border-left: 3px solid var(--accent);
@@ -1083,6 +1190,575 @@ flowchart LR
 </div>
 
 <div class="wrap">
+  <h3>evaluate() &mdash; what this machine is, against what it should be</h3>
+</div>
+
+<pre class="struct" style="margin-top: 1rem;"><span class="k">ComplianceReport</span> <span class="n">evaluate</span>(<span class="k">const</span> TemplateBundle&amp; bundle,
+                          <span class="k">const</span> HostFacts&amp; facts,
+                          Capabilities caps);</pre>
+
+<div class="wrap">
+  <p style="margin-top: 1.1rem;">
+    It runs on the client, on the worker thread, every 30&nbsp;seconds. Three
+    arguments, and each comes from a different place with a different lifetime.
+  </p>
+</div>
+
+<div class="wide args" style="margin-top: 1.4rem;">
+
+  <section class="arg">
+    <header><h4>bundle <span class="ty">&mdash; const TemplateBundle&amp;</span></h4></header>
+    <dl>
+      <dt>Origin</dt>
+      <dd>
+        The server. An operator edits the draft and presses Publish; the bundle
+        travels as JSON on the TemplateBundle topic;
+        <code>MonitorWorker::on_bundle()</code> parses it and stores it in its
+        <code>bundle_</code> member.
+      </dd>
+      <dt>Lifetime</dt>
+      <dd>
+        Owned by the worker, and it outlives any single evaluation &mdash; it is
+        replaced wholesale when a new revision arrives, never mutated in place.
+        The reference here is borrowed for the duration of the call and nothing
+        is retained. That matters more than it looks:
+        <code>rules_for()</code> hands back <code>const Rule*</code> pointing
+        <em>into</em> the bundle, so those pointers are valid exactly as long as
+        the bundle is. Everything that touches them does so inside this call.
+      </dd>
+      <dt>Meaning</dt>
+      <dd>
+        The whole rule catalogue &mdash; the baseline, every template, and which
+        templates each host is assigned. Not this host's rules: the rules of the
+        entire fleet, from which this host's are selected.
+      </dd>
+      <dt>Read by</dt>
+      <dd>
+        <code>rules_for(bundle, facts.host_id)</code> for the selection, and
+        <code>bundle.revision</code>, which is copied onto the report as
+        <code>applied_revision</code> so the server can tell which rules these
+        answers were produced against.
+      </dd>
+    </dl>
+  </section>
+
+  <section class="arg">
+    <header><h4>facts <span class="ty">&mdash; const HostFacts&amp;</span></h4></header>
+    <dl>
+      <dt>Origin</dt>
+      <dd>
+        <code>HostProbes::collect(bundle)</code>, called immediately before, on
+        the same thread. That call reads the operating system: process list,
+        service list, registry values, resources and adapters.
+      </dd>
+      <dt>Lifetime</dt>
+      <dd>
+        A temporary. It is built for this evaluation and destroyed after it &mdash;
+        a photograph of the machine, not a window onto it. Nothing in the report
+        points back into it; every string is copied out.
+      </dd>
+      <dt>Meaning</dt>
+      <dd>
+        What the machine actually is, right now. Note what <em>collect()</em>
+        does first: it walks the same <code>rules_for()</code> list and probes
+        only the categories some rule references. So an empty
+        <code>facts.processes</code> can mean "no process rule applies here" as
+        easily as "nothing is running" &mdash; which is safe only because,
+        in that case, nothing reads it.
+      </dd>
+      <dt>Read by</dt>
+      <dd>
+        <code>facts.host_id</code> selects the rules. Then each rule kind reads
+        its own field: process rules scan <code>facts.processes</code>, service
+        rules <code>facts.services</code>, network rules
+        <code>facts.resources.adapters</code>. Registry rules look up
+        <code>facts.registry</code> by <code>registry_key()</code>, and here an
+        <em>absent</em> entry is meaningful: it means the value was never probed,
+        which reports <strong>Error</strong>, not Fail. "We did not look" and
+        "it is not there" are different answers.
+      </dd>
+    </dl>
+  </section>
+
+  <section class="arg">
+    <header><h4>caps <span class="ty">&mdash; Capabilities (by value)</span></h4></header>
+    <dl>
+      <dt>Origin</dt>
+      <dd>
+        <code>HostProbes::capabilities()</code>. Fixed at construction as the
+        platform's declared capabilities <em>intersected with the probes actually
+        supplied</em>, so a null probe can never advertise a capability nothing
+        can serve.
+      </dd>
+      <dt>Lifetime</dt>
+      <dd>
+        A <code>uint32_t</code> bitmask passed by value &mdash; no aliasing, no
+        lifetime question at all. Constant for the run of the client.
+      </dd>
+      <dt>Meaning</dt>
+      <dd>
+        What this agent is able to answer, which is not the same as what it
+        found. This is the same number that travels in every ClientAnnounce and
+        ends up on the server as <code>FleetEntry::caps</code> &mdash; one value
+        in three places, which is why losing it on the server was a real bug and
+        why the announce repeats.
+      </dd>
+      <dt>Read by</dt>
+      <dd>
+        The gate at the top of the loop:
+        <code>caps.has(required_capability(kind_of(rule)))</code>. A rule that
+        fails it never reaches its evaluator &mdash; it yields
+        <code>NotApplicable</code> with an <code>observed</code> naming the
+        missing capability, deliberately without claiming an OS limitation,
+        since evaluate() cannot tell "this platform cannot" from "that probe is
+        not written yet".
+      </dd>
+    </dl>
+  </section>
+
+</div>
+
+<div class="wide" style="margin-top: 1.6rem;">
+  <figure class="diagram">
+    <div class="body">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"background":"#202124","primaryColor":"#292a2d","primaryTextColor":"#e8eaed","primaryBorderColor":"#5f6368","lineColor":"#9aa0a6","fontSize":"13px","clusterBkg":"#1b1c1f","clusterBorder":"#3c4043","edgeLabelBackground":"#202124"}}}%%
+flowchart LR
+    OP["operator presses Publish"]
+    TOPIC["TemplateBundle topic"]
+
+    subgraph W ["client, worker thread"]
+        direction TB
+        BUNDLE["bundle_<br/>replaced on each new revision,<br/>outlives every evaluation"]
+        HP["HostProbes<br/>built once at startup"]
+        CAPS["caps<br/>declared AND probes supplied<br/>fixed for the run"]
+        FACTS["facts<br/>a fresh snapshot,<br/>discarded after the call"]
+        EVAL["evaluate()"]
+    end
+
+    REPORT["ComplianceReport<br/>published, then freed"]
+
+    OP --> TOPIC --> BUNDLE
+    BUNDLE -->|"collect(bundle) probes only<br/>what some rule references"| HP
+    HP --> FACTS
+    HP --> CAPS
+    BUNDLE --> EVAL
+    FACTS --> EVAL
+    CAPS --> EVAL
+    EVAL --> REPORT
+
+    classDef longlived fill:#292a2d,stroke:#8ab4f8,color:#e8eaed;
+    classDef shortlived fill:#31262f,stroke:#c58af9,color:#e8eaed;
+    classDef pure fill:#1f3328,stroke:#81c995,color:#e8eaed;
+    classDef ext fill:#202124,stroke:#3c4043,color:#9aa0a6;
+    class BUNDLE,HP,CAPS longlived;
+    class FACTS,REPORT shortlived;
+    class EVAL pure;
+    class OP,TOPIC ext;
+</pre>
+    </div>
+    <figcaption>Blue outlives the call; purple is born and dies inside one tick.</figcaption>
+  </figure>
+</div>
+
+<div class="wrap">
+  <p class="lead">How the three are used</p>
+  <p>
+    The body is a single loop over the selected rules, with one gate and one
+    dispatch. Everything interesting happens before the evaluator is reached.
+  </p>
+</div>
+
+<div class="wide" style="margin-top: 1.2rem;">
+  <figure class="diagram">
+    <div class="body">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"background":"#202124","primaryColor":"#292a2d","primaryTextColor":"#e8eaed","primaryBorderColor":"#5f6368","lineColor":"#9aa0a6","fontSize":"13px","clusterBkg":"#1b1c1f","clusterBorder":"#3c4043","edgeLabelBackground":"#202124"}}}%%
+flowchart TB
+    BASE["bundle.baseline.rules<br/>always applied"]
+    ASG["rules of each template named in<br/>bundle.assignments[facts.host_id]"]
+    DEDUP["keep the FIRST rule per id<br/>a duplicate id is silently dropped"]
+    LIST["vector of const Rule*<br/>pointing into the bundle"]
+
+    GATE{"caps.has(required_capability(kind_of(rule)))"}
+    NA["NotApplicable<br/>observed names the missing capability"]
+
+    DISPATCH{"which payload variant?"}
+    P["ProcessRule<br/>scans facts.processes"]
+    S["ServiceRule<br/>scans facts.services"]
+    R["RegistryRule<br/>looks up facts.registry"]
+    AC["AdapterCountRule<br/>counts is_up(adapter.link)"]
+    AS["AdapterStateRule<br/>matches one adapter by name"]
+
+    RESOLVE["resolve(rule, present, observed, expected)<br/>Presence decides whether present means Pass"]
+    OUT["CheckResult appended to report.results"]
+
+    BASE --> DEDUP
+    ASG --> DEDUP
+    DEDUP --> LIST
+    LIST --> GATE
+    GATE -->|"no"| NA --> OUT
+    GATE -->|"yes"| DISPATCH
+    DISPATCH --> P --> RESOLVE
+    DISPATCH --> S --> RESOLVE
+    DISPATCH --> R --> RESOLVE
+    DISPATCH --> AC --> RESOLVE
+    DISPATCH --> AS --> RESOLVE
+    RESOLVE --> OUT
+
+    classDef src fill:#292a2d,stroke:#5f6368,color:#e8eaed;
+    classDef gate fill:#3a3320,stroke:#fdd663,color:#e8eaed;
+    classDef ev fill:#23303f,stroke:#8ab4f8,color:#e8eaed;
+    classDef out fill:#1f3328,stroke:#81c995,color:#e8eaed;
+    class BASE,ASG,DEDUP,LIST src;
+    class GATE,DISPATCH gate;
+    class P,S,R,AC,AS,RESOLVE ev;
+    class OUT,NA out;
+</pre>
+    </div>
+    <figcaption>One rule in, one CheckResult out. Every rule produces exactly one, including the ones that could not be checked.</figcaption>
+  </figure>
+</div>
+
+<div class="wrap">
+  <p class="lead">What comes back</p>
+</div>
+
+<pre class="struct" style="margin-top: 1rem;"><span class="k">struct</span> <span class="n">ComplianceReport</span> {
+    HostId        host_id;           <span class="c">// copied from facts.host_id</span>
+    uint64_t      applied_revision;  <span class="c">// copied from bundle.revision --</span>
+                                     <span class="c">// how the server spots a stale client</span>
+    vector&lt;CheckResult&gt; results;     <span class="c">// one per selected rule, in rules_for() order:</span>
+                                     <span class="c">// baseline first, then each assigned template</span>
+};
+
+<span class="k">struct</span> <span class="n">CheckResult</span> {
+    RuleId       rule_id;            <span class="c">// the only join back to the rule</span>
+    CheckStatus  status;             <span class="c">// Pass | Fail | NotApplicable | Error</span>
+    string       observed;           <span class="c">// <span class="s">"2 of 4 connected"</span></span>
+    string       message;            <span class="c">// Fail: what was expected instead</span>
+                                     <span class="c">// Error: why it could not be checked</span>
+                                     <span class="c">// Pass: empty</span>
+};</pre>
+
+<div class="wrap">
+  <p style="margin-top: 1.1rem;">
+    The report is self-contained: no pointers, no references, nothing borrowed
+    from the bundle or the facts. That is what lets it be handed straight to the
+    codec and published, and what lets the server cache it for as long as it
+    likes.
+  </p>
+
+  <h3>reconcile() &mdash; who should be here, against who is</h3>
+</div>
+
+<pre class="struct" style="margin-top: 1rem;"><span class="k">FleetView</span> <span class="n">reconcile</span>(<span class="k">const</span> vector&lt;ExpectedHost&gt;&amp;     expected,
+                    <span class="k">const</span> vector&lt;DiscoveredClient&gt;&amp; discovered,
+                    TimePoint                       now,
+                    ReconcileOptions                options);</pre>
+
+<div class="wrap">
+  <p style="margin-top: 1.1rem;">
+    It runs on the server, on the GUI thread, once a second &mdash; and now also
+    on every announce and every report, so a machine that has just spoken does
+    not sit in the wrong state for up to a second.
+  </p>
+</div>
+
+<div class="wide args" style="margin-top: 1.4rem;">
+
+  <section class="arg">
+    <header><h4>expected <span class="ty">&mdash; const vector&lt;ExpectedHost&gt;&amp;</span></h4></header>
+    <dl>
+      <dt>Origin</dt>
+      <dd>
+        <code>ServerController::effective_expected_hosts()</code>: the operator's
+        list, loaded from <code>expected_hosts.json</code> at startup, unioned
+        with every host named in <code>published_.assignments</code>. Assigning a
+        template to a machine is already a statement that you expect it, so
+        making the operator type it into a second list only left the host sitting
+        in Unexpected. Explicit entries win, because they carry the address.
+      </dd>
+      <dt>Lifetime</dt>
+      <dd>
+        A vector built fresh on <em>every</em> call and thrown away after it. The
+        state that persists is the two things it is derived from, not this.
+      </dd>
+      <dt>Meaning</dt>
+      <dd>
+        The machines that ought to be there. Membership of this list is the only
+        thing separating Missing from Unexpected &mdash; the same silence means
+        opposite things depending on whether anyone asked for the machine.
+      </dd>
+      <dt>Read by</dt>
+      <dd>
+        The first loop, which produces one entry per expected host whether or not
+        it has ever been heard from; and the set of ids the second loop tests
+        against to find the strangers. <code>address</code> is copied through to
+        the entry and never used for anything else &mdash; it is a note to the
+        operator, not a route.
+      </dd>
+    </dl>
+  </section>
+
+  <section class="arg">
+    <header><h4>discovered <span class="ty">&mdash; const vector&lt;DiscoveredClient&gt;&amp;</span></h4></header>
+    <dl>
+      <dt>Origin</dt>
+      <dd>
+        <code>ClientRegistry::snapshot()</code>. Three different messages write
+        into that registry: an announce records
+        <code>caps</code>, a report records <code>applied_revision</code>, and a
+        resource sample records nothing but the fact that the machine spoke. All
+        three go through <code>touch()</code>, which advances
+        <code>last_seen</code> <strong>only forwards</strong>, so a delayed or
+        reordered message can never make a live client look stale.
+      </dd>
+      <dt>Lifetime</dt>
+      <dd>
+        The registry is long-lived and owned by the controller; the snapshot is a
+        copy taken per call. Entries leave it only through
+        <code>mark_lost()</code>, which the controller calls <em>only</em> for
+        hosts that are not expected &mdash; an expected machine keeps its last
+        timestamp so the lease check below can move it to Offline rather than
+        having it vanish.
+      </dd>
+      <dt>Meaning</dt>
+      <dd>
+        Who has actually been heard from, and when. Note what it is not: it is
+        not "who is connected". DDS liveliness has its own opinion, and it
+        arrives as a separate callback; this is the record of messages received.
+      </dd>
+      <dt>Read by</dt>
+      <dd>
+        First collapsed into a map keeping the most recent sighting per host
+        &mdash; the snapshot is already unique per host, but reconcile() does not
+        assume its caller is well-behaved. Then looked up once per expected host,
+        and iterated again to find the ones nobody expected.
+      </dd>
+    </dl>
+  </section>
+
+  <section class="arg">
+    <header><h4>now <span class="ty">&mdash; TimePoint (by value)</span></h4></header>
+    <dl>
+      <dt>Origin</dt>
+      <dd>
+        <code>Clock::now()</code>, called at the call site &mdash; deliberately
+        not inside. This one argument is what makes every liveness case testable:
+        a test hands over a fixed instant and gets a deterministic answer, where a
+        function that read the clock itself could only be tested by sleeping.
+      </dd>
+      <dt>Lifetime</dt>
+      <dd>A value. It exists for the call.</dd>
+      <dt>Meaning</dt>
+      <dd>The instant the fleet is being judged at.</dd>
+      <dt>Read by</dt>
+      <dd>
+        Only <code>within_lease()</code>:
+        <code>now - last_seen &lt;= liveliness_lease</code>. With one guard in
+        front of it &mdash; a <code>last_seen</code> in the <em>future</em> counts
+        as current rather than as an error, because that is clock skew on the
+        client, and punishing a machine for having a fast clock helps nobody.
+      </dd>
+    </dl>
+  </section>
+
+  <section class="arg">
+    <header><h4>options <span class="ty">&mdash; ReconcileOptions (by value)</span></h4></header>
+    <dl>
+      <dt>Origin</dt>
+      <dd>
+        A member of the controller. <code>current_revision</code> is refreshed
+        from <code>published_.revision</code> immediately before every call;
+        <code>liveliness_lease</code> is left at its default 10&nbsp;s.
+      </dd>
+      <dt>Lifetime</dt>
+      <dd>Two scalars, copied in.</dd>
+      <dt>Meaning</dt>
+      <dd>
+        The two thresholds the classification needs.
+        <code>liveliness_lease</code> matches the DDS Liveliness lease on the
+        announce topic, so the two mechanisms agree about when a machine has gone
+        quiet rather than racing each other.
+        <code>current_revision</code> is the newest bundle the server has
+        published.
+      </dd>
+      <dt>Read by</dt>
+      <dd>
+        The lease drives Online versus Offline. The revision drives one boolean:
+        <code>stale = applied_revision != current_revision</code>, which is the
+        fleet table's Revision column. Note it is inequality, not "less than" -
+        a client on a revision the server has never published is just as wrong as
+        one lagging behind.
+      </dd>
+    </dl>
+  </section>
+
+</div>
+
+<div class="wide" style="margin-top: 1.6rem;">
+  <figure class="diagram">
+    <div class="body">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"background":"#202124","primaryColor":"#292a2d","primaryTextColor":"#e8eaed","primaryBorderColor":"#5f6368","lineColor":"#9aa0a6","fontSize":"13px","clusterBkg":"#1b1c1f","clusterBorder":"#3c4043","edgeLabelBackground":"#202124"}}}%%
+flowchart LR
+    FILE["expected_hosts.json<br/>on disk"]
+    ASSIGN["published_.assignments<br/>in the bundle"]
+    EFF["effective_expected_hosts()<br/>union, explicit entries win<br/>rebuilt every call"]
+
+    ANN["ClientAnnounce<br/>writes caps"]
+    REP["ComplianceReport<br/>writes applied_revision"]
+    SAMP["ResourceSample<br/>writes only last_seen"]
+    REG["ClientRegistry<br/>long-lived, advances<br/>last_seen forwards only"]
+    SNAP["snapshot()<br/>a copy, per call"]
+
+    CLK["Clock::now()<br/>taken at the call site"]
+    OPT["ReconcileOptions<br/>lease 10 s + current_revision"]
+
+    RC["reconcile()"]
+    VIEW["FleetView"]
+
+    FILE --> EFF
+    ASSIGN --> EFF
+    ANN --> REG
+    REP --> REG
+    SAMP --> REG
+    REG --> SNAP
+    EFF --> RC
+    SNAP --> RC
+    CLK --> RC
+    OPT --> RC
+    RC --> VIEW
+
+    classDef persist fill:#292a2d,stroke:#8ab4f8,color:#e8eaed;
+    classDef percall fill:#31262f,stroke:#c58af9,color:#e8eaed;
+    classDef pure fill:#1f3328,stroke:#81c995,color:#e8eaed;
+    classDef ext fill:#202124,stroke:#3c4043,color:#9aa0a6;
+    class FILE,ASSIGN,REG persist;
+    class EFF,SNAP,CLK,OPT,VIEW percall;
+    class RC pure;
+    class ANN,REP,SAMP ext;
+</pre>
+    </div>
+    <figcaption>Blue persists between calls; purple is rebuilt on each one.</figcaption>
+  </figure>
+</div>
+
+<div class="wrap">
+  <p class="lead">How the four are used</p>
+  <p>
+    The classification is a two-by-two: expected or not, heard from recently or
+    not. There is no fourth row, because a machine nobody expects and nobody has
+    heard from does not exist as far as the server is concerned.
+  </p>
+</div>
+
+<div class="wide table-scroll" style="margin-top: 1.2rem;">
+  <table class="matrix">
+    <thead>
+      <tr>
+        <th scope="col">In expected?</th>
+        <th scope="col">In discovered?</th>
+        <th scope="col">Within lease?</th>
+        <th scope="col">State</th>
+        <th scope="col">What the entry carries</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>yes</td><td>no</td><td>&mdash;</td>
+        <td class="state st-missing">Missing</td>
+        <td>address only. No <code>last_seen</code>, no capabilities, <code>stale = false</code> &mdash; which is why the fleet table shows <code>&ndash;</code> in its adapter column rather than a zero.</td>
+      </tr>
+      <tr>
+        <td>yes</td><td>yes</td><td>yes</td>
+        <td class="state st-online">Online</td>
+        <td>address, <code>last_seen</code>, capabilities, staleness.</td>
+      </tr>
+      <tr>
+        <td>yes</td><td>yes</td><td>no</td>
+        <td class="state st-offline">Offline</td>
+        <td>the same fields, still populated &mdash; this is the last thing the machine said before it went quiet.</td>
+      </tr>
+      <tr>
+        <td>no</td><td>yes</td><td>&mdash;</td>
+        <td class="state st-unexpected">Unexpected</td>
+        <td>everything but the address, which nobody typed. Never lease-checked: a stranger that stops talking is removed from the registry outright instead.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="wrap">
+  <p style="margin-top: 1.3rem;">
+    One consequence of that last row is worth stating plainly. An expected host
+    is never erased from the registry, so once it has been heard from it can
+    never go back to Missing within a server run &mdash; it goes Offline and
+    stays there. Missing means "not since this server started", which is also why
+    every host is Missing for the first second after a restart.
+  </p>
+</div>
+
+<div class="wide" style="margin-top: 1.4rem;">
+  <figure class="diagram">
+    <div class="body">
+<pre class="mermaid">
+%%{init: {"theme":"base","themeVariables":{"background":"#202124","primaryColor":"#292a2d","primaryTextColor":"#e8eaed","primaryBorderColor":"#5f6368","lineColor":"#9aa0a6","fontSize":"13px","clusterBkg":"#1b1c1f","clusterBorder":"#3c4043","edgeLabelBackground":"#202124","labelBackgroundColor":"#202124"}}}%%
+stateDiagram-v2
+    [*] --> Missing: listed as expected,<br/>server has heard nothing
+    Missing --> Online: any announce, sample<br/>or report arrives
+    Online --> Offline: now - last_seen<br/>exceeds the lease
+    Offline --> Online: heard from again
+    [*] --> Unexpected: heard from,<br/>but nobody expected it
+    Unexpected --> [*]: liveliness lost,<br/>mark_lost() erases it
+    Unexpected --> Online: added to the expected list,<br/>or given a template
+</pre>
+    </div>
+    <figcaption>Only the stranger has an exit. An expected host that goes quiet stays on the list, Offline.</figcaption>
+  </figure>
+</div>
+
+<div class="wrap">
+  <p class="lead">What comes back</p>
+</div>
+
+<pre class="struct" style="margin-top: 1rem;"><span class="k">struct</span> <span class="n">FleetView</span> {
+    vector&lt;FleetEntry&gt; entries;  <span class="c">// sorted most-urgent-first:</span>
+                                 <span class="c">// Missing, Offline, Unexpected, Online, then by host id</span>
+    FleetCounts        counts;   <span class="c">// online / offline / missing / unexpected / stale</span>
+};                               <span class="c">// counted in the same pass, so the ribbon and the</span>
+                                 <span class="c">// table can never disagree</span>
+
+<span class="k">struct</span> <span class="n">FleetEntry</span> {
+    HostId              host_id;
+    string              address;    <span class="c">// only ever from the expected list</span>
+    HostState           state;      <span class="c">// Missing | Offline | Unexpected | Online</span>
+    optional&lt;TimePoint&gt; last_seen;  <span class="c">// unset exactly when state is Missing</span>
+    bool                stale;      <span class="c">// applied_revision != options.current_revision</span>
+    Capabilities        caps;       <span class="c">// empty for Missing -- absent, not zero</span>
+};</pre>
+
+<div class="wrap">
+  <p style="margin-top: 1.1rem;">
+    The sort order is the argument for this being one function rather than a
+    query interface. Urgency is decided once, here, and every view downstream
+    inherits it &mdash; the fleet table, the status ribbon, and the Compliance
+    tab, which ranks silent machines above failing ones for exactly this reason.
+  </p>
+
+  <div class="rule" style="margin-top: 1.4rem;">
+    <p>
+      <strong>Neither function ever asks a question it was not handed the answer
+      to.</strong> No clock, no file, no socket, no static. Everything above
+      &mdash; which rules apply, what the machine looks like, what it can report,
+      who is expected, who has spoken, what time it is, how long the lease runs
+      &mdash; arrives as an argument. That is the whole reason 135 tests can
+      cover this without a mocking framework, and why a liveness bug can be
+      reproduced by passing a different <code>now</code> rather than by waiting.
+    </p>
+  </div>
+
   <h2>Boundaries worth knowing</h2>
 
   <ul>
