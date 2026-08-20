@@ -397,7 +397,28 @@ public:
             return sample;
         }
 
-        if (!samples_.wait(config.sample_wait)) {
+        // Polled rather than driven by on_data_available. This is a one-shot
+        // blocking read that already owns a deadline, so a listener adds a
+        // second mechanism and a second way to be wrong -- and it was wrong:
+        // with the callback as the trigger, a reader that had demonstrably
+        // matched its writer sat through the whole wait without ever being
+        // told data was there. Asking the reader directly is both simpler and
+        // the thing that actually works.
+        traits<DynamicData>::ref_type data =
+            DynamicDataFactory::get_instance()->create_data(dynamic_type);
+        SampleInfo info;
+        const std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::now() + config.sample_wait;
+        ReturnCode_t taken = RETCODE_NO_DATA;
+        while (std::chrono::steady_clock::now() < deadline) {
+            taken = reader->take_next_sample(&data, &info);
+            if (taken == RETCODE_OK) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{25});
+        }
+
+        if (taken != RETCODE_OK) {
             if (!samples_.matched()) {
                 // Discovery saw the writer but the reader never matched it, so
                 // this is not a quiet topic -- it is a reader that cannot be
@@ -408,18 +429,6 @@ public:
             // Otherwise: the topic is there, matched, and nothing has been
             // published. Nothing is wrong with the machine and nothing can be
             // said about the data.
-            return sample;
-        }
-
-        traits<DynamicData>::ref_type data =
-            DynamicDataFactory::get_instance()->create_data(dynamic_type);
-        SampleInfo info;
-        const ReturnCode_t taken = reader->take_next_sample(&data, &info);
-        if (taken != RETCODE_OK) {
-            // Distinct from "nothing was published": the reader was told data
-            // was available and then could not take it, which is a fault in the
-            // read rather than a fact about the bus.
-            sample.error = "a sample on \"" + topic_name + "\" was announced but could not be taken";
             return sample;
         }
         if (!info.valid_data) {

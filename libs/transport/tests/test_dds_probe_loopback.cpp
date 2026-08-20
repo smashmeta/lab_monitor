@@ -152,6 +152,10 @@ TEST(DdsProbeLoopback, ReadsATopicItHasNeverSeenTheIdlFor) {
     BasketPublisher publisher;
     ASSERT_TRUE(publisher.start("Ready", 2)) << "fixture could not publish";
 
+    // Deliberately published once, before the probe exists, and never again:
+    // TRANSIENT_LOCAL is what has to carry it, and that is the realistic case
+    // for a basket that changes when someone puts something in it rather than
+    // on a timer.
     const auto probe = lm::transport::make_dds_probe();
     const lm::core::DdsTopicSample sample = probe->look(kProbeDomain, "Basket");
 

@@ -44,15 +44,15 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 
 | Target | Responsibility | Tests |
 |---|---|---|
-| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 135 |
-| `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 51 |
-| `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend | 28 |
+| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 168 |
+| `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 57 |
+| `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend, the XTypes DDS probe | 28 |
 | `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 48 + 32 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 17 |
 | `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 34 |
 
-**345 unit tests**, plus 4 Fast DDS loopback integration tests gated behind
-`LM_BUILD_INTEGRATION_TESTS` (default OFF — they need loopback multicast).
+**383 unit tests**, plus 6 Fast DDS integration tests gated behind
+`LM_BUILD_INTEGRATION_TESTS` (default OFF — they open real DDS domains).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
 constructs and paints real widgets and so needs a `QApplication` and a platform
@@ -300,6 +300,47 @@ compliant host is the good end where full load is the bad one. Rows sort
 worst-first: the tab exists to find what needs attention, and alphabetical order
 would bury a host with three failures under one with none.
 
+### DDS rules read another bus, and need no IDL
+A client can be asked about a topic on a domain its *sibling* application uses —
+"a `Basket` is published on domain 42", "`Basket.items_` holds 2". The type is
+rebuilt at runtime from the XTypes `TypeObject` the publisher advertises in
+discovery, so a rule names only a domain, a topic and a path.
+
+Two payloads again, for the same reason as the network pair. `DdsTopicRule` is
+answerable from **discovery alone** — no type, no sample — so it still works
+against a publisher that describes nothing and has never published.
+`DdsValueRule` reads one value by path.
+
+The path grammar is an address, not a query language: `status`, `owner.shift`,
+`items_[0].sku`, `items_.length`. **`length` is a projection in final position**,
+not a flag on the rule, so the path stays the single statement of what is read —
+and a field genuinely named `length` is still addressable when the path
+continues past it.
+
+**The line is drawn so `lm_core` stays DDS-free.** `IDdsProbe` is declared in
+`lm_platform` with no DDS type in its signature; the Fast DDS implementation
+lives in `lm_transport`; the probe projects one sample to JSON and everything
+after that is a pure predicate over a JSON document
+(`lm/core/json_path.hpp`). That is why almost every test of this feature needs
+no domain, no multicast and no sibling application — the same trick the
+in-memory transport plays for the wire.
+
+Statuses follow the distinctions already established. A **missing topic is a
+Fail** for a value rule: data meant to be on the bus and absent is what a fleet
+check is for, the call already made for a renamed adapter. A topic that is
+**present but silent is an Error**, as is a numeric match against text — nothing
+is wrong with the machine and the rule cannot be answered.
+
+`main()` builds the probe only when not `--offline`, and a null probe drops
+`Capability::Dds`, so an offline client reports `NotApplicable` rather than
+claiming it inspected a bus.
+
+**The risk to re-check on any Fast DDS upgrade** is type propagation: a
+publisher that advertises only a type *name* cannot be read this way, and the
+probe says exactly that rather than reporting an empty topic.
+`libs/transport/tests/test_dds_probe_loopback.cpp` pins the whole claim by
+publishing a runtime-built type and reading it back.
+
 ### Network rules are two payloads, not one with a mode flag
 `AdapterCountRule` ("at least 2 connected") and `AdapterStateRule` ("smash-wifi
 must be Up") are separate alternatives of `RulePayload`, both mapping to
@@ -476,6 +517,23 @@ Team choice. Boost is consequently confined to `program_options` in the two apps
   covers a server that has never seen the client, not one that saw it and then
   forgot. Repeating every 10 s turns a permanent state into a blip, and lets an
   upgraded agent's new capabilities reach a running server.
+- **A Fast DDS `DataReader` listener can match and still never fire.** The DDS
+  probe waited on `on_data_available` after `on_subscription_matched` had already
+  reported a match, and sat through the whole timeout: the sample was there, the
+  callback never came, and Fast DDS logged nothing at Warning. Polling
+  `take_next_sample()` against a deadline reads the same sample in ~250 ms.
+  For a one-shot blocking read the listener was a second mechanism and a second
+  way to be wrong — ask the reader directly. (The listener stays, but only to
+  record `matched()`, which is what tells "nobody published" apart from "no
+  reader could join that writer".)
+- **A Fast DDS listener must outlive the entity it is attached to.** Both probe
+  listeners started as locals in the function that created the participant and
+  reader, while the entities were deleted in the enclosing object's destructor —
+  so Fast DDS called into freed memory and the first look died with an access
+  violation. They are members now, declared above the participant.
+- **An unset `TypeIdentifier` handed to the type registry faults**, rather than
+  returning not-found. `_d() != TK_NONE` has to be checked first; a writer that
+  advertised nothing leaves both identifiers unset.
 - **Include hygiene**: the Linux leg compiles with libstdc++, far stricter than
   MSVC's STL about transitive includes. Include what you use, directly.
 
