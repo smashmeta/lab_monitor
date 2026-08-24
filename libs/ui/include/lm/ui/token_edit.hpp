@@ -51,6 +51,13 @@ protected:
 
 private:
     void commit_input();
+    /// Clears the field *and* the completer prefix that came with it: the two
+    /// must not drift apart, or a stale prefix outlives the text it described.
+    void clear_input();
+    /// Points the completer at what is being typed and shows or hides its
+    /// popup. Done by hand because this class owns the field -- see the
+    /// setWidget() comment in the constructor.
+    void update_completions(const QString& text);
     /// False when the value was rejected as blank or already held.
     bool add_token(const QString& value);
     void remove_token(const QString& value);

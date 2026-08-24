@@ -400,7 +400,9 @@ TEST(FleetWindowBaseline, DoesNotOfferTheBaselineAsACompletion) {
     lm::ui::TokenEdit* editor = harness.assignment_editor();
     ASSERT_NE(editor, nullptr);
 
-    QCompleter* completer = editor->findChild<QLineEdit*>()->completer();
+    // On the widget, not via QLineEdit::completer() -- see token_edit.cpp for
+    // why the completer is attached with setWidget() instead.
+    QCompleter* completer = editor->findChild<QCompleter*>();
     ASSERT_NE(completer, nullptr);
     for (int row = 0; row < completer->model()->rowCount(); ++row) {
         EXPECT_NE(completer->model()->index(row, 0).data().toString(), QStringLiteral("Baseline"));

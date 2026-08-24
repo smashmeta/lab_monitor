@@ -47,12 +47,12 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 | `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 167 |
 | `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 57 |
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend, the XTypes DDS probe | 28 |
-| `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 51 + 32 |
+| `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 51 + 34 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 17 |
 | `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 37 |
 | `shopping_cart` | A hand-driven DDS publisher to test rules against — see *Tools* | 8 |
 
-**397 unit tests**, plus 14 Fast DDS integration tests gated behind
+**399 unit tests**, plus 14 Fast DDS integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they open real DDS domains).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -465,6 +465,32 @@ instead. And renaming a host in column 0 has to `extract()`/re-key the
 `assignments` map rather than assign through `operator[]`, which would leave the
 old entry behind, with the rebuild deferred through a zero-timer because the item
 whose `setData()` is still on the stack would otherwise be deleted underneath it.
+
+### `TokenEdit` owns its field: `setWidget()`, never `setCompleter()`
+`QLineEdit::setCompleter()` wires the completer's `activated()` to the line
+edit's own `setText()`. That makes **QLineEdit a second writer** to a field
+`TokenEdit` is supposed to own, and accepting a completion becomes a race
+between two connections: ours clears the input, QLineEdit's puts the completion
+back, and whichever runs last wins.
+
+When QLineEdit won, the committed name stayed in the field **beside the chip
+just made from it** — and vanished the moment focus left, because the focus-out
+commit clears with nobody left to write it back. That is the reported leftover
+text, and it only ever showed for a name the completer *knew*: a new name has no
+completion to activate, which is why every test that typed "Renderfarm" passed
+while the bug was live.
+
+`completer_->setWidget(input_)` gives the popup, its filtering and its key
+handling with none of that plumbing. The cost is driving the prefix by hand from
+`textEdited`, which also fixes a second-order bug: with `setCompleter()` the
+prefix outlived the text it came from, so clearing the input left the completer
+still holding the last thing typed for a later model change to act on. Clearing
+now goes through `clear_input()`, which drops both together.
+
+`KeepsQLineEditOutOfTheBusinessOfWritingTheField` asserts
+`input->completer() == nullptr` so that tidying this back to `setCompleter()`
+fails a test rather than reaching an operator. **Reach the completer through
+`findChild<QCompleter*>()`**, not `QLineEdit::completer()`, which is now null.
 
 ### Client recovers rule descriptions locally
 `core::CheckResult` travels the wire carrying only a rule id, status, observed

@@ -1,5 +1,6 @@
 #include "lm/ui/token_edit.hpp"
 
+#include <QAbstractItemView>
 #include <QCompleter>
 #include <QEvent>
 #include <QFocusEvent>
@@ -43,15 +44,36 @@ TokenEdit::TokenEdit(QWidget* parent)
     // Contains rather than prefix: "server" should find "Build Server", since
     // the operator is picking from a list they only half remember.
     completer_->setFilterMode(Qt::MatchContains);
-    input_->setCompleter(completer_);
+    // setWidget(), deliberately *not* input_->setCompleter().
+    //
+    // QLineEdit::setCompleter() wires the completer's activated() to the line
+    // edit's own setText(), which makes QLineEdit a second writer to a field
+    // this class is supposed to own. Accepting a completion then became a race
+    // between two connections: ours clears the input, QLineEdit's puts the
+    // completion back, and whichever runs last wins. When QLineEdit won, the
+    // committed name stayed in the field beside the chip that had just been
+    // made from it -- and vanished on focus-out, because the focus-out commit
+    // clears with nobody left to write it back. That is the leftover text.
+    //
+    // setWidget() gives the popup, its filtering and its key handling with
+    // none of that plumbing, so the prefix below and the handler further down
+    // are the only things that ever write here.
+    completer_->setWidget(input_);
 
     connect(input_, &QLineEdit::returnPressed, this, &TokenEdit::commit_input);
     connect(input_, &QLineEdit::textChanged, this, &TokenEdit::refresh_unknown_hint);
 
     // textEdited, not textChanged: only a comma the *user* produced separates
-    // tokens. One we put back ourselves would recurse.
+    // tokens, and only text the user typed should reopen the popup. Either one
+    // we put back ourselves would recurse.
+    //
+    // Driving the completer from here is the cost of owning the field, and it
+    // fixes a second-order bug on the way: with setCompleter() the prefix
+    // outlived the text it came from, so clearing the input left the completer
+    // still holding the last thing typed for any later model change to act on.
     connect(input_, &QLineEdit::textEdited, this, [this](const QString& text) {
         if (!text.contains(QChar(u','))) {
+            update_completions(text);
             return;
         }
         QStringList parts = text.split(QChar(u','));
@@ -61,21 +83,43 @@ TokenEdit::TokenEdit(QWidget* parent)
             added = add_token(part) || added;
         }
         input_->setText(remainder);
+        update_completions(remainder);
         if (added) {
             emit tokens_changed(tokens_);
         }
     });
 
-    // QLineEdit connects activated() to its own setText() when the completer
-    // is installed, and it connected first -- so by the time this runs the
-    // input already holds the completion and clearing it is safe.
+    // The only writer besides commit_input(), now that QLineEdit is not one.
+    // No ordering assumption left to be wrong about.
     connect(completer_, qOverload<const QString&>(&QCompleter::activated), this,
             [this](const QString& value) {
-                input_->clear();
+                clear_input();
                 if (add_token(value)) {
                     emit tokens_changed(tokens_);
                 }
             });
+}
+
+void TokenEdit::clear_input() {
+    input_->clear();
+    // The completer's prefix has to go with the text. Left behind, it is a
+    // pending completion for something no longer being typed, which a later
+    // model change can act on.
+    completer_->setCompletionPrefix(QString());
+    if (completer_->popup() != nullptr) {
+        completer_->popup()->hide();
+    }
+}
+
+void TokenEdit::update_completions(const QString& text) {
+    completer_->setCompletionPrefix(text);
+    if (text.trimmed().isEmpty() || completer_->completionCount() == 0) {
+        if (completer_->popup() != nullptr) {
+            completer_->popup()->hide();
+        }
+        return;
+    }
+    completer_->complete();
 }
 
 void TokenEdit::set_known_values(QStringList values) {
@@ -94,7 +138,7 @@ void TokenEdit::set_tokens(QStringList tokens) {
 
 void TokenEdit::commit_input() {
     const QString text = input_->text();
-    input_->clear();
+    clear_input();
     if (add_token(text)) {
         emit tokens_changed(tokens_);
     }

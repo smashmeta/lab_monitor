@@ -7,6 +7,7 @@
 #include <QSignalSpy>
 #include <QStringList>
 #include <QTest>
+#include <QTableWidgetItem>
 #include <QToolButton>
 
 #include <string>
@@ -261,9 +262,80 @@ TEST(TokenEdit, OffersEveryKnownValueThroughItsCompleter) {
     TokenEdit editor;
     editor.set_known_values(kKnown);
 
-    QCompleter* completer = input_of(editor)->completer();
+    // Found on the widget, not through QLineEdit::completer(): the completer is
+    // attached with setWidget() rather than installed on the line edit, so that
+    // QLineEdit is not a second writer to the field. See token_edit.cpp.
+    QCompleter* completer = editor.findChild<QCompleter*>();
     ASSERT_NE(completer, nullptr) << "there is no dropdown without a completer";
     ASSERT_NE(completer->model(), nullptr);
     EXPECT_EQ(completer->model()->rowCount(), kKnown.size());
     EXPECT_EQ(completer->caseSensitivity(), Qt::CaseInsensitive);
+}
+
+TEST(TokenEdit, ClearsTheInputWhenTheCommittedNameWasAlreadyKnown) {
+    // The reported bug, and the one condition every other test here misses:
+    // the committed name is one the completer *knows*. "Renderfarm" matches
+    // nothing, so the completer has no completion to offer; an existing
+    // template name does, and the completer still holds it as its prefix after
+    // the input has been cleared. The round-trip below then resets the
+    // completion model, the completer recomputes against that stale prefix and
+    // hands the text straight back to the line edit.
+    QTableWidget table(1, 2);
+    auto* editor = new TokenEdit(&table);
+    editor->set_known_values(kKnown);
+    table.setCellWidget(0, 1, editor);
+    table.resize(600, 120);
+    table.show();
+    QApplication::processEvents();
+
+    // What the server does from inside this very signal.
+    QObject::connect(editor, &TokenEdit::tokens_changed, editor, [editor](const QStringList& tokens) {
+        editor->set_known_values(kKnown + tokens);
+    });
+
+    QLineEdit* input = editor->findChild<QLineEdit*>();
+    ASSERT_NE(input, nullptr);
+    input->setFocus();
+    QTest::keyClicks(input, QStringLiteral("Build Server"));
+    QTest::keyClick(input, Qt::Key_Return);
+    QApplication::processEvents();
+
+    EXPECT_EQ(joined(editor->tokens()), "Build Server");
+    EXPECT_TRUE(input->text().isEmpty())
+        << "left in the input: " << input->text().toStdString();
+}
+
+TEST(TokenEdit, KeepsQLineEditOutOfTheBusinessOfWritingTheField) {
+    // The regression guard for the leftover text. QLineEdit::setCompleter()
+    // wires activated() to the line edit's own setText(), making it a second
+    // writer to a field this class owns -- and then whether a committed name
+    // stays on screen beside its own chip depends on which of two connections
+    // Qt happens to run last.
+    //
+    // Attaching with setWidget() instead removes that writer entirely. If
+    // anyone "tidies" this back to setCompleter(), this fails rather than the
+    // symptom coming back in front of an operator.
+    TokenEdit editor;
+    editor.set_known_values(kKnown);
+
+    EXPECT_EQ(input_of(editor)->completer(), nullptr)
+        << "the completer is installed on the line edit again, which makes it a second writer";
+    EXPECT_NE(editor.findChild<QCompleter*>(), nullptr) << "but the completer must still exist";
+}
+
+TEST(TokenEdit, DropsTheCompletionPrefixWhenTheFieldIsCleared) {
+    // Second-order, and the reason clearing goes through one function: a prefix
+    // left behind describes text that is no longer there, and the next change
+    // to the completion model can act on it.
+    TokenEdit editor;
+    editor.set_known_values(kKnown);
+    QCompleter* completer = editor.findChild<QCompleter*>();
+    ASSERT_NE(completer, nullptr);
+
+    QTest::keyClicks(input_of(editor), QStringLiteral("Build Server"));
+    QTest::keyClick(input_of(editor), Qt::Key_Return);
+
+    EXPECT_TRUE(input_of(editor)->text().isEmpty());
+    EXPECT_TRUE(completer->completionPrefix().isEmpty())
+        << "stale prefix: " << completer->completionPrefix().toStdString();
 }
