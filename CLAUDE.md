@@ -44,14 +44,15 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 
 | Target | Responsibility | Tests |
 |---|---|---|
-| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 168 |
+| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 167 |
 | `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 57 |
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend, the XTypes DDS probe | 28 |
-| `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 48 + 32 |
+| `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 51 + 32 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 17 |
-| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 34 |
+| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 37 |
+| `shopping_cart` | A hand-driven DDS publisher to test rules against — see *Tools* | 8 |
 
-**383 unit tests**, plus 6 Fast DDS integration tests gated behind
+**397 unit tests**, plus 14 Fast DDS integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they open real DDS domains).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -550,6 +551,55 @@ Team choice. Boost is consequently confined to `program_options` in the two apps
 - The compliance list groups by status rather than Applications/Services/Registry.
 - `FastDdsLoopback.ResourceSamplesReachTheServer` was de-flaked by publishing in a
   loop; the topic is BEST_EFFORT so a single publish races discovery.
+
+## Tools
+
+`tools/shopping_cart` is a small Qt app that publishes a cart on DDS, so the
+DDS rules can be **driven by hand**: add an item, watch a rule on the server go
+from failing to passing. Built by default (`LM_BUILD_TOOLS`, ON) because a
+verification aid nobody remembers exists is no aid at all.
+
+```
+build\windows\bin\Debug\shopping_cart.exe --domain-id 42 --topic ShoppingCart
+```
+
+It publishes `struct ShoppingCart { string status; long unit_count; double
+total; sequence<CartLine> items_; }`, which is enough for one fixture to
+exercise every shape of rule: `items_.length` as a count, `total` as a numeric
+comparison, `status` as a text match, and `items_[0].sku` as a read through a
+sequence into a nested structure. `items_` keeps the trailing underscore from
+the original example so a rule copied out of that conversation lands.
+
+Two decisions in it are load-bearing.
+
+**It is built on Fast DDS directly, never on `lm_transport`.** A fixture that
+shares the product's transport code proves considerably less than one that does
+not; the only lab_monitor code it touches is the Qt theme. Its type is built at
+runtime through `DynamicTypeBuilderFactory`, which is not a workaround for the
+missing `fastddsgen` — it is what makes the fixture honest, since the resulting
+TypeObject is exactly what the probe has to rebuild the type from, with neither
+side compiled against the other.
+
+**The "paths a DDS rule can address" pane is the point of the window.** The
+server has never seen this type and cannot offer its fields, so without
+somewhere to read the grammar an operator is guessing. It is set in a monospace
+font deliberately: in the proportional UI font the underscore and dot of
+`items_.length` merge into one stroke and it reads as `items_length`, which
+addresses nothing — on the one path most likely to be copied.
+
+The loop it exists for:
+
+1. run the tool, and the client **without** `--offline` (the DDS probe, and so
+   `Capability::Dds`, is only built when a real bus is in use)
+2. on the server's Templates tab: Add Rule → *DDS: value on a topic* → domain
+   42, topic `ShoppingCart`, path `items_.length`, `equal to` 2 → **Publish**
+3. add items and watch the Compliance tab follow within the client's next
+   30 s evaluation
+
+`shopping_cart_dds_tests` automates exactly that loop minus the two GUIs: the
+fixture publishes, the real probe reads a type it was never compiled against,
+and the real `evaluate()` judges it. It is the end-to-end proof for the whole
+DDS rule feature and is gated with the other integration tests.
 
 ## Running
 

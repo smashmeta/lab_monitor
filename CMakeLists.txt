@@ -13,6 +13,10 @@ set(CMAKE_COMPILE_WARNING_AS_ERROR ON)
 
 option(LM_BUILD_GUI "Build the Qt GUI applications" ON)
 option(LM_BUILD_INTEGRATION_TESTS "Build tests that open a real DDS domain" OFF)
+# Default ON, unlike the integration tests: these are meant to be *run by hand*
+# against a live fleet, and one that has to be enabled first is one nobody
+# remembers exists. They need Qt, so they follow LM_BUILD_GUI.
+option(LM_BUILD_TOOLS "Build the hand-driven verification tools under tools/" ON)
 
 # The four libraries are SHARED so that a test binary and an application load
 # the *same* lm_core.dll, rather than each statically linking its own copy of
@@ -50,4 +54,8 @@ if(LM_BUILD_GUI)
   add_subdirectory(libs/ui)
   add_subdirectory(apps/client)
   add_subdirectory(apps/server)
+
+  if(LM_BUILD_TOOLS)
+    add_subdirectory(tools/shopping_cart)
+  endif()
 endif()
