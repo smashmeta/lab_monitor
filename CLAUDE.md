@@ -49,10 +49,10 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend, the XTypes DDS probe | 28 |
 | `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 51 + 34 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 17 |
-| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing | 37 |
+| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing, the Add Rule dialog | 50 |
 | `shopping_cart` | A hand-driven DDS publisher to test rules against — see *Tools* | 8 |
 
-**399 unit tests**, plus 14 Fast DDS integration tests gated behind
+**412 unit tests**, plus 14 Fast DDS integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they open real DDS domains).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -404,6 +404,39 @@ why every percentage cell also shows its number. And a state change must emit
 `dataChanged` across the **whole row**, not just the columns whose text moved:
 health colours every cell, and the percentage cells additionally swap between
 their load colour and the health one as a host starts and stops reporting.
+
+### Add Rule is one dialog, not a chain of prompts
+`AddRuleDialog` replaced seven `QInputDialog` prompts shown one after another.
+The chain worked, and it produced a genuinely mis-authored rule in practice: the
+DDS path was typed into the topic box, giving
+`items_.length.items_.length on domain 42`, with nothing on screen to say so
+until the rule was already in the table.
+
+Three things fix that, and none of them are decoration:
+
+- **The fields are visible together**, so a topic box showing `ShoppingCart` as
+  its placeholder sits beside a path box showing `items_.length`. Choosing a
+  kind swaps a `QStackedWidget` page, so the form never shows a box this rule
+  has no use for.
+- **A summary line says what the rule will check**, updated on every keystroke
+  and phrased by the same `lm::ui::describe()` the rule table uses — so what is
+  read here is what is read back afterwards. `SaysWhatTheRuleWillCheckBefore`
+  `ItIsCreated` pins the reported mis-entry showing up in it.
+- **Add is disabled until the kind's required fields are filled.** The chain
+  instead threw the whole flow away on the first empty answer.
+
+The expectation row is *hidden* for the adapter count and the DDS value, the two
+kinds whose own field carries the direction — the chain skipped the prompt for
+the same reason.
+
+It is also the first version of this flow that can be tested at all: every field
+carries an object name, so `test_add_rule_dialog.cpp` drives all seven kinds,
+the validation and the summary. A chain of modal prompts could only be driven by
+a human, which is why the mis-entry reached an operator in the first place.
+
+`rule()` deliberately returns a rule with **no id**: uniqueness is bundle-wide,
+and the dialog cannot see the bundle. `FleetWindow::on_add_rule_clicked()` calls
+`make_rule_id()` — see below.
 
 ### Rule ids are generated, never typed
 The Add Rule flow used to open with a "Unique rule id:" prompt. `RuleId` is the

@@ -9,6 +9,7 @@ add_executable(lab_monitor_server WIN32
   main.cpp
   server_controller.cpp
   status_ribbon.cpp
+  add_rule_dialog.cpp
   fleet_window.cpp)
 
 target_include_directories(lab_monitor_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -28,8 +29,10 @@ lm_add_test(lab_monitor_server_tests
   SOURCES ${CMAKE_SOURCE_DIR}/libs/ui/tests/widget_main.cpp
           tests/test_server_controller.cpp
           tests/test_fleet_window.cpp
+          tests/test_add_rule_dialog.cpp
           server_controller.cpp
           status_ribbon.cpp
+          add_rule_dialog.cpp
           fleet_window.cpp
   LINK lm_core lm_platform lm_transport lm_ui
        Qt5::Widgets Qt5::Test spdlog::spdlog nlohmann_json::nlohmann_json)

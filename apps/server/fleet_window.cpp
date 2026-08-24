@@ -47,6 +47,7 @@
 #include "lm/ui/sparkline.hpp"
 #include "lm/ui/theme.hpp"
 #include "lm/ui/token_edit.hpp"
+#include "add_rule_dialog.hpp"
 #include "server_controller.hpp"
 #include "status_ribbon.hpp"
 
@@ -81,42 +82,6 @@ QString kind_label(lm::core::RuleKind kind) {
         case lm::core::RuleKind::Dds:      return QStringLiteral("DDS");
     }
     return QStringLiteral("Unknown");
-}
-
-/// The link states a rule can require. Unknown is deliberately absent: "this
-/// adapter must be in a state the client could not determine" is not a check
-/// anyone means to write.
-const QStringList& link_state_choices() {
-    static const QStringList choices{
-        QStringLiteral("Up"),          QStringLiteral("No link"),   QStringLiteral("Disconnected"),
-        QStringLiteral("Connecting"),  QStringLiteral("Disabled"),  QStringLiteral("Faulted")};
-    return choices;
-}
-
-lm::core::LinkState link_state_from_choice(const QString& text) {
-    if (text == QStringLiteral("Up"))           return lm::core::LinkState::Connected;
-    if (text == QStringLiteral("No link"))      return lm::core::LinkState::NoMedia;
-    if (text == QStringLiteral("Connecting"))   return lm::core::LinkState::Connecting;
-    if (text == QStringLiteral("Disabled"))     return lm::core::LinkState::Disabled;
-    if (text == QStringLiteral("Faulted"))      return lm::core::LinkState::Faulted;
-    return lm::core::LinkState::Disconnected;
-}
-
-/// The DDS matches, in the words to_string(DdsMatch) already uses, so the Add
-/// Rule dialog and the rule table read the same. Deliberately not the wire
-/// names ("Equals", "AtLeast"): those have to keep parsing out of a saved
-/// bundle, while these are free to be reworded.
-const QStringList& dds_match_choices() {
-    static const QStringList choices{QStringLiteral("equal to"), QStringLiteral("containing"),
-                                      QStringLiteral("at least"), QStringLiteral("at most")};
-    return choices;
-}
-
-lm::core::DdsMatch dds_match_from_choice(const QString& text) {
-    if (text == QStringLiteral("containing")) return lm::core::DdsMatch::Contains;
-    if (text == QStringLiteral("at least"))   return lm::core::DdsMatch::AtLeast;
-    if (text == QStringLiteral("at most"))    return lm::core::DdsMatch::AtMost;
-    return lm::core::DdsMatch::Equals;
 }
 
 QString status_name(lm::core::CheckStatus status) {
@@ -1330,219 +1295,27 @@ void FleetWindow::on_remove_template_clicked() {
     refresh_assignment_completions();
 }
 
-QStringList FleetWindow::rule_kind_choices() {
-    return {QStringLiteral("Process"),
-            QStringLiteral("Service"),
-            QStringLiteral("Registry"),
-            QStringLiteral("Network: adapter count"),
-            QStringLiteral("Network: named adapter"),
-            QStringLiteral("DDS: topic is published"),
-            QStringLiteral("DDS: value on a topic")};
-}
-
 void FleetWindow::on_add_rule_clicked() {
     lm::core::Template* tmpl = selected_template();
     if (tmpl == nullptr) {
-        QMessageBox::information(this, QStringLiteral("Add Rule"), QStringLiteral("Select a template first."));
+        QMessageBox::information(this, QStringLiteral("Add Rule"),
+                                  QStringLiteral("Select a template first."));
         return;
     }
 
-    // No id prompt: ids are generated from the rule once its payload is known
-    // (see the end of this function). They are a join key between a rule and
-    // the CheckResult reported for it, not something an operator should have to
-    // keep a ledger of -- and a reused one silently cost a rule, since
-    // rules_for() keeps only the first holder of an id.
-    bool ok = false;
-    const QStringList kinds = rule_kind_choices();
-    const QString kind =
-        QInputDialog::getItem(this, QStringLiteral("Rule Kind"), QStringLiteral("Kind:"), kinds, 0, false, &ok);
-    if (!ok) {
+    // One dialog rather than the chain of seven prompts this used to be: the
+    // fields for the chosen kind are visible together, and the summary line
+    // says what the rule will check before it is created. See
+    // add_rule_dialog.hpp for the mis-authored DDS rule that prompted it.
+    AddRuleDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted) {
         return;
     }
 
-    // Two kinds carry their own direction -- the adapter count in its
-    // comparison, the DDS value in its match -- so asking for a presence on top
-    // would be a second, contradictable way of saying the same thing. Skipped
-    // rather than asked and ignored.
-    const bool asks_expectation = kind != QStringLiteral("Network: adapter count") &&
-                                  kind != QStringLiteral("DDS: value on a topic");
-    QString expectation_text = QStringLiteral("Must be present");
-    if (asks_expectation) {
-        const QStringList expectations{QStringLiteral("Must be present"),
-                                        QStringLiteral("Must be absent")};
-        expectation_text = QInputDialog::getItem(this, QStringLiteral("Expectation"),
-                                                  QStringLiteral("Expectation:"), expectations, 0,
-                                                  false, &ok);
-        if (!ok) {
-            return;
-        }
-    }
-
-    const QString description = QInputDialog::getText(
-        this, QStringLiteral("Description"), QStringLiteral("Description (optional):"), QLineEdit::Normal, {}, &ok);
-    if (!ok) {
-        return;
-    }
-
-    lm::core::Rule rule;
-    rule.description = description.trimmed().toStdString();
-    rule.expectation = expectation_text == QStringLiteral("Must be present") ? lm::core::Presence::MustBePresent
-                                                                              : lm::core::Presence::MustBeAbsent;
-
-    if (kind == QStringLiteral("Process")) {
-        const QString exe = QInputDialog::getText(this, QStringLiteral("Executable"),
-                                                    QStringLiteral("Executable name:"), QLineEdit::Normal, {}, &ok);
-        if (!ok || exe.trimmed().isEmpty()) {
-            return;
-        }
-        rule.payload = lm::core::ProcessRule{exe.trimmed().toStdString()};
-    } else if (kind == QStringLiteral("Service")) {
-        const QString service = QInputDialog::getText(this, QStringLiteral("Service"),
-                                                        QStringLiteral("Service name:"), QLineEdit::Normal, {}, &ok);
-        if (!ok || service.trimmed().isEmpty()) {
-            return;
-        }
-        rule.payload = lm::core::ServiceRule{service.trimmed().toStdString(), std::nullopt};
-    } else if (kind == QStringLiteral("Network: adapter count")) {
-        const QStringList comparisons{QStringLiteral("at least"), QStringLiteral("exactly"),
-                                       QStringLiteral("at most")};
-        const QString comparison_text =
-            QInputDialog::getItem(this, QStringLiteral("Connected Adapters"),
-                                   QStringLiteral("How many adapters must be connected?"),
-                                   comparisons, 0, false, &ok);
-        if (!ok) {
-            return;
-        }
-        const int count = QInputDialog::getInt(this, QStringLiteral("Connected Adapters"),
-                                                QStringLiteral("Count:"), 1, 0, 64, 1, &ok);
-        if (!ok) {
-            return;
-        }
-        lm::core::AdapterCountRule payload;
-        payload.comparison = comparison_text == QStringLiteral("exactly") ? lm::core::Comparison::Exactly
-                             : comparison_text == QStringLiteral("at most")
-                                 ? lm::core::Comparison::AtMost
-                                 : lm::core::Comparison::AtLeast;
-        payload.count = count;
-        rule.payload = payload;
-    } else if (kind == QStringLiteral("Network: named adapter")) {
-        // Offered as free text rather than a picker: the server does not know
-        // which adapters a host has until that host reports, and a rule is
-        // routinely written for machines that have not checked in yet.
-        const QString name = QInputDialog::getText(
-            this, QStringLiteral("Adapter"),
-            QStringLiteral("Adapter name, as Network Connections shows it:"), QLineEdit::Normal, {},
-            &ok);
-        if (!ok || name.trimmed().isEmpty()) {
-            return;
-        }
-        const QString state_text =
-            QInputDialog::getItem(this, QStringLiteral("Adapter Link"),
-                                   QStringLiteral("Required link state:"), link_state_choices(), 0,
-                                   false, &ok);
-        if (!ok) {
-            return;
-        }
-        rule.payload = lm::core::AdapterStateRule{name.trimmed().toStdString(),
-                                                   link_state_from_choice(state_text)};
-    } else if (kind == QStringLiteral("DDS: topic is published") ||
-               kind == QStringLiteral("DDS: value on a topic")) {
-        // Both DDS kinds start the same way, so the domain and topic are asked
-        // once here rather than duplicated down two branches.
-        const int domain_id = QInputDialog::getInt(this, QStringLiteral("DDS Domain"),
-                                                    QStringLiteral("Domain id:"), 0, 0, 232, 1, &ok);
-        if (!ok) {
-            return;
-        }
-        const QString topic = QInputDialog::getText(this, QStringLiteral("DDS Topic"),
-                                                     QStringLiteral("Topic name:"), QLineEdit::Normal,
-                                                     {}, &ok);
-        if (!ok || topic.trimmed().isEmpty()) {
-            return;
-        }
-
-        if (kind == QStringLiteral("DDS: topic is published")) {
-            rule.payload = lm::core::DdsTopicRule{static_cast<std::uint32_t>(domain_id),
-                                                   topic.trimmed().toStdString()};
-        } else {
-            // Free text, and it has to be: the server has never seen this type
-            // and cannot offer its fields. The help line carries the whole
-            // grammar, because there is nowhere else an operator would find it.
-            const QString path = QInputDialog::getText(
-                this, QStringLiteral("Value"),
-                QStringLiteral("Path into the sample — e.g. status, items_.length, items_[0].sku:"),
-                QLineEdit::Normal, {}, &ok);
-            if (!ok || path.trimmed().isEmpty()) {
-                return;
-            }
-            const QString match_text =
-                QInputDialog::getItem(this, QStringLiteral("Match"), QStringLiteral("The value must be:"),
-                                       dds_match_choices(), 0, false, &ok);
-            if (!ok) {
-                return;
-            }
-            const QString expected =
-                QInputDialog::getText(this, QStringLiteral("Expected Value"),
-                                       QStringLiteral("Expected value:"), QLineEdit::Normal, {}, &ok);
-            if (!ok || expected.trimmed().isEmpty()) {
-                return;
-            }
-
-            lm::core::DdsValueRule payload;
-            payload.domain_id = static_cast<std::uint32_t>(domain_id);
-            payload.topic_name = topic.trimmed().toStdString();
-            payload.path = path.trimmed().toStdString();
-            payload.match = dds_match_from_choice(match_text);
-            payload.expected_value = expected.trimmed().toStdString();
-            rule.payload = payload;
-        }
-    } else {
-        const QStringList hives{QStringLiteral("HKLM"), QStringLiteral("HKCU"), QStringLiteral("HKCR"),
-                                 QStringLiteral("HKU")};
-        const QString hive_text = QInputDialog::getItem(this, QStringLiteral("Registry Hive"),
-                                                          QStringLiteral("Hive:"), hives, 0, false, &ok);
-        if (!ok) {
-            return;
-        }
-        const QString key_path = QInputDialog::getText(this, QStringLiteral("Registry Key"),
-                                                         QStringLiteral("Key path:"), QLineEdit::Normal, {}, &ok);
-        if (!ok) {
-            return;
-        }
-        const QString value_name = QInputDialog::getText(
-            this, QStringLiteral("Registry Value"), QStringLiteral("Value name:"), QLineEdit::Normal, {}, &ok);
-        if (!ok) {
-            return;
-        }
-        const QStringList matches{QStringLiteral("Exists"), QStringLiteral("Equals"), QStringLiteral("Contains")};
-        const QString match_text =
-            QInputDialog::getItem(this, QStringLiteral("Match"), QStringLiteral("Match:"), matches, 0, false, &ok);
-        if (!ok) {
-            return;
-        }
-        QString expected_value;
-        if (match_text != QStringLiteral("Exists")) {
-            expected_value = QInputDialog::getText(this, QStringLiteral("Expected Value"),
-                                                     QStringLiteral("Expected value:"), QLineEdit::Normal, {}, &ok);
-            if (!ok) {
-                return;
-            }
-        }
-
-        lm::core::RegistryRule reg;
-        reg.hive = lm::core::parse_registry_hive(hive_text.toStdString()).value_or(lm::core::RegistryHive::LocalMachine);
-        reg.key_path = key_path.trimmed().toStdString();
-        reg.value_name = value_name.trimmed().toStdString();
-        reg.match = match_text == QStringLiteral("Equals")     ? lm::core::RegistryMatch::Equals
-                    : match_text == QStringLiteral("Contains") ? lm::core::RegistryMatch::Contains
-                                                                : lm::core::RegistryMatch::Exists;
-        reg.expected_value = expected_value.toStdString();
-        rule.payload = reg;
-    }
-
-    // Last, because the id is derived from the payload -- and against the whole
-    // draft, since templates are combined per host and an id taken in any of
-    // them is taken here too.
+    lm::core::Rule rule = dialog.rule();
+    // The id is generated here, not in the dialog: it must be unique across the
+    // whole draft, since templates are combined per host and an id taken in any
+    // of them is taken here too. The dialog cannot see the draft.
     rule.id = lm::core::make_rule_id(controller_->draft(), rule);
 
     tmpl->rules.push_back(std::move(rule));

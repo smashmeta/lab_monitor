@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <memory>
 
+#include "add_rule_dialog.hpp"
 #include "fleet_window.hpp"
 #include "lm/transport/in_memory_transport.hpp"
 #include "lm/ui/token_edit.hpp"
@@ -549,11 +550,10 @@ TEST(FleetWindowRules, ShowsADdsValueRuleWithItsPathAndExpectation) {
 }
 
 TEST(FleetWindowRules, OffersBothDdsKindsInTheAddRuleDialog) {
-    // The dialog itself is a chain of modal prompts and cannot be driven here,
-    // but the list it offers is the contract: a kind missing from it is a rule
-    // nobody can create through the UI.
-    Harness harness;
-    const QStringList kinds = harness.window->rule_kind_choices();
+    // The kind list now lives on the dialog that owns it; this only checks the
+    // two DDS kinds reached it. Everything else about the dialog is covered in
+    // test_add_rule_dialog.cpp.
+    const QStringList kinds = AddRuleDialog::kind_choices();
     EXPECT_TRUE(kinds.contains(QStringLiteral("DDS: topic is published"))) << kinds.join(", ").toStdString();
     EXPECT_TRUE(kinds.contains(QStringLiteral("DDS: value on a topic"))) << kinds.join(", ").toStdString();
 }
