@@ -385,8 +385,13 @@ void FleetWindow::build_templates_tab() {
 
     right_layout->addWidget(new QLabel(QStringLiteral("Rules"), right));
     rule_table_ = new QTableWidget(0, 4, right);
-    rule_table_->setHorizontalHeaderLabels(
-        {QStringLiteral("ID"), QStringLiteral("Kind"), QStringLiteral("Expectation"), QStringLiteral("Target")});
+    // The description, not the id. A rule id is a generated join key
+    // ("process-chrome-exe", "registry-displayversion-2") that make_rule_id()
+    // derives and nobody types; the description is the sentence the author
+    // wrote the rule to say. The id is still one hover away in the row
+    // tooltip, which is where a support conversation needs it.
+    rule_table_->setHorizontalHeaderLabels({QStringLiteral("Description"), QStringLiteral("Kind"),
+                                            QStringLiteral("Expectation"), QStringLiteral("Target")});
     rule_table_->horizontalHeader()->setStretchLastSection(true);
     rule_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     rule_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -1165,8 +1170,6 @@ void FleetWindow::rebuild_rule_table() {
     rule_table_->setRowCount(static_cast<int>(tmpl->rules.size()));
     for (int row = 0; row < rule_table_->rowCount(); ++row) {
         const lm::core::Rule& rule = tmpl->rules[static_cast<std::size_t>(row)];
-        rule_table_->setItem(row, 0, new QTableWidgetItem(QString::fromStdString(rule.id)));
-        rule_table_->setItem(row, 1, new QTableWidgetItem(kind_label(lm::core::kind_of(rule))));
         // Through describe(), not from rule.expectation directly. Two kinds
         // carry their own direction -- the adapter count in its comparison, the
         // DDS value in its match -- and Add Rule does not ask them for a
@@ -1174,6 +1177,11 @@ void FleetWindow::rebuild_rule_table() {
         // "at least 2" put a second, contradictable answer in the row for a
         // question already settled; describe() shows the constraint instead.
         const lm::ui::RuleDetail detail = lm::ui::describe(rule);
+        // detail.label rather than rule.description: describe() substitutes
+        // "Kind: target" when the author left the description blank, so the
+        // column cannot show an empty cell for a rule that is really there.
+        rule_table_->setItem(row, 0, new QTableWidgetItem(detail.label));
+        rule_table_->setItem(row, 1, new QTableWidgetItem(kind_label(lm::core::kind_of(rule))));
         rule_table_->setItem(row, 2, new QTableWidgetItem(detail.expectation));
         rule_table_->setItem(row, 3, new QTableWidgetItem(target_label(rule)));
 
@@ -1189,6 +1197,14 @@ void FleetWindow::rebuild_rule_table() {
     // The Target column is the one that says what the rule actually checks, and
     // a DDS path plus a domain outgrows the default width immediately.
     rule_table_->resizeColumnsToContents();
+    // A description is free text and resizeColumnsToContents has no ceiling, so
+    // one written as a sentence would size column 0 to the sentence and push
+    // Kind, Expectation and Target past the right edge. Cap it and let the cell
+    // elide; the untruncated text is already in the tooltip.
+    constexpr int kMaxDescriptionWidth = 280;
+    if (rule_table_->columnWidth(0) > kMaxDescriptionWidth) {
+        rule_table_->setColumnWidth(0, kMaxDescriptionWidth);
+    }
 }
 
 void FleetWindow::rebuild_assignment_table() {

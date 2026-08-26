@@ -480,11 +480,12 @@ TEST(FleetWindowBaseline, LetsAStrayTemplateNamedBaselineBeRemoved) {
 
 namespace {
 
-/// The Templates tab's rule table -- the only QTableWidget headed "Rule id".
+/// The Templates tab's rule table -- the only QTableWidget headed
+/// "Description". The assignment table beside it is headed "Host".
 QTableWidget* rule_table(const Harness& harness) {
     for (QTableWidget* table : harness.window->findChildren<QTableWidget*>()) {
         if (table->horizontalHeaderItem(0) != nullptr &&
-            table->horizontalHeaderItem(0)->text() == QStringLiteral("ID")) {
+            table->horizontalHeaderItem(0)->text() == QStringLiteral("Description")) {
             return table;
         }
     }
@@ -547,6 +548,49 @@ TEST(FleetWindowRules, ShowsADdsValueRuleWithItsPathAndExpectation) {
     // never asks for a presence here, and printing the default beside
     // "equal to 2" would put a second, contradictable answer in the row.
     EXPECT_EQ(table->item(0, 2)->text().toStdString(), "equal to 2");
+}
+
+TEST(FleetWindowRules, NamesARuleByItsDescriptionRatherThanItsGeneratedId) {
+    Harness harness;
+    Rule rule;
+    // make_rule_id() derives ids like this one; nobody types them, and a column
+    // of them tells an operator nothing about what is being checked.
+    rule.id = "process-antivirus-exe";
+    rule.description = "Antivirus must be running";
+    rule.payload = ProcessRule{"antivirus.exe"};
+    harness.controller->draft().templates.front().rules.push_back(rule);
+
+    select_template(harness, QStringLiteral("Lab Workstation"));
+    QTableWidget* table = rule_table(harness);
+    ASSERT_NE(table, nullptr) << "no rule table";
+    ASSERT_EQ(table->rowCount(), 1);
+
+    EXPECT_EQ(table->item(0, 0)->text().toStdString(), "Antivirus must be running");
+    // Not gone, just not the row label: an operator naming an exact rule in a
+    // support conversation still needs it.
+    EXPECT_NE(table->item(0, 0)->toolTip().indexOf(QStringLiteral("process-antivirus-exe")), -1)
+        << table->item(0, 0)->toolTip().toStdString();
+}
+
+TEST(FleetWindowRules, FallsBackToTheTargetWhenTheDescriptionIsBlank) {
+    Harness harness;
+    Rule rule;
+    rule.id = "process-antivirus-exe";
+    rule.description = "";
+    rule.payload = ProcessRule{"antivirus.exe"};
+    harness.controller->draft().templates.front().rules.push_back(rule);
+
+    select_template(harness, QStringLiteral("Lab Workstation"));
+    QTableWidget* table = rule_table(harness);
+    ASSERT_NE(table, nullptr);
+    ASSERT_EQ(table->rowCount(), 1);
+
+    // An empty first cell would read as a broken row rather than an
+    // undescribed one, so describe() substitutes the kind and target.
+    const QString label = table->item(0, 0)->text();
+    EXPECT_FALSE(label.trimmed().isEmpty());
+    EXPECT_NE(label.indexOf(QStringLiteral("antivirus.exe")), -1) << label.toStdString();
+    EXPECT_EQ(label.indexOf(QStringLiteral("process-antivirus-exe")), -1) << label.toStdString();
 }
 
 TEST(FleetWindowRules, OffersBothDdsKindsInTheAddRuleDialog) {
