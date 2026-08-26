@@ -21,11 +21,16 @@ jobs:
         include:
           # windows-latest ships Visual Studio 2022 (v17), not the "Visual
           # Studio 18 2026" generator the local `windows`/`windows-headless`
-          # presets pin (that generator matches the preview VS toolset on
-          # the dev machine these presets were authored on, not the hosted
-          # runner image). windows-headless-ci is a CI-only sibling preset
-          # that inherits everything else from the same hidden base but
-          # pins "Visual Studio 17 2022" instead -- see CMakePresets.json.
+          # presets pin. windows-headless-ci is a CI-only sibling preset that
+          # inherits everything else from the same hidden base but pins
+          # "Visual Studio 17 2022" instead.
+          #
+          # Both `*-ci` presets carry a condition on GITHUB_ACTIONS being set,
+          # so they are selectable here and nowhere else. That guard is not
+          # cosmetic: picking one on a VS 2026 machine configures without
+          # complaint and then fails every project with MSB8020, "the build
+          # tools for Visual Studio 2022 (Platform Toolset = 'v143') cannot
+          # be found". See CMakePresets.json.
           - os: windows-latest
             preset: windows-headless-ci
           - os: ubuntu-latest
@@ -84,7 +89,7 @@ jobs:
   # it) -- they need loopback multicast, which has no place gating every
   # push.
   #
-  # Gated to pull requests and pushes to main: qt5-base/qt5-svg build from
+  # Gated to pull requests and pushes to main: qtbase/qtsvg build from
   # source via vcpkg here, and a cold vcpkg cache on ubuntu-latest makes that
   # a multi-hour build -- on every push, to every branch, against a 6-hour
   # job limit, that is not a cost worth paying. `headless` above still runs
@@ -134,7 +139,7 @@ jobs:
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
-      # qt5-base/qt5-svg build from source via vcpkg; vcpkg does not vendor
+      # qtbase/qtsvg build from source via vcpkg; vcpkg does not vendor
       # the underlying X11/xkb/GL headers a Linux Qt build links against, so
       # they have to come from the system. Fast DDS additionally wants
       # OpenSSL headers on Linux.

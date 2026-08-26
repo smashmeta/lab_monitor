@@ -1,4 +1,4 @@
-find_package(Qt5 COMPONENTS Widgets Test REQUIRED)
+find_package(Qt6 COMPONENTS Widgets Test REQUIRED)
 find_package(Boost REQUIRED COMPONENTS program_options)
 find_package(spdlog CONFIG REQUIRED)
 
@@ -13,7 +13,7 @@ add_executable(lab_monitor_client WIN32
 target_include_directories(lab_monitor_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lab_monitor_client PRIVATE
   lm_core lm_platform lm_transport lm_ui
-  Qt5::Widgets Boost::program_options spdlog::spdlog lm_warnings)
+  Qt6::Widgets Boost::program_options spdlog::spdlog lm_warnings)
 
 copy_runtime_dependencies(lab_monitor_client)
 
@@ -34,7 +34,7 @@ lm_add_test(lab_monitor_client_tests
   # actually linked, not merely reachable via vcpkg's global include path.
   # lm_ui joins the list because RuleDetail/describe() moved there, so both
   # apps can render rules the same way rather than the client owning it.
-  # Qt5::Widgets for DetailWindow itself, Qt5::Test for QSignalSpy and QTest's
+  # Qt6::Widgets for DetailWindow itself, Qt6::Test for QSignalSpy and QTest's
   # key simulation against the confirmation dialog.
-  LINK lm_core lm_platform lm_transport lm_ui Qt5::Widgets Qt5::Test spdlog::spdlog)
+  LINK lm_core lm_platform lm_transport lm_ui Qt6::Widgets Qt6::Test spdlog::spdlog)
 target_include_directories(lab_monitor_client_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

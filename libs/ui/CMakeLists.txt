@@ -1,4 +1,4 @@
-find_package(Qt5 COMPONENTS Widgets Svg Test REQUIRED)
+find_package(Qt6 COMPONENTS Widgets Svg Test REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 
 set(CMAKE_AUTOMOC ON)
@@ -39,7 +39,7 @@ target_include_directories(lm_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # LNK4197 on every build.
 set_target_properties(lm_ui PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS OFF)
 target_link_libraries(lm_ui
-  PUBLIC lm_core lm_transport Qt5::Widgets Qt5::Svg
+  PUBLIC lm_core lm_transport Qt6::Widgets Qt6::Svg
   # spdlog is private: only theme.cpp's failed-open log call needs it, and
   # it is not part of any lm_ui public header.
   PRIVATE lm_warnings spdlog::spdlog)
@@ -47,24 +47,24 @@ target_link_libraries(lm_ui
 lm_add_test(lm_ui_tests
   NO_GTEST_MAIN
   SOURCES tests/main.cpp tests/test_fleet_model.cpp tests/test_sample_coalescer.cpp tests/test_rule_detail.cpp
-  # Qt5::Test brings in QSignalSpy, used throughout these tests; it is not
+  # Qt6::Test brings in QSignalSpy, used throughout these tests; it is not
   # part of lm_ui's own public interface (Widgets/Svg only).
-  LINK lm_ui Qt5::Test)
+  LINK lm_ui Qt6::Test)
 
 # A separate binary rather than more cases in lm_ui_tests: these construct and
 # paint real widgets, so they need a QApplication and a platform plugin,
 # whereas every other lm_ui test runs under a QCoreApplication and needs
-# neither. Qt5::Test supplies QTest's key/mouse simulation and QSignalSpy.
+# neither. Qt6::Test supplies QTest's key/mouse simulation and QSignalSpy.
 lm_add_test(lm_ui_widget_tests
   NO_GTEST_MAIN
   SOURCES tests/widget_main.cpp tests/test_selection_colours.cpp tests/test_token_edit.cpp
           tests/test_sparkline.cpp tests/test_meter_bar.cpp
-  LINK lm_ui Qt5::Test)
-# offscreen would keep this headless, but vcpkg's applocal deployment copies
-# only the plugins it can see the binary needs -- which is qwindows alone, so
-# forcing offscreen on Windows leaves the test with no platform plugin at all
-# and it aborts before reaching main(). The windows plugin paints through the
-# same raster engine, so the pixels under test are identical either way.
+  LINK lm_ui Qt6::Test)
+# offscreen would keep this headless, but copy_qt_plugins() deploys the windows
+# platform plugin alone (see cmake/LabMonitorRuntime.cmake), so forcing
+# offscreen on Windows leaves the test with no platform plugin at all and it
+# aborts before reaching main(). The windows plugin paints through the same
+# raster engine, so the pixels under test are identical either way.
 if(NOT WIN32)
   set_tests_properties(lm_ui_widget_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()

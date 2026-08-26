@@ -6,6 +6,7 @@
 
 #include <QDateTime>
 #include <QString>
+#include <QTimeZone>
 
 #include "lm/ui/theme.hpp"
 
@@ -30,7 +31,7 @@ QString format_last_seen(const std::optional<core::TimePoint>& last_seen) {
     }
     const auto seconds =
         std::chrono::duration_cast<std::chrono::seconds>(last_seen->time_since_epoch()).count();
-    const QDateTime timestamp = QDateTime::fromSecsSinceEpoch(static_cast<qint64>(seconds), Qt::UTC);
+    const QDateTime timestamp = QDateTime::fromSecsSinceEpoch(static_cast<qint64>(seconds), QTimeZone::UTC);
     return timestamp.toString(Qt::ISODate);
 }
 

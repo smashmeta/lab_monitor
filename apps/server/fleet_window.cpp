@@ -25,6 +25,7 @@
 #include <QTableWidgetItem>
 #include <QTabWidget>
 #include <QTimer>
+#include <QTimeZone>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
@@ -139,14 +140,22 @@ class FleetProxyModel : public QSortFilterProxyModel {
 public:
     explicit FleetProxyModel(QObject* parent = nullptr) : QSortFilterProxyModel(parent) {}
 
+    // beginFilterChange() before the state is touched, endFilterChange()
+    // after, rather than Qt 5's invalidateFilter() once the change had already
+    // happened -- that is the point of the pair, and it is why
+    // invalidateFilter() is deprecated. Direction::Rows because this filter
+    // only ever rejects rows (filterAcceptsRow below); the default is Both,
+    // which would have the model re-examine every column for nothing.
     void set_state_filter(std::optional<lm::core::HostState> state) {
+        beginFilterChange();
         state_filter_ = state;
-        invalidateFilter();
+        endFilterChange(Direction::Rows);
     }
 
     void set_stale_only(bool stale_only) {
+        beginFilterChange();
         stale_only_ = stale_only;
-        invalidateFilter();
+        endFilterChange(Direction::Rows);
     }
 
 protected:
@@ -539,7 +548,7 @@ QString format_last_seen(const std::optional<lm::core::TimePoint>& last_seen) {
     }
     const auto seconds =
         std::chrono::duration_cast<std::chrono::seconds>(last_seen->time_since_epoch()).count();
-    return QDateTime::fromSecsSinceEpoch(static_cast<qint64>(seconds), Qt::UTC)
+    return QDateTime::fromSecsSinceEpoch(static_cast<qint64>(seconds), QTimeZone::UTC)
         .toString(QStringLiteral("HH:mm:ss"));
 }
 

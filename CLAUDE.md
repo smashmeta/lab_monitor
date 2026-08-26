@@ -14,19 +14,55 @@ without one each falls back to its own source text.
 
 ## Building — read this first
 
+Everything here is built with **Visual Studio 2026** (v18, toolset `v180`,
+MSVC 14.51). It is the only C++ toolchain installed on the development machine
+and the only one the `windows` presets target.
+
 **The CMake on PATH is 3.24.2 and is too old.** It predates Visual Studio 2026,
 so it has no `Visual Studio 18 2026` generator and cannot satisfy this project's
-`cmake_minimum_required(VERSION 3.28)`. Always use the CMake that ships with VS:
+`cmake_minimum_required(VERSION 3.28)`. Always use the CMake that ships with VS
+(4.3.1 at the time of writing). The install is Professional on this machine, but
+do not hard-code the edition — `vswhere` reports where it actually is:
 
 ```
-"C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --preset windows
+"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+```
+
+```
+"C:\Program Files\Microsoft Visual Studio\18\Professional\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --preset windows
 "C:\Program Files\...\CMake\bin\cmake.exe" --build --preset windows-debug
 "C:\Program Files\...\CMake\bin\ctest.exe"  --preset windows-debug
 ```
 
-`.vscode/settings.json` points the CMake Tools extension at that binary. If a
-configure fails with *"Could not create named generator Visual Studio 18 2026"*,
-the wrong CMake is being used.
+If a configure fails with *"Could not create named generator Visual Studio 18
+2026"*, the wrong CMake is being used.
+
+`.vscode/settings.json` points the CMake Tools extension at that binary and at
+the bundled vcpkg. **`.vscode/` is gitignored**, so it is per-clone rather than
+checked in — a fresh clone has neither it nor the `launch.json` mentioned under
+*Running*, and both have to be recreated.
+
+**vcpkg is the copy bundled with Visual Studio**, at `<VS>\VC\vcpkg` — there is
+no standalone checkout. Every preset resolves its toolchain through
+`$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake`, so with the variable unset
+that path collapses to `/scripts/buildsystems/vcpkg.cmake` and the configure
+fails on a missing toolchain file rather than on anything to do with vcpkg. A
+Developer PowerShell for VS 2026 sets it, and so does VS's own CMake
+integration, but an ordinary terminal does not — so it is set as a **persistent
+user environment variable** on this machine:
+
+```
+[Environment]::SetEnvironmentVariable('VCPKG_ROOT',
+  'C:\Program Files\Microsoft Visual Studio\18\Professional\VC\vcpkg', 'User')
+```
+
+(A shell already open when that ran still has the old environment; reopen it.)
+`.vscode/settings.json` sets the same value under `cmake.environment` so a
+checkout on a machine that has not had this done still configures.
+
+That bundle is marked read-only and resolves ports from a **git registry**
+rather than a `ports/` tree on disk, so a baseline bump is a one-line edit to
+`vcpkg.json` and nothing to update on the machine.
 
 Adding a source file or subdirectory requires re-running configure, not just build.
 
@@ -35,10 +71,26 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 | Preset | Purpose |
 |---|---|
 | `windows` / `windows-headless` | Local development. Generator `Visual Studio 18 2026`. |
-| `windows-ci` / `windows-headless-ci` | CI only. Generator `Visual Studio 17 2022`, because GitHub's `windows-latest` has no VS 2026. Do not use locally. |
+| `windows-ci` / `windows-headless-ci` | CI only. Generator `Visual Studio 17 2022`, because GitHub's `windows-latest` has no VS 2026. |
 | `linux-debug` / `linux-headless` | Ninja. Never compiled — see Known gaps. |
 
 `*-headless` sets `LM_BUILD_GUI=OFF`, dropping Qt, `lm_ui` and both apps.
+
+**The two `*-ci` presets are conditioned on `$env{GITHUB_ACTIONS}` being set,
+and that guard is load-bearing.** "Do not use locally" was a comment, and a
+comment does not stop VS's preset dropdown from offering the preset or someone
+from typing it. Configuring `windows-ci` on a machine with only VS 2026 does not
+fail cleanly: CMake accepts the `Visual Studio 17 2022` generator name, resolves
+the instance to the VS 2026 install anyway, and then every project fails at the
+first compile with
+
+```
+error MSB8020: The build tools for Visual Studio 2022 (Platform Toolset = 'v143') cannot be found.
+```
+
+which names a Visual Studio that was never involved and sends the reader looking
+for a missing toolset instead of a wrong preset. With the condition, the preset
+is simply not offered off-CI.
 
 ## Architecture
 
@@ -47,12 +99,12 @@ Adding a source file or subdirectory requires re-running configure, not just bui
 | `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 167 |
 | `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 57 |
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend, the XTypes DDS probe | 28 |
-| `lm_ui` | Shared Qt5 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 51 + 34 |
+| `lm_ui` | Shared Qt 6 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 51 + 35 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 17 |
 | `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing, the Add Rule dialog | 50 |
 | `shopping_cart` | A hand-driven DDS publisher to test rules against — see *Tools* | 8 |
 
-**412 unit tests**, plus 14 Fast DDS integration tests gated behind
+**413 unit tests**, plus 14 Fast DDS integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they open real DDS domains).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -61,8 +113,8 @@ plugin, where every other `lm_ui` test runs under a `QCoreApplication`. Some of
 its cases render through the real stylesheet and inspect the pixels
 (`tests/pixel_probe.hpp`) — the only way to catch a QSS rule silently overriding
 what the model, a delegate or a dynamic property asked for. It cannot use
-`QT_QPA_PLATFORM=offscreen` on Windows: vcpkg's applocal deployment copies only
-`qwindows`, so the binary would abort before `main()`.
+`QT_QPA_PLATFORM=offscreen` on Windows: `copy_qt_plugins()` deploys only the
+`qwindows` platform plugin, so the binary would abort before `main()`.
 
 **`lm_core` depends on `nlohmann-json` and nothing else.** No Qt, no DDS, no
 syscalls, no Boost. This is load-bearing: it is what makes `evaluate()` and
@@ -80,15 +132,56 @@ matters more than the code.
 ### Fast DDS instead of OpenDDS
 The spec asked for OpenDDS. It is in **neither vcpkg nor Conan** (verified against
 `conan-center-index`: no `opendds`, `ace` or `tao` recipes) and needs a from-source
-ACE/TAO build. Fast DDS 3.4.1 is a vcpkg one-liner on the same RTPS wire protocol.
-Everything sits behind `ITransport`, so OpenDDS remains addable as a second backend.
+ACE/TAO build. Fast DDS (3.6.2 at the pinned baseline) is a vcpkg one-liner on
+the same RTPS wire protocol. Everything sits behind `ITransport`, so OpenDDS
+remains addable as a second backend.
 
-### Qt 5.15.18 instead of Qt 6
-Chosen because `qt5-base 5.15.18` was already in the local vcpkg binary cache from
-the sibling `discnet` project, restoring in **9 seconds** versus a 1–3 hour cold Qt 6
-build. Qt 5.15 is upstream EOL (vcpkg carries KDE's patched branch). `lm_ui` avoids
-version-specific APIs so the Qt 6 move stays cheap. **An upgrade is planned, not
-merely possible.**
+### Qt 6, on a hand-picked feature set
+The project ran on Qt 5.15.18 (`qt5-base`/`qt5-svg`) until the move to Qt 6.11.1
+(`qtbase`/`qtsvg`). Qt 5.15 was upstream EOL and vcpkg carried KDE's patched
+branch; the original choice was made only because a `qt5-base` binary was already
+in the local cache. `lm_ui` had deliberately avoided version-specific APIs and
+that paid off — the migration was `find_package(Qt5 …)`/`Qt5::` → `Qt6::` in the
+four CMakeLists, the manifest entry, and **two lines of C++**:
+
+- `Qt::UTC` → `QTimeZone::UTC` in `QDateTime::fromSecsSinceEpoch`
+  (`fleet_model.cpp`, `fleet_window.cpp`).
+- `QSortFilterProxyModel::invalidateFilter()` → the
+  `beginFilterChange()`/`endFilterChange()` pair in `FleetProxyModel`. Not a
+  rename: the pair **brackets** the change where `invalidateFilter()` followed
+  it, which is the entire reason the old call is deprecated, so the assignment
+  to `state_filter_`/`stale_only_` has to sit between them.
+  `Direction::Rows` rather than the default `Both`, since this filter only ever
+  rejects rows.
+
+Both surfaced as `warning C4996` under `/W4` with `CMAKE_COMPILE_WARNING_AS_ERROR`,
+i.e. as hard build failures. Qt's deprecation macros warn up to the *current*
+version by default, so a Qt minor upgrade can fail this build on a call that
+compiled the day before. That is the intended behaviour here — fix the call, do
+not reach for `QT_NO_DEPRECATED_WARNINGS` or a `QT_DISABLE_DEPRECATED_BEFORE`
+bump to silence it.
+
+Two further parts of the setup are not obvious and should not be "tidied".
+
+**The `qtbase` dependency turns default features off and lists what it needs**
+(`gui`, `widgets`, `testlib`, `png`, `freetype`, `harfbuzz`, plus the port's own
+Linux X11 set). The defaults drag in ICU, OpenSSL, `sql-psql` (and so libpq) and
+QtNetwork — none of which anything here links, all of which are built from source
+by vcpkg, in debug *and* release. Nothing in this repo includes a Qt networking,
+SQL or i18n header; if that ever changes, add the feature rather than reaching
+for `default-features: true` and taking all of them back.
+
+**Qt plugins are copied by `copy_qt_plugins()` in `cmake/LabMonitorRuntime.cmake`.**
+A plugin is loaded by name at runtime, so it is not a link-time dependency and
+`$<TARGET_RUNTIME_DLLS>` cannot see it. Under Qt 5 that never surfaced: vcpkg's
+`qt5-base` installed a `plugins/qtdeploy.ps1` which vcpkg's applocal deployment
+sourced, and `platforms/qwindows.dll` landed beside every executable for free.
+**The Qt 6 `qtbase` port ships no such script** — Qt 6 expects `windeployqt` or
+`qt_generate_deploy_app_script`, both install-time tools, where everything here
+runs out of the build tree. Without the explicit copy both apps and every widget
+test abort before `main()` with *"could not find or load the Qt platform plugin
+windows"*. The destination subdirectory comes from each plugin target's own
+`QT_PLUGIN_TYPE` property rather than a hard-coded `platforms/`.
 
 ### The libraries are shared, not static
 `lm_core`, `lm_platform`, `lm_transport` and `lm_ui` are `SHARED`. A test binary
@@ -138,7 +231,7 @@ Static linkage removes the DLL boundary. `lm_add_test()` also sets
 backstop. Deleting either brings the silent failure back.
 
 ### Fast DDS `max_serialized_type_size` seed
-`libs/transport/src/fastdds/topic_data_type.hpp`. Fast DDS 3.4.1 crashes with an
+`libs/transport/src/fastdds/topic_data_type.hpp`. Fast DDS crashes with an
 access violation when given `max_serialized_type_size == 0` — which its own header
 documents as the convention for unbounded types — because `TopicPayloadPool::get()`
 returns a null pool that is then dereferenced. Worked around by seeding a genuine

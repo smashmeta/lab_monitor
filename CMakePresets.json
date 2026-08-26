@@ -15,12 +15,16 @@
     },
     {
       "name": "windows",
+      "displayName": "Windows (Visual Studio 2026)",
+      "description": "Local development. Requires Visual Studio 2026 (v18) and its bundled CMake.",
       "inherits": "windows-base",
       "generator": "Visual Studio 18 2026",
       "binaryDir": "${sourceDir}/build/windows"
     },
     {
       "name": "windows-headless",
+      "displayName": "Windows headless (Visual Studio 2026)",
+      "description": "As windows, without Qt, lm_ui or the two apps.",
       "inherits": "windows",
       "binaryDir": "${sourceDir}/build/windows-headless",
       "cacheVariables": {
@@ -30,12 +34,23 @@
     },
     {
       "name": "windows-ci",
+      "displayName": "Windows CI only (Visual Studio 2022)",
+      "description": "GitHub Actions only -- pins the VS 2022 generator for hosted runners that have no VS 2026. Selecting this on a VS 2026 machine builds nothing: MSBuild fails with MSB8020, 'the build tools for Visual Studio 2022 (Platform Toolset = v143) cannot be found'. The GITHUB_ACTIONS condition below is what keeps it off the local preset list.",
       "inherits": "windows-base",
       "generator": "Visual Studio 17 2022",
-      "binaryDir": "${sourceDir}/build/windows-ci"
+      "binaryDir": "${sourceDir}/build/windows-ci",
+      "condition": {
+        "type": "allOf",
+        "conditions": [
+          { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+          { "type": "notEquals", "lhs": "$env{GITHUB_ACTIONS}", "rhs": "" }
+        ]
+      }
     },
     {
       "name": "windows-headless-ci",
+      "displayName": "Windows headless CI only (Visual Studio 2022)",
+      "description": "GitHub Actions only. Inherits the GITHUB_ACTIONS condition from windows-ci.",
       "inherits": "windows-ci",
       "binaryDir": "${sourceDir}/build/windows-headless-ci",
       "cacheVariables": {

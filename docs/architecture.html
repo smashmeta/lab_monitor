@@ -588,8 +588,8 @@
       </tr>
       <tr>
         <td class="target">lm_ui</td>
-        <td>Shared Qt5 widgets and theme: <code>FleetModel</code>, <code>SampleCoalescer</code>, <code>TokenEdit</code>, <code>AdapterList</code>, meters, sparklines</td>
-        <td>lm_core, lm_transport, Qt5</td>
+        <td>Shared Qt 6 widgets and theme: <code>FleetModel</code>, <code>SampleCoalescer</code>, <code>TokenEdit</code>, <code>AdapterList</code>, meters, sparklines</td>
+        <td>lm_core, lm_transport, Qt 6</td>
         <td class="num">80</td>
       </tr>
       <tr>
@@ -643,7 +643,7 @@ flowchart TD
 
     subgraph LIBS ["libraries"]
         direction LR
-        UI["lm_ui<br/>Qt5 widgets, theme, FleetModel"]
+        UI["lm_ui<br/>Qt 6 widgets, theme, FleetModel"]
         PLAT["lm_platform<br/>OS probes + fakes"]
         TRANS["lm_transport<br/>ITransport, codecs, Fast DDS"]
     end

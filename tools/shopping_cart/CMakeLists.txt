@@ -1,4 +1,4 @@
-find_package(Qt5 COMPONENTS Widgets REQUIRED)
+find_package(Qt6 COMPONENTS Widgets REQUIRED)
 find_package(Boost REQUIRED COMPONENTS program_options)
 # fastdds's exported config links nlohmann_json::nlohmann_json, and that target
 # is only visible in the directory scope that resolved it -- so it has to be
@@ -25,7 +25,7 @@ target_include_directories(shopping_cart PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # for a third-party publisher, and one built on the product's own transport
 # code would prove considerably less. lm_ui is here for the theme alone.
 target_link_libraries(shopping_cart PRIVATE
-  lm_ui Qt5::Widgets Boost::program_options fastdds lm_warnings)
+  lm_ui Qt6::Widgets Boost::program_options fastdds lm_warnings)
 
 copy_runtime_dependencies(shopping_cart)
 

@@ -1,7 +1,7 @@
 {
   "name": "lab-monitor",
   "version": "0.1.0",
-  "builtin-baseline": "4f326c4072038c8624c36a8ba5ed23f616adda53",
+  "builtin-baseline": "f74a2eade17a628413746557d04db25ccf6e76f9",
   "dependencies": [
     "boost-program-options",
     "nlohmann-json",
@@ -13,7 +13,20 @@
   "features": {
     "gui": {
       "description": "Qt Widgets user interfaces",
-      "dependencies": [ "qt5-base", "qt5-svg" ]
+      "dependencies": [
+        {
+          "name": "qtbase",
+          "default-features": false,
+          "features": [ "gui", "widgets", "testlib", "png", "freetype", "harfbuzz" ]
+        },
+        {
+          "name": "qtbase",
+          "default-features": false,
+          "features": [ "egl", "fontconfig", "opengl", "xcb", "xcb-sm", "xcb-xlib", "xrender" ],
+          "platform": "linux"
+        },
+        "qtsvg"
+      ]
     }
   },
   "default-features": [ "gui" ]

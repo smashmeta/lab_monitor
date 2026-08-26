@@ -1,4 +1,4 @@
-find_package(Qt5 COMPONENTS Widgets Test REQUIRED)
+find_package(Qt6 COMPONENTS Widgets Test REQUIRED)
 find_package(Boost REQUIRED COMPONENTS program_options)
 find_package(spdlog CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
@@ -15,7 +15,7 @@ add_executable(lab_monitor_server WIN32
 target_include_directories(lab_monitor_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lab_monitor_server PRIVATE
   lm_core lm_platform lm_transport lm_ui
-  Qt5::Widgets Boost::program_options spdlog::spdlog nlohmann_json::nlohmann_json lm_warnings)
+  Qt6::Widgets Boost::program_options spdlog::spdlog nlohmann_json::nlohmann_json lm_warnings)
 
 copy_runtime_dependencies(lab_monitor_server)
 
@@ -35,5 +35,5 @@ lm_add_test(lab_monitor_server_tests
           add_rule_dialog.cpp
           fleet_window.cpp
   LINK lm_core lm_platform lm_transport lm_ui
-       Qt5::Widgets Qt5::Test spdlog::spdlog nlohmann_json::nlohmann_json)
+       Qt6::Widgets Qt6::Test spdlog::spdlog nlohmann_json::nlohmann_json)
 target_include_directories(lab_monitor_server_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
