@@ -43,7 +43,7 @@ private:
 };
 
 /// A horizontal row of clickable counters: Online, Offline, Missing,
-/// Unexpected, Stale. Clicking a state counter toggles a state filter;
+/// Unexpected, Paused, Stale. Clicking a state counter toggles a state filter;
 /// clicking the active one again clears it. Stale is not a lm::core::HostState
 /// (it is an orthogonal flag on FleetEntry), so it is exposed through its own
 /// stale_filter_requested(bool) signal rather than being folded into
@@ -72,6 +72,7 @@ private:
     StatusCounterButton* offline_;
     StatusCounterButton* missing_;
     StatusCounterButton* unexpected_;
+    StatusCounterButton* paused_;
     StatusCounterButton* stale_;
 
     std::optional<lm::core::HostState> active_state_filter_;

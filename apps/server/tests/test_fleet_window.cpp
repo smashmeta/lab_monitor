@@ -6,7 +6,9 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QTableView>
 #include <QTableWidget>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTreeWidget>
 #include <QTest>
@@ -18,6 +20,7 @@
 #include "add_rule_dialog.hpp"
 #include "fleet_window.hpp"
 #include "lm/transport/in_memory_transport.hpp"
+#include "lm/ui/fleet_model.hpp"
 #include "lm/ui/token_edit.hpp"
 #include "server_controller.hpp"
 
@@ -100,36 +103,64 @@ void type_and_commit(lm::ui::TokenEdit* editor, const QString& text) {
 
 namespace {
 
-/// The compliance tab's tree — the only one headed "Host / rule".
-QTreeWidget* compliance_tree(const Harness& harness) {
-    for (QTreeWidget* tree : harness.window->findChildren<QTreeWidget*>()) {
-        if (tree->headerItem() != nullptr &&
-            tree->headerItem()->text(0) == QStringLiteral("Host / rule")) {
-            return tree;
+/// The Fleet tab's host table.
+///
+/// Not simply findChild<QTableView*>(): QTableWidget derives from QTableView,
+/// so the Templates tab's rule and assignment tables answer to that too and
+/// whichever is found first wins. The host table is the only *plain* QTableView
+/// here -- the only one driven by a model rather than by items.
+QTableView* fleet_table(const Harness& harness) {
+    for (QTableView* view : harness.window->findChildren<QTableView*>()) {
+        if (qobject_cast<QTableWidget*>(view) == nullptr) {
+            return view;
         }
     }
     return nullptr;
 }
 
-/// Every row under a host, as "<text col 0>|<text col 1>".
-QStringList rows_under(QTreeWidgetItem* host) {
-    QStringList rows;
-    for (int i = 0; i < host->childCount(); ++i) {
-        rows << host->child(i)->text(0) + QStringLiteral("|") + host->child(i)->text(1);
+/// The compliance cell for one host, read through the *proxy* the view is
+/// actually showing rather than off the model, so what is asserted is what is
+/// on screen -- including the row order the proxy imposes.
+QModelIndex compliance_index(const Harness& harness, const QString& host) {
+    QTableView* table = fleet_table(harness);
+    if (table == nullptr) {
+        return {};
     }
-    return rows;
-}
-
-/// The compliance tab's headline, found by what it says rather than by an
-/// object name — it is the only label in the window that scores the fleet.
-QString compliance_headline(const Harness& harness) {
-    for (QLabel* label : harness.window->findChildren<QLabel*>()) {
-        if (label->text().contains(QStringLiteral("fully compliant")) ||
-            label->text().contains(QStringLiteral("No host has reported"))) {
-            return label->text();
+    QAbstractItemModel* model = table->model();
+    for (int row = 0; row < model->rowCount(); ++row) {
+        const QModelIndex first = model->index(row, lm::ui::FleetModel::HostColumn);
+        if (first.data(lm::ui::FleetModel::HostIdRole).toString() == host) {
+            return model->index(row, lm::ui::FleetModel::ComplianceColumn);
         }
     }
     return {};
+}
+
+QString compliance_text(const Harness& harness, const QString& host) {
+    return compliance_index(harness, host).data(Qt::DisplayRole).toString();
+}
+
+QStringList compliance_tag_labels(const Harness& harness, const QString& host) {
+    const auto tags = compliance_index(harness, host)
+                          .data(lm::ui::FleetModel::ComplianceTagsRole)
+                          .value<QVector<lm::ui::ComplianceTag>>();
+    QStringList labels;
+    for (const lm::ui::ComplianceTag& tag : tags) {
+        labels << tag.label;
+    }
+    return labels;
+}
+
+/// Host ids top to bottom, as the proxy orders them.
+QStringList hosts_in_view(const Harness& harness) {
+    QStringList hosts;
+    QAbstractItemModel* model = fleet_table(harness)->model();
+    for (int row = 0; row < model->rowCount(); ++row) {
+        hosts << model->index(row, lm::ui::FleetModel::HostColumn)
+                     .data(lm::ui::FleetModel::HostIdRole)
+                     .toString();
+    }
+    return hosts;
 }
 
 ComplianceReport report_for(const std::string& host, std::vector<CheckStatus> statuses) {
@@ -144,8 +175,8 @@ ComplianceReport report_for(const std::string& host, std::vector<CheckStatus> st
 }
 
 /// Publishes a report the way a client does, rather than emitting the
-/// controller's signal directly: the table is built from the controller's
-/// report cache, which only the real receive path fills.
+/// controller's signal directly: the row is filled by the controller's receive
+/// path, which is the thing under test here.
 void publish_report(Harness& harness, const ComplianceReport& report) {
     const auto client = make_in_memory_client(harness.bus);
     ComplianceReportMessage message;
@@ -154,170 +185,167 @@ void publish_report(Harness& harness, const ComplianceReport& report) {
     QApplication::processEvents();
 }
 
+/// Puts a described rule into the template PC-001 is assigned and publishes the
+/// bundle, which is what makes the description reachable from a report.
+void publish_rule(Harness& harness, const std::string& id, const std::string& description) {
+    Rule rule;
+    rule.id = id;
+    rule.description = description;
+    rule.payload = ProcessRule{"antivirus.exe"};
+    harness.controller->draft().templates.front().rules.push_back(rule);
+    harness.controller->publish();
+    QApplication::processEvents();
+}
+
 }  // namespace
 
-TEST(FleetWindowCompliance, ScoresEachHostAsPassedOverChecked) {
+TEST(FleetWindowCompliance, HasNoComplianceTab) {
+    // One view, not two. The fleet table carries this now, and two views of the
+    // same data that can disagree is worse than either alone.
     Harness harness;
-    ASSERT_NE(compliance_tree(harness), nullptr) << "no compliance tab";
-
-    harness.controller->start();
-    publish_report(harness,
-                   report_for("PC-001", {CheckStatus::Pass, CheckStatus::Pass, CheckStatus::Fail}));
-
-    QTreeWidget* tree = compliance_tree(harness);
-    ASSERT_EQ(tree->topLevelItemCount(), 1);
-    EXPECT_EQ(tree->topLevelItem(0)->text(0).toStdString(), "PC-001");
-    EXPECT_EQ(tree->topLevelItem(0)->text(1).toStdString(), "2 / 3 rules passed");
+    QTabWidget* tabs = harness.window->findChild<QTabWidget*>();
+    ASSERT_NE(tabs, nullptr);
+    for (int i = 0; i < tabs->count(); ++i) {
+        EXPECT_NE(tabs->tabText(i), QStringLiteral("Compliance"));
+    }
 }
 
-TEST(FleetWindowCompliance, ShowsEveryFailingRuleWithWhatWasObserved) {
-    // The whole point on a display nobody can click: what is wrong, and why,
-    // has to be on the glass already.
+TEST(FleetWindowCompliance, ScoresEachHostAsPassedOverCheckedInTheFleetTable) {
+    Harness harness;
+    harness.controller->start();
+    publish_report(harness, report_for("PC-001", {CheckStatus::Pass, CheckStatus::Pass,
+                                                  CheckStatus::Fail, CheckStatus::NotApplicable}));
+
+    // 2 of 3: the not-applicable rule is out of the denominator, because a rule
+    // the client cannot evaluate can never pass.
+    EXPECT_EQ(compliance_text(harness, QStringLiteral("PC-001")).toStdString(), "2 / 3");
+}
+
+TEST(FleetWindowCompliance, TagsAFailingRuleWithItsDescription) {
+    Harness harness;
+    harness.controller->start();
+    publish_rule(harness, "process-antivirus-exe", "Antivirus must be running");
+
+    ComplianceReport report;
+    report.host_id = "PC-001";
+    report.results = {CheckResult{"process-antivirus-exe", CheckStatus::Fail, "not running", ""}};
+    publish_report(harness, report);
+
+    EXPECT_EQ(compliance_tag_labels(harness, QStringLiteral("PC-001")).join(QChar(u'|')).toStdString(),
+              "Antivirus must be running");
+}
+
+TEST(FleetWindowCompliance, PutsFailuresBeforeErrors) {
+    // The cell truncates with "+N more", so this order decides what survives. A
+    // rule that is definitely broken must not be pushed off the row by one that
+    // merely could not be read.
+    Harness harness;
+    harness.controller->start();
+    // Expected, so reporting makes it Online. An Unexpected host lists no tags
+    // at all, which would make this pass without proving anything.
+    harness.controller->add_expected_host("PC-001", "");
+
+    ComplianceReport report;
+    report.host_id = "PC-001";
+    report.results = {CheckResult{"a", CheckStatus::Error, "denied", ""},
+                      CheckResult{"b", CheckStatus::Fail, "not running", ""}};
+    publish_report(harness, report);
+
+    EXPECT_EQ(compliance_tag_labels(harness, QStringLiteral("PC-001")).join(QChar(u'|')).toStdString(),
+              "b|a");
+}
+
+TEST(FleetWindowCompliance, ListsNeitherPassesNorNotApplicableAsTags) {
+    // Passes are counted, never listed -- a wall of green pushes the one red
+    // line that matters off the row. A rule the host cannot evaluate is not a
+    // problem with the host.
+    Harness harness;
+    harness.controller->start();
+    // Expected, so reporting makes it Online. An Unexpected host lists no tags
+    // at all, which would make this pass without proving anything.
+    harness.controller->add_expected_host("PC-001", "");
+    publish_report(harness, report_for("PC-001", {CheckStatus::Pass, CheckStatus::NotApplicable}));
+
+    EXPECT_TRUE(compliance_tag_labels(harness, QStringLiteral("PC-001")).isEmpty());
+}
+
+TEST(FleetWindowCompliance, FallsBackToTheRuleIdWhenTheRuleIsGone) {
+    // The bundle changed between the client evaluating and this arriving.
+    // Better a join key on screen than a blank tag with nothing to look up.
+    Harness harness;
+    harness.controller->start();
+    // Expected, so reporting makes it Online. An Unexpected host lists no tags
+    // at all, which would make this pass without proving anything.
+    harness.controller->add_expected_host("PC-001", "");
+
+    ComplianceReport report;
+    report.host_id = "PC-001";
+    report.results = {CheckResult{"vanished-rule", CheckStatus::Fail, "", ""}};
+    publish_report(harness, report);
+
+    EXPECT_EQ(compliance_tag_labels(harness, QStringLiteral("PC-001")).join(QChar(u'|')).toStdString(),
+              "vanished-rule");
+}
+
+TEST(FleetWindowCompliance, SaysNotReportingForAHostThatNeverHas) {
+    // Never "0 / 0", which on a machine nobody has heard from reads as a clean
+    // bill of health rather than as the absence of one.
+    Harness harness;
+    harness.controller->start();
+    harness.controller->add_expected_host("PC-dead", "");
+    QApplication::processEvents();
+
+    EXPECT_EQ(compliance_text(harness, QStringLiteral("PC-dead")).toStdString(), "Not reporting");
+}
+
+TEST(FleetWindowCompliance, NeverScoresAnUnreportedHostAsZeroOverZero) {
+    Harness harness;
+    harness.controller->start();
+    harness.controller->add_expected_host("PC-002", "");
+    QApplication::processEvents();
+
+    EXPECT_NE(compliance_text(harness, QStringLiteral("PC-002")).toStdString(), "0 / 0");
+}
+
+TEST(FleetWindowCompliance, ListsNoTagsForAnUnexpectedHost) {
+    // Its problem is that it is on the network at all. The failures are live
+    // and true, and naming them on the row buries the one fact worth acting on
+    // under detail about a machine nobody has agreed to manage.
     Harness harness;
     harness.controller->start();
 
     ComplianceReport report;
-    report.host_id = "PC-001";
-    report.results = {CheckResult{"r1", CheckStatus::Pass, "running", ""},
-                      CheckResult{"r2", CheckStatus::Fail, "No link", ""},
-                      CheckResult{"r3", CheckStatus::Error, "read failed", "ACCESS_DENIED"}};
+    report.host_id = "ROGUE";
+    report.results = {CheckResult{"a", CheckStatus::Fail, "", ""}};
     publish_report(harness, report);
 
-    QTreeWidgetItem* host = compliance_tree(harness)->topLevelItem(0);
-    const QStringList rows = rows_under(host);
-    ASSERT_EQ(rows.size(), 2) << "passing rules are counted, not listed";
-    EXPECT_TRUE(rows[0].contains(QStringLiteral("r2"))) << rows[0].toStdString();
-    EXPECT_TRUE(rows[0].contains(QStringLiteral("No link")));
-    EXPECT_TRUE(rows[1].contains(QStringLiteral("ACCESS_DENIED")))
-        << "an error's message is the only thing that explains it";
+    ASSERT_EQ(compliance_text(harness, QStringLiteral("ROGUE")).toStdString(), "0 / 1")
+        << "the ratio is a real reading and stays";
+    EXPECT_TRUE(compliance_tag_labels(harness, QStringLiteral("ROGUE")).isEmpty());
 }
 
-TEST(FleetWindowCompliance, PutsFailuresAboveErrorsAndNotApplicable) {
+TEST(FleetWindowCompliance, PutsTheWorstHostFirstAndSilentOnesAboveThem) {
     Harness harness;
     harness.controller->start();
+    // Expected, so that reporting makes them Online. Without this they are
+    // Unexpected, whose severity carries no ratio tie-break at all -- and the
+    // order that came out was simply the order the reports arrived in, which
+    // this assertion would have mistaken for worst-first.
+    for (const char* host : {"PC-bad", "PC-mild", "PC-clean", "PC-dead"}) {
+        harness.controller->add_expected_host(host, "");
+    }
+    publish_report(harness, report_for("PC-bad", {CheckStatus::Fail, CheckStatus::Fail}));
+    publish_report(harness, report_for("PC-mild", {CheckStatus::Pass, CheckStatus::Fail}));
+    publish_report(harness, report_for("PC-clean", {CheckStatus::Pass, CheckStatus::Pass}));
+    QApplication::processEvents();
 
-    ComplianceReport report;
-    report.host_id = "PC-001";
-    report.results = {CheckResult{"na", CheckStatus::NotApplicable, "no capability", ""},
-                      CheckResult{"err", CheckStatus::Error, "read failed", ""},
-                      CheckResult{"bad", CheckStatus::Fail, "not running", ""}};
-    publish_report(harness, report);
-
-    const QStringList rows = rows_under(compliance_tree(harness)->topLevelItem(0));
-    ASSERT_EQ(rows.size(), 3);
-    EXPECT_TRUE(rows[0].contains(QStringLiteral("bad")));
-    EXPECT_TRUE(rows[1].contains(QStringLiteral("err")));
-    EXPECT_TRUE(rows[2].contains(QStringLiteral("na")));
+    const QStringList hosts = hosts_in_view(harness);
+    const auto position = [&hosts](const char* host) { return hosts.indexOf(QLatin1String(host)); };
+    const std::string order = hosts.join(QChar(u'|')).toStdString();
+    EXPECT_LT(position("PC-dead"), position("PC-bad")) << order;
+    EXPECT_LT(position("PC-bad"), position("PC-mild")) << order;
+    EXPECT_LT(position("PC-mild"), position("PC-clean")) << order;
 }
-
-TEST(FleetWindowCompliance, SaysSoExplicitlyWhenAHostIsFullyCompliant) {
-    // An empty group reads as "no data" from across a room.
-    Harness harness;
-    harness.controller->start();
-    publish_report(harness, report_for("PC-001", {CheckStatus::Pass, CheckStatus::Pass}));
-
-    const QStringList rows = rows_under(compliance_tree(harness)->topLevelItem(0));
-    ASSERT_EQ(rows.size(), 1);
-    EXPECT_TRUE(rows.first().contains(QStringLiteral("All 2 checked rules passing")))
-        << rows.first().toStdString();
-}
-
-TEST(FleetWindowCompliance, LeavesNotApplicableOutOfTheRatioButStillListsIt) {
-    // A rule the client cannot evaluate can never pass, so counting it in the
-    // denominator would park the host at a score it can never improve — but it
-    // still has to be visible, or the rule looks silently satisfied.
-    Harness harness;
-    harness.controller->start();
-    publish_report(harness, report_for("PC-001", {CheckStatus::Pass, CheckStatus::NotApplicable,
-                                                   CheckStatus::NotApplicable}));
-
-    QTreeWidgetItem* host = compliance_tree(harness)->topLevelItem(0);
-    EXPECT_EQ(host->text(1).toStdString(), "1 / 1 rules passed");
-    EXPECT_EQ(rows_under(host).size(), 2) << "the excluded rules must stay on screen";
-}
-
-TEST(FleetWindowCompliance, EveryGroupIsExpandedBecauseNobodyCanClickIt) {
-    Harness harness;
-    harness.controller->start();
-    publish_report(harness, report_for("PC-001", {CheckStatus::Fail}));
-
-    EXPECT_TRUE(compliance_tree(harness)->topLevelItem(0)->isExpanded());
-}
-
-TEST(FleetWindowCompliance, ListsTheWorstHostsFirst) {
-    // The tab exists to find what needs attention; alphabetical order would
-    // bury a host with three failures under one with none.
-    Harness harness;
-
-    harness.controller->start();
-    publish_report(harness, report_for("PC-aaa", {CheckStatus::Pass}));
-    publish_report(harness, report_for("PC-zzz", {CheckStatus::Fail, CheckStatus::Fail}));
-
-    QTreeWidget* tree = compliance_tree(harness);
-    ASSERT_EQ(tree->topLevelItemCount(), 2);
-    EXPECT_EQ(tree->topLevelItem(0)->text(0).toStdString(), "PC-zzz");
-    EXPECT_EQ(tree->topLevelItem(1)->text(0).toStdString(), "PC-aaa");
-}
-
-TEST(FleetWindowCompliance, StartsEmptyBeforeAnyHostReports) {
-    Harness harness;
-    EXPECT_EQ(compliance_tree(harness)->topLevelItemCount(), 0);
-}
-
-TEST(FleetWindowCompliance, ListsAnExpectedHostThatHasNeverReported) {
-    // A machine nobody can hear from cannot be compliant, and a tab that simply
-    // leaves it out says, on a wall display, that nothing is wrong with it.
-    Harness harness;
-    harness.controller->start();
-    harness.controller->add_expected_host("PC-dead", "10.0.0.9");
-
-    QTreeWidget* tree = compliance_tree(harness);
-    ASSERT_EQ(tree->topLevelItemCount(), 1);
-    EXPECT_EQ(tree->topLevelItem(0)->text(0).toStdString(), "PC-dead");
-    EXPECT_TRUE(tree->topLevelItem(0)->text(1).contains(QStringLiteral("Missing")))
-        << tree->topLevelItem(0)->text(1).toStdString();
-}
-
-TEST(FleetWindowCompliance, SaysNoRulesAreBeingCheckedOnASilentHost) {
-    // Not "0 / 0 rules passed", which reads as a clean bill of health.
-    Harness harness;
-    harness.controller->start();
-    harness.controller->add_expected_host("PC-dead", "");
-
-    QTreeWidgetItem* host = compliance_tree(harness)->topLevelItem(0);
-    ASSERT_NE(host, nullptr);
-    EXPECT_FALSE(host->text(1).contains(QStringLiteral("rules passed"))) << "a silent host has no score";
-
-    const QStringList rows = rows_under(host);
-    ASSERT_EQ(rows.size(), 1);
-    EXPECT_TRUE(rows.first().contains(QStringLiteral("no rules are being checked")))
-        << rows.first().toStdString();
-}
-
-TEST(FleetWindowCompliance, PutsSilentHostsAboveFailingOnes) {
-    // The fleet tab already ranks Missing above everything else: a machine that
-    // is not answering is a bigger unknown than a rule known to be broken.
-    Harness harness;
-    harness.controller->start();
-    publish_report(harness, report_for("PC-loud", {CheckStatus::Fail, CheckStatus::Fail}));
-    harness.controller->add_expected_host("PC-dead", "");
-
-    QTreeWidget* tree = compliance_tree(harness);
-    ASSERT_EQ(tree->topLevelItemCount(), 2);
-    EXPECT_EQ(tree->topLevelItem(0)->text(0).toStdString(), "PC-dead");
-    EXPECT_EQ(tree->topLevelItem(1)->text(0).toStdString(), "PC-loud");
-}
-
-TEST(FleetWindowCompliance, CountsSilentHostsInTheHeadline) {
-    Harness harness;
-    harness.controller->start();
-    publish_report(harness, report_for("PC-loud", {CheckStatus::Pass}));
-    harness.controller->add_expected_host("PC-dead", "");
-
-    const QString headline = compliance_headline(harness);
-    EXPECT_TRUE(headline.contains(QStringLiteral("1 not reporting"))) << headline.toStdString();
-}
-
 TEST(FleetWindowAssignments, CreatesATemplateNamedInAnAssignment) {
     Harness harness;
     lm::ui::TokenEdit* editor = harness.assignment_editor();
@@ -600,4 +628,74 @@ TEST(FleetWindowRules, OffersBothDdsKindsInTheAddRuleDialog) {
     const QStringList kinds = AddRuleDialog::kind_choices();
     EXPECT_TRUE(kinds.contains(QStringLiteral("DDS: topic is published"))) << kinds.join(", ").toStdString();
     EXPECT_TRUE(kinds.contains(QStringLiteral("DDS: value on a topic"))) << kinds.join(", ").toStdString();
+}
+
+namespace {
+
+/// Announces the way a client does, so the whole path is exercised: the codec,
+/// the registry, reconcile() and the model. Emitting the controller's signal
+/// directly would skip the two places this feature actually lives.
+void publish_announce(Harness& harness, const std::string& host, bool paused) {
+    const auto client = make_in_memory_client(harness.bus);
+    ClientAnnounce announce;
+    announce.host_id = host;
+    announce.agent_version = "test";
+    announce.capabilities = 0;
+    announce.paused = paused;
+    client->publish_announce(announce);
+    QApplication::processEvents();
+}
+
+QString state_text(const Harness& harness, const QString& host) {
+    QTableView* table = fleet_table(harness);
+    QAbstractItemModel* model = table->model();
+    for (int row = 0; row < model->rowCount(); ++row) {
+        if (model->index(row, lm::ui::FleetModel::HostColumn)
+                .data(lm::ui::FleetModel::HostIdRole)
+                .toString() == host) {
+            return model->index(row, lm::ui::FleetModel::StateColumn).data().toString();
+        }
+    }
+    return {};
+}
+
+}  // namespace
+
+TEST(FleetWindowPaused, APausedClientReadsAsPausedNotOnline) {
+    Harness harness;
+    harness.controller->start();
+    harness.controller->add_expected_host("PC-001", "");
+    publish_announce(harness, "PC-001", true);
+
+    EXPECT_EQ(state_text(harness, QStringLiteral("PC-001")).toStdString(), "Paused");
+    EXPECT_EQ(compliance_text(harness, QStringLiteral("PC-001")).toStdString(), "Paused");
+}
+
+TEST(FleetWindowPaused, ResumingPutsItBackOnline) {
+    Harness harness;
+    harness.controller->start();
+    harness.controller->add_expected_host("PC-001", "");
+    publish_announce(harness, "PC-001", true);
+    ASSERT_EQ(state_text(harness, QStringLiteral("PC-001")).toStdString(), "Paused");
+
+    publish_announce(harness, "PC-001", false);
+    EXPECT_EQ(state_text(harness, QStringLiteral("PC-001")).toStdString(), "Online");
+}
+
+TEST(FleetWindowPaused, ListsNoTagsWhilePausedButKeepsTheLastKnownScore) {
+    Harness harness;
+    harness.controller->start();
+    harness.controller->add_expected_host("PC-001", "");
+    publish_announce(harness, "PC-001", false);
+
+    ComplianceReport report;
+    report.host_id = "PC-001";
+    report.results = {CheckResult{"a", CheckStatus::Pass, "", ""},
+                      CheckResult{"b", CheckStatus::Fail, "", ""}};
+    publish_report(harness, report);
+    ASSERT_FALSE(compliance_tag_labels(harness, QStringLiteral("PC-001")).isEmpty());
+
+    publish_announce(harness, "PC-001", true);
+    EXPECT_EQ(compliance_text(harness, QStringLiteral("PC-001")).toStdString(), "last known 1 / 2");
+    EXPECT_TRUE(compliance_tag_labels(harness, QStringLiteral("PC-001")).isEmpty());
 }

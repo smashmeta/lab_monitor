@@ -1,10 +1,12 @@
 #include "lm/ui/fleet_model.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <iterator>
 
 #include <QDateTime>
+#include <QStringList>
 #include <QString>
 #include <QTimeZone>
 
@@ -20,9 +22,61 @@ int severity_of(core::HostState state) {
         case core::HostState::Missing:    return 0;
         case core::HostState::Offline:    return 1;
         case core::HostState::Unexpected: return 2;
-        case core::HostState::Online:     return 3;
+        case core::HostState::Paused:     return 3;
+        case core::HostState::Online:     return 4;
     }
-    return 4;
+    return 5;
+}
+
+/// Lower sorts first, within the band its state gives it.
+///
+/// State decides the band: a machine nobody can hear from outranks a broken
+/// rule, because the rule is a known problem with a known fix and the silence
+/// is an unknown. Inside the Online band the ordering is the one the Compliance
+/// tab used to provide and would otherwise be lost with it -- failing worst
+/// first, then not-yet-reported, then clean. Two views disagreeing about which
+/// host is most urgent is worse than either order, and now there is only one.
+int severity_score(core::HostState state, const std::optional<core::ComplianceSummary>& summary) {
+    const int band = severity_of(state) * 1000;
+    if (state != core::HostState::Online) {
+        return band;
+    }
+    if (!summary) {
+        return band + 900;  // reported nothing yet: less urgent than a failure
+    }
+    if (summary->failing == 0 && summary->errors == 0) {
+        return band + 999;  // clean: the bottom of the list
+    }
+    // 0..899, so the worst-scoring host sorts above every other failing one and
+    // all of them sort above the two cases handled just now.
+    return band + static_cast<int>(std::lround(summary->passed_ratio() * 899.0));
+}
+
+/// True for a host that is not currently reporting.
+///
+/// Paused belongs here even though the machine is demonstrably alive and still
+/// announcing: what makes a report stale is that no new one is coming, and that
+/// is equally true whether the silence was chosen or not.
+bool is_silent(core::HostState state) {
+    return state == core::HostState::Missing || state == core::HostState::Offline ||
+           state == core::HostState::Paused;
+}
+
+/// Whether this row should name the rules a host is not passing.
+///
+/// Online only, which excludes two rather different cases for two reasons.
+///
+/// A silent host, because those rules describe a machine that is no longer
+/// answering and a row of live-looking tags claims a freshness the reading does
+/// not have.
+///
+/// An Unexpected host, because its problem is that it is on the network at all.
+/// Its rule failures are live and true, and listing them still buries the one
+/// fact worth acting on under detail about a machine nobody has agreed to
+/// manage. The ratio stays -- it is a real reading -- and the full list is a
+/// hover away, in the same place the tags that do not fit already live.
+bool shows_tags(core::HostState state) {
+    return state == core::HostState::Online;
 }
 
 QString format_last_seen(const std::optional<core::TimePoint>& last_seen) {
@@ -56,6 +110,49 @@ QString adapter_tooltip(const std::vector<core::NetworkAdapter>& adapters) {
     return lines.join(QChar(u'\n'));
 }
 
+/// The whole compliance picture for one host, since the cell itself can only
+/// fit so many tags before it has to say "+3 more". This is the hover that
+/// makes that truncation safe -- appropriate on the Fleet tab, which is read by
+/// someone sitting at the keyboard, and exactly what the Compliance tab could
+/// not do when it was read from across a room.
+QString compliance_tooltip(core::HostState state,
+                           const std::optional<core::ComplianceSummary>& summary,
+                           const QVector<ComplianceTag>& tags) {
+    if (is_silent(state)) {
+        QString text = state == core::HostState::Paused
+                           ? QStringLiteral("Paused by the operator - no rules are being checked.")
+                           : QStringLiteral("Not reporting - no rules are being checked.");
+        if (summary) {
+            text += QStringLiteral("\n\nLast known: %1 of %2 checked rules passed.")
+                        .arg(summary->passed)
+                        .arg(summary->checked());
+        }
+        return text;
+    }
+    if (!summary) {
+        return QStringLiteral("No compliance report yet.");
+    }
+
+    QStringList lines;
+    lines << QStringLiteral("%1 of %2 checked rules passed.")
+                 .arg(summary->passed)
+                 .arg(summary->checked());
+    if (summary->not_applicable > 0) {
+        // Named rather than silently dropped: they are out of the ratio on
+        // purpose, and a reader counting rules would otherwise find some
+        // missing with nothing to say where they went.
+        lines << QStringLiteral("%1 not applicable to this host, and so not counted.")
+                     .arg(summary->not_applicable);
+    }
+    if (!tags.isEmpty()) {
+        lines << QString();
+        for (const ComplianceTag& tag : tags) {
+            lines << QStringLiteral("%1\t%2").arg(Theme::glyph_for(tag.status), tag.label);
+        }
+    }
+    return lines.join(QChar(u'\n'));
+}
+
 }  // namespace
 
 FleetModel::FleetModel(QObject* parent) : QAbstractTableModel(parent) {}
@@ -79,7 +176,10 @@ QVariant FleetModel::data(const QModelIndex& index, int role) const {
         case HostIdRole:
             return QString::fromStdString(row.entry.host_id);
         case SeverityRole:
-            return severity_of(row.entry.state);
+            return severity_score(row.entry.state, row.summary);
+        case ComplianceTagsRole:
+            return shows_tags(row.entry.state) ? QVariant::fromValue(row.tags)
+                                               : QVariant::fromValue(QVector<ComplianceTag>());
         case StateRole:
             return static_cast<int>(row.entry.state);
         case StaleRole:
@@ -142,6 +242,35 @@ QVariant FleetModel::data(const QModelIndex& index, int role) const {
             // about whether the machine is actually on the network.
             return QStringLiteral("%1 / %2").arg(connected).arg(row.resources.adapters.size());
         }
+        case ComplianceColumn: {
+            if (role == Qt::ToolTipRole) {
+                return compliance_tooltip(row.entry.state, row.summary, row.tags);
+            }
+            if (is_silent(row.entry.state)) {
+                // Never "0 / 0": on a machine nobody has heard from that reads
+                // as a clean bill of health rather than as an absence of one.
+                // A report from before it went quiet is shown, and labelled as
+                // the historical reading it is.
+                if (row.summary) {
+                    return QStringLiteral("last known %1 / %2")
+                        .arg(row.summary->passed)
+                        .arg(row.summary->checked());
+                }
+                // Named for the reason it is quiet: "Paused" is a thing someone
+                // did and can undo, where "Not reporting" is a machine to go
+                // and look at. Reading them the same way wastes a trip.
+                return row.entry.state == core::HostState::Paused
+                           ? QStringLiteral("Paused")
+                           : QStringLiteral("Not reporting");
+            }
+            if (!row.summary) {
+                return QStringLiteral("-");
+            }
+            // passed over checked(), which excludes NotApplicable: a rule the
+            // client cannot evaluate can never pass, so counting it would park
+            // a Linux box at "5 / 10" forever with no action able to improve it.
+            return QStringLiteral("%1 / %2").arg(row.summary->passed).arg(row.summary->checked());
+        }
         case RevisionColumn:
             return row.entry.stale ? QStringLiteral("Stale") : QStringLiteral("Current");
         case LastSeenColumn:
@@ -162,6 +291,7 @@ QVariant FleetModel::headerData(int section, Qt::Orientation orientation, int ro
         case MemoryColumn:   return QStringLiteral("Memory");
         case DiskColumn:     return QStringLiteral("Disk");
         case AdaptersColumn: return QStringLiteral("Adapters");
+        case ComplianceColumn: return QStringLiteral("Compliance");
         case RevisionColumn: return QStringLiteral("Revision");
         case LastSeenColumn: return QStringLiteral("Last Seen");
         default:             return {};
@@ -239,13 +369,17 @@ FleetModel::RowHealth FleetModel::health_of(int row) const {
         case core::HostState::Unexpected: return RowHealth::Unexpected;
         case core::HostState::Missing:    return RowHealth::Missing;
         case core::HostState::Offline:    return RowHealth::Offline;
+        case core::HostState::Paused:     return RowHealth::Paused;
         case core::HostState::Online:     break;
     }
 
-    if (!r.compliant) {
+    if (!r.summary) {
         return RowHealth::Unknown;
     }
-    return *r.compliant ? RowHealth::Compliant : RowHealth::Failing;
+    // Matches core::is_compliant: only Fail counts against a host. A Linux box
+    // cannot fail a registry rule, and a transient probe error is not a
+    // violation -- neither should paint the row yellow.
+    return r.summary->failing == 0 ? RowHealth::Compliant : RowHealth::Failing;
 }
 
 QColor FleetModel::colour_for(RowHealth health) {
@@ -253,6 +387,7 @@ QColor FleetModel::colour_for(RowHealth health) {
         case RowHealth::Unexpected: return QColor(Theme::kUnexpected);
         case RowHealth::Missing:    return QColor(Theme::kMissing);
         case RowHealth::Offline:    return QColor(Theme::kNotApplicable);
+        case RowHealth::Paused:     return QColor(Theme::kPaused);
         case RowHealth::Failing:    return QColor(Theme::kOffline);
         case RowHealth::Compliant:  return QColor(Theme::kOnline);
         case RowHealth::Unknown:    return QColor(Theme::kTextMuted);
@@ -260,26 +395,26 @@ QColor FleetModel::colour_for(RowHealth health) {
     return QColor(Theme::kText);
 }
 
-void FleetModel::apply_compliance(const core::ComplianceReport& report) {
+void FleetModel::apply_compliance(const core::ComplianceReport& report,
+                                  QVector<ComplianceTag> tags) {
     const int row = index_of(report.host_id);
     if (row < 0) {
         return;  // a report for a host this view does not list
     }
 
-    // Matches core::is_compliant: only Fail counts against a host. A Linux box
-    // cannot fail a registry rule, and a transient probe error is not a
-    // violation -- neither should paint the row yellow.
-    const bool compliant = core::is_compliant(report);
+    const core::ComplianceSummary summary = core::summarise(report);
 
     Row& r = rows_[static_cast<std::size_t>(row)];
-    if (r.compliant && *r.compliant == compliant) {
+    if (r.summary && *r.summary == summary && r.tags == tags) {
         return;  // nothing visible changed
     }
-    r.compliant = compliant;
+    r.summary = summary;
+    r.tags = std::move(tags);
 
-    // Health colours every column, so the whole row has to repaint -- but only
-    // this row, and only when the verdict actually moved.
-    emit dataChanged(index(row, 0), index(row, ColumnCount - 1), {Qt::ForegroundRole});
+    // The whole row, and not only ForegroundRole. Health still colours every
+    // column, but the compliance column's own text and tags moved too, and its
+    // SeverityRole -- which the proxy sorts on -- moved with the ratio.
+    emit dataChanged(index(row, 0), index(row, ColumnCount - 1));
 }
 
 void FleetModel::apply_sample(const transport::ResourceSampleMessage& sample) {

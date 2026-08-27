@@ -439,7 +439,7 @@ TEST(FleetModelHealth, AnOnlineHostWhoseRulesAllPassIsCompliant) {
     ComplianceReport report;
     report.host_id = "PC-001";
     report.results = {CheckResult{"r1", CheckStatus::Pass, "running", ""}};
-    model.apply_compliance(report);
+    model.apply_compliance(report, {});
 
     EXPECT_EQ(model.health_of(0), FleetModel::RowHealth::Compliant);
 }
@@ -452,7 +452,7 @@ TEST(FleetModelHealth, AnOnlineHostWithAFailingRuleIsFailing) {
     report.host_id = "PC-001";
     report.results = {CheckResult{"r1", CheckStatus::Pass, "running", ""},
                       CheckResult{"r2", CheckStatus::Fail, "not running", ""}};
-    model.apply_compliance(report);
+    model.apply_compliance(report, {});
 
     EXPECT_EQ(model.health_of(0), FleetModel::RowHealth::Failing);
 }
@@ -467,7 +467,7 @@ TEST(FleetModelHealth, NotApplicableAndErrorDoNotCountAsFailures) {
     report.host_id = "PC-001";
     report.results = {CheckResult{"r1", CheckStatus::NotApplicable, "", ""},
                       CheckResult{"r2", CheckStatus::Error, "read failed", "denied"}};
-    model.apply_compliance(report);
+    model.apply_compliance(report, {});
 
     EXPECT_EQ(model.health_of(0), FleetModel::RowHealth::Compliant);
 }
@@ -481,7 +481,7 @@ TEST(FleetModelHealth, AnOfflineHostKeepsOfflineEvenWithAFailingReport) {
     ComplianceReport report;
     report.host_id = "PC-001";
     report.results = {CheckResult{"r1", CheckStatus::Fail, "not running", ""}};
-    model.apply_compliance(report);
+    model.apply_compliance(report, {});
     ASSERT_EQ(model.health_of(0), FleetModel::RowHealth::Failing);
 
     model.apply(view_with({{"PC-001", HostState::Offline}}));
@@ -506,7 +506,7 @@ TEST(FleetModelHealth, ComplianceForAnUnknownHostIsIgnored) {
     ComplianceReport report;
     report.host_id = "GHOST";
     report.results = {CheckResult{"r1", CheckStatus::Fail, "", ""}};
-    EXPECT_NO_THROW(model.apply_compliance(report));
+    EXPECT_NO_THROW(model.apply_compliance(report, {}));
 
     EXPECT_EQ(model.health_of(0), FleetModel::RowHealth::Unknown);
 }
@@ -518,4 +518,254 @@ TEST(FleetModel, ProvidesHeadersForEveryColumn) {
                          .toString()
                          .isEmpty());
     }
+}
+
+namespace {
+
+/// The compliance cell's text for row 0.
+QString compliance_text(const FleetModel& model) {
+    return model.data(model.index(0, FleetModel::ComplianceColumn), Qt::DisplayRole).toString();
+}
+
+QVector<ComplianceTag> compliance_tags(const FleetModel& model) {
+    return model.data(model.index(0, FleetModel::ComplianceColumn), FleetModel::ComplianceTagsRole)
+        .value<QVector<ComplianceTag>>();
+}
+
+}  // namespace
+
+TEST(FleetModelCompliance, ScoresPassedOverChecked) {
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    ComplianceReport report;
+    report.host_id = "PC-001";
+    report.results = {CheckResult{"r1", CheckStatus::Pass, "", ""},
+                      CheckResult{"r2", CheckStatus::Pass, "", ""},
+                      CheckResult{"r3", CheckStatus::Fail, "", ""}};
+    model.apply_compliance(report, {});
+
+    EXPECT_EQ(compliance_text(model).toStdString(), "2 / 3");
+}
+
+TEST(FleetModelCompliance, LeavesNotApplicableOutOfTheDenominator) {
+    // A rule the client cannot evaluate can never pass, so counting it would
+    // park a Linux box at "2 / 3" forever with no action able to improve it.
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    ComplianceReport report;
+    report.host_id = "PC-001";
+    report.results = {CheckResult{"r1", CheckStatus::Pass, "", ""},
+                      CheckResult{"r2", CheckStatus::Pass, "", ""},
+                      CheckResult{"r3", CheckStatus::NotApplicable, "", ""}};
+    model.apply_compliance(report, {});
+
+    EXPECT_EQ(compliance_text(model).toStdString(), "2 / 2");
+}
+
+TEST(FleetModelCompliance, KeepsErrorsInTheDenominator) {
+    // "Could not check it" is not "passed", and must not be scored as one --
+    // even though is_compliant() does not count it as a failure either.
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    ComplianceReport report;
+    report.host_id = "PC-001";
+    report.results = {CheckResult{"r1", CheckStatus::Pass, "", ""},
+                      CheckResult{"r2", CheckStatus::Error, "denied", ""}};
+    model.apply_compliance(report, {});
+
+    EXPECT_EQ(compliance_text(model).toStdString(), "1 / 2");
+}
+
+TEST(FleetModelCompliance, CarriesTheTagsItWasGiven) {
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    ComplianceReport report;
+    report.host_id = "PC-001";
+    report.results = {CheckResult{"r1", CheckStatus::Fail, "", ""},
+                      CheckResult{"r2", CheckStatus::Error, "", ""}};
+    model.apply_compliance(report, {ComplianceTag{QStringLiteral("Antivirus must be running"),
+                                                  CheckStatus::Fail},
+                                    ComplianceTag{QStringLiteral("Wire is plugged in"),
+                                                  CheckStatus::Error}});
+
+    const QVector<ComplianceTag> tags = compliance_tags(model);
+    ASSERT_EQ(tags.size(), 2);
+    EXPECT_EQ(tags[0].label.toStdString(), "Antivirus must be running");
+    EXPECT_EQ(tags[0].status, CheckStatus::Fail);
+    EXPECT_EQ(tags[1].status, CheckStatus::Error);
+}
+
+TEST(FleetModelCompliance, ASilentHostSaysSoRatherThanScoringZeroOverZero) {
+    // "0 / 0" on a machine nobody has heard from reads as a clean bill of
+    // health. It is the absence of one.
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Missing}}));
+
+    EXPECT_EQ(compliance_text(model).toStdString(), "Not reporting");
+}
+
+TEST(FleetModelCompliance, ASilentHostWithACachedReportLabelsItAsHistorical) {
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    ComplianceReport report;
+    report.host_id = "PC-001";
+    report.results = {CheckResult{"r1", CheckStatus::Pass, "", ""},
+                      CheckResult{"r2", CheckStatus::Fail, "", ""}};
+    model.apply_compliance(report, {ComplianceTag{QStringLiteral("Antivirus"), CheckStatus::Fail}});
+    ASSERT_EQ(compliance_text(model).toStdString(), "1 / 2");
+
+    model.apply(view_with({{"PC-001", HostState::Offline}}));
+    EXPECT_EQ(compliance_text(model).toStdString(), "last known 1 / 2");
+    // And no tags: those rules describe a machine that is no longer answering,
+    // so live-looking red tags on it would claim a freshness it does not have.
+    EXPECT_TRUE(compliance_tags(model).isEmpty());
+}
+
+TEST(FleetModelCompliance, AnOnlineHostWithNoReportShowsADash) {
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    EXPECT_EQ(compliance_text(model).toStdString(), "-");
+}
+
+TEST(FleetModelCompliance, SortsFailingHostsWorstFirst) {
+    // The order the Compliance tab used to provide, now the fleet table's.
+    FleetModel model;
+    model.apply(view_with({{"PC-BAD", HostState::Online},
+                           {"PC-CLEAN", HostState::Online},
+                           {"PC-MILD", HostState::Online}}));
+
+    auto score = [&model](const QString& host) {
+        for (int row = 0; row < model.rowCount(); ++row) {
+            if (model.data(model.index(row, 0), FleetModel::HostIdRole).toString() == host) {
+                return model.data(model.index(row, 0), FleetModel::SeverityRole).toInt();
+            }
+        }
+        return -1;
+    };
+    auto report_for = [](const std::string& host, int passed, int failing) {
+        ComplianceReport report;
+        report.host_id = host;
+        for (int i = 0; i < passed; ++i) {
+            report.results.push_back(CheckResult{"p", CheckStatus::Pass, "", ""});
+        }
+        for (int i = 0; i < failing; ++i) {
+            report.results.push_back(CheckResult{"f", CheckStatus::Fail, "", ""});
+        }
+        return report;
+    };
+
+    model.apply_compliance(report_for("PC-BAD", 0, 4), {});
+    model.apply_compliance(report_for("PC-MILD", 3, 1), {});
+    model.apply_compliance(report_for("PC-CLEAN", 4, 0), {});
+
+    EXPECT_LT(score(QStringLiteral("PC-BAD")), score(QStringLiteral("PC-MILD")));
+    EXPECT_LT(score(QStringLiteral("PC-MILD")), score(QStringLiteral("PC-CLEAN")));
+}
+
+TEST(FleetModelCompliance, ASilentHostOutranksEveryFailingOne) {
+    // A machine nobody can hear from is an unknown; a broken rule is a known
+    // problem with a known fix.
+    FleetModel model;
+    model.apply(view_with({{"PC-GONE", HostState::Offline}, {"PC-BAD", HostState::Online}}));
+
+    ComplianceReport report;
+    report.host_id = "PC-BAD";
+    report.results = {CheckResult{"f", CheckStatus::Fail, "", ""}};
+    model.apply_compliance(report, {});
+
+    auto score = [&model](const QString& host) {
+        for (int row = 0; row < model.rowCount(); ++row) {
+            if (model.data(model.index(row, 0), FleetModel::HostIdRole).toString() == host) {
+                return model.data(model.index(row, 0), FleetModel::SeverityRole).toInt();
+            }
+        }
+        return -1;
+    };
+    EXPECT_LT(score(QStringLiteral("PC-GONE")), score(QStringLiteral("PC-BAD")));
+}
+
+TEST(FleetModelCompliance, APausedHostSaysPausedRatherThanNotReporting) {
+    // "Paused" is something someone did and can undo; "Not reporting" is a
+    // machine to go and look at. Reading them the same way wastes a trip.
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Paused}}));
+
+    EXPECT_EQ(compliance_text(model).toStdString(), "Paused");
+}
+
+TEST(FleetModelCompliance, APausedHostShowsItsLastKnownScoreAndNoTags) {
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    ComplianceReport report;
+    report.host_id = "PC-001";
+    report.results = {CheckResult{"r1", CheckStatus::Pass, "", ""},
+                      CheckResult{"r2", CheckStatus::Fail, "", ""}};
+    model.apply_compliance(report, {ComplianceTag{QStringLiteral("Antivirus"), CheckStatus::Fail}});
+    ASSERT_EQ(compliance_text(model).toStdString(), "1 / 2");
+
+    model.apply(view_with({{"PC-001", HostState::Paused}}));
+    // Labelled as historical: no new report is coming while it is paused, which
+    // makes the cached one exactly as stale as a dead machine's.
+    EXPECT_EQ(compliance_text(model).toStdString(), "last known 1 / 2");
+    EXPECT_TRUE(compliance_tags(model).isEmpty());
+}
+
+TEST(FleetModelHealth, APausedHostIsNeitherCompliantNorFailing) {
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    ComplianceReport report;
+    report.host_id = "PC-001";
+    report.results = {CheckResult{"r1", CheckStatus::Fail, "", ""}};
+    model.apply_compliance(report, {});
+    ASSERT_EQ(model.health_of(0), FleetModel::RowHealth::Failing);
+
+    // Liveness still wins over compliance, exactly as it does for Offline.
+    model.apply(view_with({{"PC-001", HostState::Paused}}));
+    EXPECT_EQ(model.health_of(0), FleetModel::RowHealth::Paused);
+    EXPECT_EQ(FleetModel::colour_for(FleetModel::RowHealth::Paused), QColor(Theme::kPaused));
+}
+
+TEST(FleetModelCompliance, APausedHostSortsAboveEveryOnlineHostIncludingFailingOnes) {
+    FleetModel model;
+    model.apply(view_with({{"PC-bad", HostState::Online},
+                           {"PC-paused", HostState::Paused},
+                           {"PC-good", HostState::Online}}));
+
+    auto score = [&model](const QString& host) {
+        for (int row = 0; row < model.rowCount(); ++row) {
+            if (model.data(model.index(row, 0), FleetModel::HostIdRole).toString() == host) {
+                return model.data(model.index(row, 0), FleetModel::SeverityRole).toInt();
+            }
+        }
+        return -1;
+    };
+    auto report_for = [](const std::string& host, int passed, int failing) {
+        ComplianceReport report;
+        report.host_id = host;
+        for (int i = 0; i < passed; ++i) {
+            report.results.push_back(CheckResult{"p", CheckStatus::Pass, "", ""});
+        }
+        for (int i = 0; i < failing; ++i) {
+            report.results.push_back(CheckResult{"f", CheckStatus::Fail, "", ""});
+        }
+        return report;
+    };
+    model.apply_compliance(report_for("PC-bad", 0, 3), {});
+    model.apply_compliance(report_for("PC-good", 3, 0), {});
+
+    // State decides the band before compliance breaks any ties inside it, so a
+    // paused machine outranks even a host failing every rule it has. That is
+    // the same call Offline already makes over Failing -- a machine that is not
+    // being checked is a bigger gap than a machine that is being checked and
+    // found wanting, because the second one at least has a number attached.
+    EXPECT_LT(score(QStringLiteral("PC-paused")), score(QStringLiteral("PC-bad")));
+    EXPECT_LT(score(QStringLiteral("PC-bad")), score(QStringLiteral("PC-good")));
 }

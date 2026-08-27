@@ -103,6 +103,7 @@ StatusRibbon::StatusRibbon(QWidget* parent)
       offline_(new StatusCounterButton(QStringLiteral("Offline"), this)),
       missing_(new StatusCounterButton(QStringLiteral("Missing"), this)),
       unexpected_(new StatusCounterButton(QStringLiteral("Unexpected"), this)),
+      paused_(new StatusCounterButton(QStringLiteral("Paused"), this)),
       stale_(new StatusCounterButton(QStringLiteral("Stale"), this)) {
     auto* layout = new QHBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -111,6 +112,7 @@ StatusRibbon::StatusRibbon(QWidget* parent)
     layout->addWidget(offline_);
     layout->addWidget(missing_);
     layout->addWidget(unexpected_);
+    layout->addWidget(paused_);
     layout->addWidget(stale_);
     layout->addStretch();
 
@@ -122,6 +124,8 @@ StatusRibbon::StatusRibbon(QWidget* parent)
             [this] { handle_state_clicked(lm::core::HostState::Missing); });
     connect(unexpected_, &StatusCounterButton::clicked, this,
             [this] { handle_state_clicked(lm::core::HostState::Unexpected); });
+    connect(paused_, &StatusCounterButton::clicked, this,
+            [this] { handle_state_clicked(lm::core::HostState::Paused); });
     connect(stale_, &StatusCounterButton::clicked, this, &StatusRibbon::handle_stale_clicked);
 }
 
@@ -130,6 +134,7 @@ void StatusRibbon::set_counts(const lm::core::FleetCounts& counts) {
     offline_->set_value(static_cast<int>(counts.offline));
     missing_->set_value(static_cast<int>(counts.missing));
     unexpected_->set_value(static_cast<int>(counts.unexpected));
+    paused_->set_value(static_cast<int>(counts.paused));
     stale_->set_value(static_cast<int>(counts.stale));
 }
 
@@ -140,6 +145,7 @@ void StatusRibbon::clear_active() {
     offline_->set_active(false);
     missing_->set_active(false);
     unexpected_->set_active(false);
+    paused_->set_active(false);
     stale_->set_active(false);
 }
 
@@ -154,6 +160,7 @@ void StatusRibbon::handle_state_clicked(lm::core::HostState state) {
     offline_->set_active(active_state_filter_ == lm::core::HostState::Offline);
     missing_->set_active(active_state_filter_ == lm::core::HostState::Missing);
     unexpected_->set_active(active_state_filter_ == lm::core::HostState::Unexpected);
+    paused_->set_active(active_state_filter_ == lm::core::HostState::Paused);
 
     emit filter_requested(active_state_filter_);
 }

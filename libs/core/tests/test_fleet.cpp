@@ -165,3 +165,76 @@ TEST(Reconcile, DuplicateDiscoveryReportsCollapseToOneEntry) {
     // The most recent sighting wins.
     EXPECT_EQ(entry_for(view, "PC-001").state, HostState::Online);
 }
+
+namespace {
+
+DiscoveredClient paused_client(HostId id, TimePoint last_seen) {
+    DiscoveredClient c = client(std::move(id), last_seen);
+    c.paused = true;
+    return c;
+}
+
+}  // namespace
+
+TEST(ReconcilePaused, AnExpectedClientAnnouncingPausedIsPausedNotOnline) {
+    const FleetView view = reconcile({ExpectedHost{"PC-001", ""}},
+                                     {paused_client("PC-001", kNow)}, kNow, options());
+
+    EXPECT_EQ(entry_for(view, "PC-001").state, HostState::Paused);
+    EXPECT_EQ(view.counts.paused, 1u);
+    EXPECT_EQ(view.counts.online, 0u);
+}
+
+TEST(ReconcilePaused, OfflineWinsOnceTheLeaseHasExpired) {
+    // "It said it was paused" is a claim about intent, not about liveness. A
+    // machine we have stopped hearing from has made no liveness claim at all,
+    // whatever its last announce happened to say -- so a paused client that
+    // then dies must not stay parked at Paused forever.
+    const FleetView view = reconcile({ExpectedHost{"PC-001", ""}},
+                                     {paused_client("PC-001", kNow - 11s)}, kNow, options());
+
+    EXPECT_EQ(entry_for(view, "PC-001").state, HostState::Offline);
+    EXPECT_EQ(view.counts.paused, 0u);
+}
+
+TEST(ReconcilePaused, UnexpectedWinsOverPaused) {
+    // Not being on the list is the more important fact: a machine nobody has
+    // agreed to manage is a question about the network, and that it has paused
+    // its own reporting does not answer it.
+    const FleetView view = reconcile({}, {paused_client("ROGUE", kNow)}, kNow, options());
+
+    EXPECT_EQ(entry_for(view, "ROGUE").state, HostState::Unexpected);
+    EXPECT_EQ(view.counts.paused, 0u);
+}
+
+TEST(ReconcilePaused, SortsBetweenUnexpectedAndOnline) {
+    const FleetView view = reconcile(
+        {ExpectedHost{"PC-paused", ""}, ExpectedHost{"PC-online", ""}, ExpectedHost{"PC-gone", ""}},
+        {paused_client("PC-paused", kNow), client("PC-online", kNow)}, kNow, options());
+
+    std::vector<HostId> order;
+    for (const FleetEntry& entry : view.entries) {
+        order.push_back(entry.host_id);
+    }
+    ASSERT_EQ(order.size(), 3u);
+    EXPECT_EQ(order[0], "PC-gone");     // Missing
+    EXPECT_EQ(order[1], "PC-paused");   // chosen quiet, but still not being checked
+    EXPECT_EQ(order[2], "PC-online");
+}
+
+TEST(ReconcilePaused, ResumingPutsAHostBackOnline) {
+    DiscoveredClient resumed = client("PC-001", kNow);
+    resumed.paused = false;
+
+    const FleetView view =
+        reconcile({ExpectedHost{"PC-001", ""}}, {resumed}, kNow, options());
+
+    EXPECT_EQ(entry_for(view, "PC-001").state, HostState::Online);
+}
+
+TEST(ReconcilePaused, TheDefaultLeaseIsThreeAnnounceIntervals) {
+    // The client announces every 10 s. A lease of the same 10 s is a
+    // knife-edge, and now that the announce is the only carrier of the pause
+    // flag, one jittered heartbeat would flicker a paused machine to Offline.
+    EXPECT_EQ(ReconcileOptions{}.liveliness_lease, 30s);
+}

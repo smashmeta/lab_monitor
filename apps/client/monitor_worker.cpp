@@ -64,6 +64,12 @@ void MonitorWorker::announce() {
     message.host_id = probes_->host_id();
     message.agent_version = kAgentVersion;
     message.capabilities = probes_->capabilities().raw();
+    // Deliberately not guarded by paused_, unlike the sample and the report.
+    // Pausing stops what this machine says about itself; it does not stop the
+    // machine saying it is here. The announce is what carries the pause to the
+    // server, so silencing it would leave a paused client indistinguishable
+    // from a dead one -- which is the whole reading this flag exists to fix.
+    message.paused = paused_;
     transport_->publish_announce(message);
 }
 

@@ -1,6 +1,7 @@
 #include "server_controller.hpp"
 
 #include <QByteArray>
+#include <QHash>
 #include <QDir>
 #include <QFile>
 #include <QIODevice>
@@ -15,6 +16,7 @@
 #include <spdlog/spdlog.h>
 
 #include "lm/core/json.hpp"
+#include "lm/ui/rule_detail.hpp"
 
 ServerController::ServerController(std::unique_ptr<lm::transport::IServerTransport> transport,
                                     QString config_dir, QObject* parent)
@@ -182,11 +184,47 @@ void ServerController::publish() {
 
 void ServerController::on_announce(const lm::transport::ClientAnnounce& announce) {
     registry_.record_announce(announce.host_id, lm::core::Capabilities(announce.capabilities),
-                               lm::core::Clock::now());
+                               announce.paused, lm::core::Clock::now());
     // Hearing from a machine is the evidence that moves it out of Missing, so
     // reflect it now rather than up to a second later on the timer. Announces
     // arrive every 10 s per client, so this costs nothing.
     reconcile_now();
+}
+
+QVector<lm::ui::ComplianceTag> ServerController::failing_tags(
+    const lm::core::ComplianceReport& report) const {
+    QHash<QString, QString> labels;
+    for (const lm::core::Rule* rule : lm::core::rules_for(published_, report.host_id)) {
+        labels.insert(QString::fromStdString(rule->id), lm::ui::describe(*rule).label);
+    }
+
+    QVector<lm::ui::ComplianceTag> tags;
+    for (const lm::core::CheckResult& result : report.results) {
+        // Fail and Error only. A pass is counted rather than listed -- a wall of
+        // green pushes the two red lines that matter off the row -- and a rule
+        // the host cannot evaluate is not a problem with the host.
+        if (result.status != lm::core::CheckStatus::Fail &&
+            result.status != lm::core::CheckStatus::Error) {
+            continue;
+        }
+        const QString id = QString::fromStdString(result.rule_id);
+        const auto label = labels.constFind(id);
+        // The id only when the rule is gone, which means the bundle changed
+        // between the client evaluating and this arriving. Better a join key on
+        // screen than a blank tag with nothing to look up.
+        tags.push_back({label != labels.constEnd() ? *label : id, result.status});
+    }
+
+    // Failures before errors, and otherwise the order the client reported them
+    // in. The cell shows as many tags as fit and then "+3 more", so what gets
+    // truncated is decided here -- and a rule that is definitely broken must
+    // not be pushed off the row by one that merely could not be read.
+    std::stable_sort(tags.begin(), tags.end(),
+                     [](const lm::ui::ComplianceTag& lhs, const lm::ui::ComplianceTag& rhs) {
+                         return lhs.status == lm::core::CheckStatus::Fail &&
+                                rhs.status != lm::core::CheckStatus::Fail;
+                     });
+    return tags;
 }
 
 void ServerController::on_report(const lm::transport::ComplianceReportMessage& report) {
@@ -199,8 +237,11 @@ void ServerController::on_report(const lm::transport::ComplianceReportMessage& r
     const QString host_id = QString::fromStdString(report.report.host_id);
     report_cache_.insert(host_id, report.report);
     // The fleet row is coloured by compliance as well as liveness, and
-    // core::FleetEntry carries only the latter.
-    model_.apply_compliance(report.report);
+    // core::FleetEntry carries only the latter. The row also names the rules
+    // this host is not passing, and a CheckResult carries only a rule id -- so
+    // the descriptions are recovered here, where the published bundle is, and
+    // handed to the model rather than the model learning to look them up.
+    model_.apply_compliance(report.report, failing_tags(report.report));
     emit compliance_report_received(host_id, report.report);
 }
 

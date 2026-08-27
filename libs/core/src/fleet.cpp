@@ -8,15 +8,20 @@
 namespace lm::core {
 namespace {
 
-/// Lower sorts first. Mirrors the declaration order of HostState.
+/// Lower sorts first. Not the declaration order of HostState: Paused was
+/// appended to that enum but belongs here between Unexpected and Online.
+/// Somebody chose to pause a machine, so it is not an alarm -- but it is not
+/// being checked either, and it should not sit among the healthy ones where it
+/// can be left paused and forgotten.
 int urgency(HostState state) {
     switch (state) {
         case HostState::Missing:    return 0;
         case HostState::Offline:    return 1;
         case HostState::Unexpected: return 2;
-        case HostState::Online:     return 3;
+        case HostState::Paused:     return 3;
+        case HostState::Online:     return 4;
     }
-    return 4;
+    return 5;
 }
 
 }  // namespace
@@ -63,8 +68,15 @@ FleetView reconcile(const std::vector<ExpectedHost>& expected,
             entry.last_seen = seen->second.last_seen;
             entry.caps = seen->second.caps;
             entry.stale = seen->second.applied_revision != options.current_revision;
-            entry.state = within_lease(seen->second.last_seen) ? HostState::Online
-                                                               : HostState::Offline;
+            // Offline wins over Paused once the lease has expired. "It said it
+            // was paused" is a claim about intent, not about liveness, and a
+            // machine we have stopped hearing from has not made a liveness
+            // claim at all -- whatever the last announce happened to say.
+            if (!within_lease(seen->second.last_seen)) {
+                entry.state = HostState::Offline;
+            } else {
+                entry.state = seen->second.paused ? HostState::Paused : HostState::Online;
+            }
         }
         view.entries.push_back(std::move(entry));
     }
@@ -95,6 +107,7 @@ FleetView reconcile(const std::vector<ExpectedHost>& expected,
             case HostState::Offline:    ++view.counts.offline; break;
             case HostState::Missing:    ++view.counts.missing; break;
             case HostState::Unexpected: ++view.counts.unexpected; break;
+            case HostState::Paused:     ++view.counts.paused; break;
         }
         if (entry.stale) {
             ++view.counts.stale;
@@ -110,6 +123,7 @@ std::string to_string(HostState state) {
         case HostState::Offline:    return "Offline";
         case HostState::Missing:    return "Missing";
         case HostState::Unexpected: return "Unexpected";
+        case HostState::Paused:     return "Paused";
     }
     return "Unknown";
 }

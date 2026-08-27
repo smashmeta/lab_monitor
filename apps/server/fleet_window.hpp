@@ -91,8 +91,6 @@ private slots:
 private:
     void build_fleet_tab();
     /// "12 of 15 rules passed", per host, worst first.
-    void build_compliance_tab();
-    void rebuild_compliance_table();
     void build_templates_tab();
     void refresh_detail_pane(const QString& host_id);
     void populate_compliance_tree(const lm::core::ComplianceReport& report);
@@ -152,11 +150,6 @@ private:
     QTreeWidget* detail_compliance_tree_;
 
     QTabWidget* tabs_;
-
-    /// One expanded group per host, listing only what is wrong. Read-only and
-    /// oversized on purpose: this tab is written for a wall display.
-    QTreeWidget* compliance_tree_;
-    QLabel* compliance_summary_label_;
 
     QListWidget* template_list_;
     QTableWidget* rule_table_;

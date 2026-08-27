@@ -106,7 +106,8 @@ bool read_result(Cdr& reader, core::CheckResult& result) {
 
 std::vector<std::uint8_t> encode(const ClientAnnounce& message) {
     return serialise([&](Cdr& writer) {
-        writer << message.host_id << message.agent_version << message.capabilities;
+        writer << message.host_id << message.agent_version << message.capabilities
+               << message.paused;
     });
 }
 
@@ -114,6 +115,20 @@ bool decode(std::span<const std::uint8_t> bytes, ClientAnnounce& out) {
     ClientAnnounce parsed;
     const bool ok = deserialise(bytes, [&](Cdr& reader) {
         reader >> parsed.host_id >> parsed.agent_version >> parsed.capabilities;
+        // The paused flag was appended to this message after the three fields
+        // shipped, so a client built before it sends a buffer that ends here.
+        // Reading it in its own guard makes that a false rather than a failed
+        // decode -- and a failed decode would drop the announce outright, which
+        // is the only carrier of a client's capabilities, so an older agent
+        // would disappear from the fleet with nothing on screen to say why.
+        // A wrong pause flag is a far smaller wrong than a missing machine.
+        try {
+            reader >> parsed.paused;
+        } catch (const eprosima::fastcdr::exception::Exception&) {
+            parsed.paused = false;
+        } catch (const std::exception&) {
+            parsed.paused = false;
+        }
     });
     if (ok) {
         out = std::move(parsed);

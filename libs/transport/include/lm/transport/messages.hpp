@@ -14,6 +14,15 @@ struct ClientAnnounce {
     std::string agent_version;
     /// core::Capabilities::raw()
     std::uint32_t capabilities = 0;
+    /// The operator has paused reporting on this client.
+    ///
+    /// It rides the announce rather than stopping it. Pausing suppresses the
+    /// resource samples and the compliance reports, so the announce is the only
+    /// thing still arriving -- which makes it the one place that can say why the
+    /// rest went quiet. A client that stopped announcing too would be
+    /// indistinguishable from one that had died, which is exactly the reading
+    /// this exists to prevent.
+    bool paused = false;
     friend bool operator==(const ClientAnnounce&, const ClientAnnounce&) = default;
 };
 

@@ -19,9 +19,14 @@ DiscoveredClient& ClientRegistry::touch(const HostId& host_id, TimePoint seen_at
     return client;
 }
 
-void ClientRegistry::record_announce(const HostId& host_id, Capabilities caps, TimePoint seen_at) {
+void ClientRegistry::record_announce(const HostId& host_id, Capabilities caps, bool paused,
+                                     TimePoint seen_at) {
     DiscoveredClient& client = touch(host_id, seen_at);
     client.caps = caps;
+    // Only the announce carries this, and only the announce still arrives while
+    // a client is paused -- record_sample() and record_report() must not clear
+    // it, since a paused client sends neither.
+    client.paused = paused;
     // Deliberately does not touch applied_revision: a re-announce (e.g. after
     // a client reconnect) must not make an already-compliant client look
     // stale again.

@@ -11,7 +11,7 @@ namespace lm::core {
 /// timestamps are supplied by the caller, so this is fully testable.
 class ClientRegistry {
 public:
-    void record_announce(const HostId& host_id, Capabilities caps, TimePoint seen_at);
+    void record_announce(const HostId& host_id, Capabilities caps, bool paused, TimePoint seen_at);
     void record_sample(const HostId& host_id, TimePoint seen_at);
     void record_report(const HostId& host_id, std::uint64_t applied_revision, TimePoint seen_at);
     void mark_lost(const HostId& host_id);

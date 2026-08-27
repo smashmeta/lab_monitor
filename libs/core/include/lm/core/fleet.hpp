@@ -11,7 +11,10 @@
 
 namespace lm::core {
 
-enum class HostState { Missing, Offline, Unexpected, Online };
+/// Appended to rather than reordered: Paused is last because this enum is
+/// switched on in a dozen places and never serialised, so the numeric values
+/// are nobody s business. Display order is urgency(), not declaration order.
+enum class HostState { Missing, Offline, Unexpected, Online, Paused };
 
 struct ExpectedHost {
     HostId host_id;
@@ -25,6 +28,10 @@ struct DiscoveredClient {
     TimePoint last_seen{};
     Capabilities caps;
     std::uint64_t applied_revision = 0;
+    /// Last thing this client said about whether the operator has paused it.
+    /// Carried on the announce, which keeps arriving while paused -- see
+    /// transport::ClientAnnounce.
+    bool paused = false;
     friend bool operator==(const DiscoveredClient&, const DiscoveredClient&) = default;
 };
 
@@ -44,20 +51,30 @@ struct FleetCounts {
     std::size_t offline = 0;
     std::size_t missing = 0;
     std::size_t unexpected = 0;
+    std::size_t paused = 0;
     std::size_t stale = 0;
     friend bool operator==(const FleetCounts&, const FleetCounts&) = default;
 };
 
 struct FleetView {
-    /// Sorted most-urgent-first: Missing, Offline, Unexpected, Online; then by host id.
+    /// Sorted most-urgent-first: Missing, Offline, Unexpected, Paused, Online;
+    /// then by host id.
     std::vector<FleetEntry> entries;
     FleetCounts counts;
     friend bool operator==(const FleetView&, const FleetView&) = default;
 };
 
 struct ReconcileOptions {
-    /// Matches the DDS Liveliness lease on the ClientAnnounce topic.
-    std::chrono::milliseconds liveliness_lease = std::chrono::seconds{10};
+    /// Three announce intervals, not one.
+    ///
+    /// The client announces every 10 s, and a lease of the same 10 s is a
+    /// knife-edge: one jittered or dropped heartbeat flips a healthy machine to
+    /// Offline. That was always fragile, and it got worse when the announce
+    /// became the only carrier of the paused flag -- a missed beat would drop
+    /// the pause reading too, so a paused machine would flicker to Offline and
+    /// back. The cost is that a genuinely dead host takes up to 30 s rather
+    /// than 10 s to be called Offline.
+    std::chrono::milliseconds liveliness_lease = std::chrono::seconds{30};
     std::uint64_t current_revision = 0;
 };
 

@@ -16,7 +16,7 @@ TEST(ClientRegistry, StartsEmpty) {
 
 TEST(ClientRegistry, RecordsAnAnnouncement) {
     ClientRegistry registry;
-    registry.record_announce("PC-001", Capabilities{}.add(Capability::Resources), kNow);
+    registry.record_announce("PC-001", Capabilities{}.add(Capability::Resources), false, kNow);
 
     const auto clients = registry.snapshot();
     ASSERT_EQ(clients.size(), 1u);
@@ -27,7 +27,7 @@ TEST(ClientRegistry, RecordsAnAnnouncement) {
 
 TEST(ClientRegistry, SamplesRefreshLastSeenWithoutDuplicating) {
     ClientRegistry registry;
-    registry.record_announce("PC-001", Capabilities{}, kNow);
+    registry.record_announce("PC-001", Capabilities{}, false, kNow);
     registry.record_sample("PC-001", kNow + 5s);
 
     const auto clients = registry.snapshot();
@@ -43,7 +43,7 @@ TEST(ClientRegistry, ASampleFromAnUnannouncedHostStillRegistersIt) {
 
 TEST(ClientRegistry, ReportsRecordTheAppliedRevision) {
     ClientRegistry registry;
-    registry.record_announce("PC-001", Capabilities{}, kNow);
+    registry.record_announce("PC-001", Capabilities{}, false, kNow);
     registry.record_report("PC-001", 7, kNow + 1s);
 
     EXPECT_EQ(registry.snapshot().front().applied_revision, 7u);
@@ -52,14 +52,14 @@ TEST(ClientRegistry, ReportsRecordTheAppliedRevision) {
 TEST(ClientRegistry, AnnouncementDoesNotResetAKnownRevision) {
     ClientRegistry registry;
     registry.record_report("PC-001", 7, kNow);
-    registry.record_announce("PC-001", Capabilities{}, kNow + 1s);
+    registry.record_announce("PC-001", Capabilities{}, false, kNow + 1s);
 
     EXPECT_EQ(registry.snapshot().front().applied_revision, 7u);
 }
 
 TEST(ClientRegistry, MarkLostRemovesTheClient) {
     ClientRegistry registry;
-    registry.record_announce("PC-001", Capabilities{}, kNow);
+    registry.record_announce("PC-001", Capabilities{}, false, kNow);
     registry.mark_lost("PC-001");
     EXPECT_TRUE(registry.snapshot().empty());
 }
@@ -71,7 +71,7 @@ TEST(ClientRegistry, ASampleAfterMarkLostBringsTheHostBackWithNoCapabilities) {
     // Nothing here restores them — only a fresh announce can, which is why the
     // client re-announces on a timer rather than once at startup.
     ClientRegistry registry;
-    registry.record_announce("PC-001", Capabilities{}.add(Capability::Network), kNow);
+    registry.record_announce("PC-001", Capabilities{}.add(Capability::Network), false, kNow);
     ASSERT_TRUE(registry.snapshot().front().caps.has(Capability::Network));
 
     registry.mark_lost("PC-001");
@@ -80,7 +80,7 @@ TEST(ClientRegistry, ASampleAfterMarkLostBringsTheHostBackWithNoCapabilities) {
     ASSERT_EQ(registry.snapshot().size(), 1u);
     EXPECT_FALSE(registry.snapshot().front().caps.has(Capability::Network));
 
-    registry.record_announce("PC-001", Capabilities{}.add(Capability::Network), kNow);
+    registry.record_announce("PC-001", Capabilities{}.add(Capability::Network), false, kNow);
     EXPECT_TRUE(registry.snapshot().front().caps.has(Capability::Network))
         << "a re-announce has to restore them";
 }
@@ -92,9 +92,9 @@ TEST(ClientRegistry, MarkLostForAnUnknownHostIsHarmless) {
 
 TEST(ClientRegistry, SnapshotIsOrderedByHostId) {
     ClientRegistry registry;
-    registry.record_announce("PC-003", Capabilities{}, kNow);
-    registry.record_announce("PC-001", Capabilities{}, kNow);
-    registry.record_announce("PC-002", Capabilities{}, kNow);
+    registry.record_announce("PC-003", Capabilities{}, false, kNow);
+    registry.record_announce("PC-001", Capabilities{}, false, kNow);
+    registry.record_announce("PC-002", Capabilities{}, false, kNow);
 
     const auto clients = registry.snapshot();
     ASSERT_EQ(clients.size(), 3u);
@@ -114,7 +114,7 @@ TEST(ClientRegistry, OutOfOrderSampleDoesNotRewindLastSeen) {
 
 TEST(ClientRegistry, FeedsReconcileDirectly) {
     ClientRegistry registry;
-    registry.record_announce("PC-001", Capabilities{}, kNow);
+    registry.record_announce("PC-001", Capabilities{}, false, kNow);
 
     ReconcileOptions options;
     options.liveliness_lease = 10s;

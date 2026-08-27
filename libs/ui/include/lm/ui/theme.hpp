@@ -36,6 +36,9 @@ inline constexpr const char* kOffline = "#fdd663";
 inline constexpr const char* kMissing = "#f28b82";
 inline constexpr const char* kUnexpected = "#c58af9";
 inline constexpr const char* kNotApplicable = "#9aa0a6";
+/// Paused: deliberate, so neither an alarm colour nor the green of a machine
+/// that is actually being checked.
+inline constexpr const char* kPaused = "#8ab4f8";
 
 LM_UI_EXPORT void apply(QApplication& app);
 

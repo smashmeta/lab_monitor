@@ -42,6 +42,7 @@
 #include "lm/core/rule.hpp"
 #include "lm/ui/adapter_list.hpp"
 #include "lm/ui/fleet_model.hpp"
+#include "lm/ui/compliance_tag_delegate.hpp"
 #include "lm/ui/keep_foreground_delegate.hpp"
 #include "lm/ui/rule_detail.hpp"
 #include "lm/ui/meter_bar.hpp"
@@ -197,7 +198,6 @@ FleetWindow::FleetWindow(ServerController* controller, QWidget* parent)
     setCentralWidget(tabs_);
 
     build_fleet_tab();
-    build_compliance_tab();
     build_templates_tab();
 
     // The proxy sorts most-urgent-first without the source FleetModel ever
@@ -206,10 +206,6 @@ FleetWindow::FleetWindow(ServerController* controller, QWidget* parent)
     proxy_->sort(0);
 
     connect(controller_, &ServerController::counts_changed, ribbon_, &StatusRibbon::set_counts);
-    // A host going Missing changes the Compliance tab even though no report
-    // arrived — that is the whole point of listing silent machines there.
-    connect(controller_, &ServerController::fleet_changed, this,
-            &FleetWindow::rebuild_compliance_table);
     connect(controller_, &ServerController::resource_sample_received, this, &FleetWindow::on_resource_sample);
     connect(controller_, &ServerController::compliance_report_received, this,
             &FleetWindow::on_compliance_report);
@@ -295,6 +291,24 @@ void FleetWindow::build_fleet_tab() {
     // row they care about. The delegate keeps the text colour and lets the
     // selection show through the background instead.
     host_view_->setItemDelegate(new lm::ui::KeepForegroundDelegate(host_view_));
+    // Per column, so KeepForegroundDelegate still owns every other cell. This
+    // one draws the ratio and then a tag per rule the host is failing or could
+    // not check -- the fleet table is where compliance is read now, so a host
+    // in trouble says what it is in trouble about on its own row.
+    host_view_->setItemDelegateForColumn(lm::ui::FleetModel::ComplianceColumn,
+                                         new lm::ui::ComplianceTagDelegate(host_view_));
+    // Every other column holds a short fixed reading -- a state word, a
+    // percentage, a timestamp -- so each is sized to its own content and the
+    // compliance column absorbs everything left over. Without this they all sit
+    // at the default section width, the tags get whatever is left, and a host
+    // failing four rules renders as "1 / 5  +4 more" with not one of them named
+    // -- which is the entire point of the column, behind a tooltip.
+    for (int column = 0; column < lm::ui::FleetModel::ColumnCount; ++column) {
+        host_view_->horizontalHeader()->setSectionResizeMode(
+            column, column == lm::ui::FleetModel::ComplianceColumn
+                        ? QHeaderView::Stretch
+                        : QHeaderView::ResizeToContents);
+    }
     main_splitter_->addWidget(host_view_);
 
     auto* detail_panel = new QWidget(main_splitter_);
@@ -339,8 +353,13 @@ void FleetWindow::build_fleet_tab() {
     detail_layout->addWidget(detail_compliance_tree_, 1);
 
     main_splitter_->addWidget(detail_panel);
-    main_splitter_->setStretchFactor(0, 1);
-    main_splitter_->setStretchFactor(1, 2);
+    // The table gets the larger share, not the detail pane. It did not used to:
+    // every column was a short reading and the pane below carried the depth.
+    // The compliance column changed that -- the rules a host is failing are
+    // named on its own row now, and a table too narrow to reach that column
+    // puts the whole point of it behind a horizontal scrollbar.
+    main_splitter_->setStretchFactor(0, 2);
+    main_splitter_->setStretchFactor(1, 1);
 
     layout->addWidget(main_splitter_, 1);
 
@@ -444,317 +463,6 @@ void FleetWindow::build_templates_tab() {
     tabs_->addTab(page, QStringLiteral("Templates"));
 }
 
-void FleetWindow::build_compliance_tab() {
-    auto* page = new QWidget();
-    auto* layout = new QVBoxLayout(page);
-
-    compliance_summary_label_ = new QLabel(page);
-    QFont summary_font = compliance_summary_label_->font();
-    summary_font.setPointSize(summary_font.pointSize() + 3);
-    summary_font.setBold(true);
-    compliance_summary_label_->setFont(summary_font);
-    layout->addWidget(compliance_summary_label_);
-
-    // A tree rather than a table, and read-only: this tab is written for a
-    // wall display nobody walks over to. Nothing may hide behind a tooltip, a
-    // click or a scroll -- what is wrong has to be on the glass already.
-    compliance_tree_ = new QTreeWidget(page);
-    compliance_tree_->setColumnCount(2);
-    compliance_tree_->setHeaderLabels({QStringLiteral("Host / rule"), QStringLiteral("Observed")});
-    compliance_tree_->setRootIsDecorated(false);
-    compliance_tree_->setUniformRowHeights(true);
-    compliance_tree_->setSelectionMode(QAbstractItemView::NoSelection);
-    compliance_tree_->setFocusPolicy(Qt::NoFocus);
-    compliance_tree_->header()->setSectionResizeMode(0, QHeaderView::Interactive);
-    compliance_tree_->header()->setStretchLastSection(true);
-
-    // Bigger than the rest of the window: the fleet table is sized to fit ~35
-    // rows for someone at the keyboard, this is meant to be read across a room.
-    QFont tree_font = compliance_tree_->font();
-    tree_font.setPointSize(tree_font.pointSize() + 2);
-    compliance_tree_->setFont(tree_font);
-
-    layout->addWidget(compliance_tree_, 1);
-
-    tabs_->addTab(page, QStringLiteral("Compliance"));
-    rebuild_compliance_table();
-}
-
-namespace {
-
-/// Failing first, then errors, then the ones that could not be checked. Passes
-/// never appear individually — see rebuild_compliance_table().
-int severity_rank(lm::core::CheckStatus status) {
-    switch (status) {
-        case lm::core::CheckStatus::Fail:          return 0;
-        case lm::core::CheckStatus::Error:         return 1;
-        case lm::core::CheckStatus::NotApplicable: return 2;
-        case lm::core::CheckStatus::Pass:          return 3;
-    }
-    return 4;
-}
-
-QColor colour_for_status(lm::core::CheckStatus status) {
-    switch (status) {
-        case lm::core::CheckStatus::Fail:  return QColor(lm::ui::Theme::kMissing);
-        case lm::core::CheckStatus::Error: return QColor(lm::ui::Theme::kUnexpected);
-        case lm::core::CheckStatus::Pass:  return QColor(lm::ui::Theme::kOnline);
-        default:                           return QColor(lm::ui::Theme::kTextMuted);
-    }
-}
-
-QString glyph_for_status(lm::core::CheckStatus status) {
-    switch (status) {
-        case lm::core::CheckStatus::Fail:          return QStringLiteral("✕");
-        case lm::core::CheckStatus::Error:         return QStringLiteral("!");
-        case lm::core::CheckStatus::Pass:          return QStringLiteral("✓");
-        case lm::core::CheckStatus::NotApplicable: return QStringLiteral("–");
-    }
-    return QStringLiteral("?");
-}
-
-/// Missing (never seen) and Offline (seen, now quiet) are two ways of saying
-/// the same thing to this tab: nothing on screen for that machine is being
-/// checked right now.
-bool is_silent(lm::core::HostState state) {
-    return state == lm::core::HostState::Missing || state == lm::core::HostState::Offline;
-}
-
-/// One host as this tab sees it: liveness first, its report second — a silent
-/// machine has the first and not the second, which is exactly the case the tab
-/// used to drop on the floor.
-struct ComplianceGroup {
-    QString host;
-    lm::core::HostState state = lm::core::HostState::Missing;
-    std::optional<lm::core::TimePoint> last_seen;
-    const lm::core::ComplianceReport* report = nullptr;
-    lm::core::ComplianceSummary summary;
-};
-
-/// Silent, then failing, then not-yet-reported, then clean.
-///
-/// A machine nobody can hear from outranks a broken rule: the rule is a known
-/// problem with a known fix, the silence is an unknown. This is also the order
-/// the Fleet tab already puts them in, and two views disagreeing about which
-/// host is the most urgent is worse than either order.
-int group_rank(const ComplianceGroup& group) {
-    if (is_silent(group.state)) {
-        return 0;
-    }
-    if (group.report == nullptr) {
-        return 2;
-    }
-    return (group.summary.failing > 0 || group.summary.errors > 0) ? 1 : 3;
-}
-
-QString format_last_seen(const std::optional<lm::core::TimePoint>& last_seen) {
-    if (!last_seen.has_value()) {
-        return QStringLiteral("never");
-    }
-    const auto seconds =
-        std::chrono::duration_cast<std::chrono::seconds>(last_seen->time_since_epoch()).count();
-    return QDateTime::fromSecsSinceEpoch(static_cast<qint64>(seconds), QTimeZone::UTC)
-        .toString(QStringLiteral("HH:mm:ss"));
-}
-
-}  // namespace
-
-void FleetWindow::rebuild_compliance_table() {
-    const QMap<QString, lm::core::ComplianceReport>& reports = controller_->report_cache();
-    compliance_tree_->clear();
-
-    // Driven by the fleet, not by the report cache. The cache only ever grows,
-    // so a host that has gone would keep its last score on the wall forever,
-    // and a host that has never reported would never appear at all.
-    std::vector<ComplianceGroup> groups;
-    groups.reserve(controller_->fleet().entries.size());
-    for (const lm::core::FleetEntry& entry : controller_->fleet().entries) {
-        ComplianceGroup group;
-        group.host = QString::fromStdString(entry.host_id);
-        group.state = entry.state;
-        group.last_seen = entry.last_seen;
-        // A silent host's last report describes a machine that is no longer
-        // answering; it is reported as history below, never as a live score.
-        const auto cached = reports.constFind(group.host);
-        if (cached != reports.constEnd()) {
-            group.report = &cached.value();
-            group.summary = lm::core::summarise(*group.report);
-        }
-        groups.push_back(std::move(group));
-    }
-
-    // Worst first: the point of this tab is finding what needs attention, and a
-    // host with three failures should not be below one with none because its
-    // name sorts later.
-    std::ranges::sort(groups, [](const ComplianceGroup& lhs, const ComplianceGroup& rhs) {
-        if (group_rank(lhs) != group_rank(rhs)) {
-            return group_rank(lhs) < group_rank(rhs);
-        }
-        if (lhs.summary.failing != rhs.summary.failing) {
-            return lhs.summary.failing > rhs.summary.failing;
-        }
-        if (lhs.summary.errors != rhs.summary.errors) {
-            return lhs.summary.errors > rhs.summary.errors;
-        }
-        return lhs.host < rhs.host;
-    });
-
-    std::size_t total_failing = 0;
-    std::size_t fully_compliant = 0;
-    std::size_t silent = 0;
-
-    for (const ComplianceGroup& group : groups) {
-        const QString& host = group.host;
-        const lm::core::ComplianceSummary summary = group.summary;
-
-        auto* host_item = new QTreeWidgetItem(compliance_tree_);
-        host_item->setText(0, host);
-        QFont host_font = compliance_tree_->font();
-        host_font.setBold(true);
-        host_item->setFont(0, host_font);
-        host_item->setFont(1, host_font);
-        host_item->setExpanded(true);
-
-        if (is_silent(group.state)) {
-            ++silent;
-            const bool never = group.state == lm::core::HostState::Missing;
-            host_item->setText(1, never ? QStringLiteral("Missing — never reported")
-                                        : QStringLiteral("Offline — last seen %1")
-                                              .arg(format_last_seen(group.last_seen)));
-            // Same hue the Fleet tab paints it, so the two cannot describe the
-            // same machine differently.
-            const QColor colour = lm::ui::FleetModel::colour_for(
-                never ? lm::ui::FleetModel::RowHealth::Missing
-                      : lm::ui::FleetModel::RowHealth::Offline);
-            host_item->setForeground(0, colour);
-            host_item->setForeground(1, colour);
-
-            auto* row = new QTreeWidgetItem(host_item);
-            // Never "0 / 0 rules passed", which reads as a clean bill of health
-            // from across a room. Its last score is history, and labelled so.
-            row->setText(0, QStringLiteral("✕  Not reporting — no rules are being checked"));
-            if (group.report != nullptr) {
-                row->setText(1, QStringLiteral("last known %1 / %2 rules passed")
-                                    .arg(summary.passed)
-                                    .arg(summary.checked()));
-            }
-            row->setForeground(0, colour);
-            row->setForeground(1, colour);
-            continue;
-        }
-
-        if (group.report == nullptr) {
-            host_item->setText(1, QStringLiteral("No compliance report yet"));
-            const QColor colour = lm::ui::FleetModel::colour_for(
-                lm::ui::FleetModel::RowHealth::Unknown);
-            host_item->setForeground(0, colour);
-            host_item->setForeground(1, colour);
-
-            auto* row = new QTreeWidgetItem(host_item);
-            row->setText(0, QStringLiteral("–  Reporting, but has not evaluated its rules yet"));
-            row->setForeground(0, colour);
-            row->setForeground(1, colour);
-            continue;
-        }
-
-        const lm::core::ComplianceReport& report = *group.report;
-        total_failing += summary.failing;
-        if (summary.failing == 0 && summary.errors == 0) {
-            ++fully_compliant;
-        }
-
-        host_item->setText(1, QStringLiteral("%1 / %2 rules passed")
-                                   .arg(summary.passed)
-                                   .arg(summary.checked()));
-
-        const QColor host_colour =
-            lm::ui::Theme::color_for_load(100.0 * (1.0 - summary.passed_ratio()));
-        host_item->setForeground(0, host_colour);
-        host_item->setForeground(1, host_colour);
-
-        // Rule descriptions live in the bundle this server published, recovered
-        // the same way the detail pane does -- and per host, since rules_for()
-        // is what decides which rules this machine was even given.
-        QHash<QString, lm::ui::RuleDetail> by_id;
-        for (const lm::core::Rule* rule :
-             lm::core::rules_for(controller_->published(), host.toStdString())) {
-            by_id.insert(QString::fromStdString(rule->id), lm::ui::describe(*rule));
-        }
-
-        std::vector<const lm::core::CheckResult*> ordered;
-        ordered.reserve(report.results.size());
-        for (const lm::core::CheckResult& result : report.results) {
-            ordered.push_back(&result);
-        }
-        std::ranges::sort(ordered, [&](const lm::core::CheckResult* lhs,
-                                        const lm::core::CheckResult* rhs) {
-            if (severity_rank(lhs->status) != severity_rank(rhs->status)) {
-                return severity_rank(lhs->status) < severity_rank(rhs->status);
-            }
-            return lhs->rule_id < rhs->rule_id;
-        });
-
-        for (const lm::core::CheckResult* result : ordered) {
-            // Passing rules are counted, never listed. On a shared display a
-            // wall of green pushes the two red lines that matter off the
-            // screen; the host row already says how many passed.
-            if (result->status == lm::core::CheckStatus::Pass) {
-                continue;
-            }
-
-            const QString id = QString::fromStdString(result->rule_id);
-            const auto detail = by_id.constFind(id);
-            const QString label = detail != by_id.constEnd() ? detail->label : id;
-
-            auto* row = new QTreeWidgetItem(host_item);
-            row->setText(0, QStringLiteral("%1  %2").arg(glyph_for_status(result->status), label));
-
-            QString observed = QString::fromStdString(result->observed);
-            const QString message = QString::fromStdString(result->message);
-            if (!message.isEmpty() && message != observed) {
-                observed = observed.isEmpty() ? message
-                                              : QStringLiteral("%1 - %2").arg(observed, message);
-            }
-            row->setText(1, observed);
-
-            const QColor colour = colour_for_status(result->status);
-            row->setForeground(0, colour);
-            row->setForeground(1, colour);
-        }
-
-        // Only when nothing else is listed, which is the entire purpose of this
-        // line: an empty group reads as "no data" from across a room. A host
-        // whose group already holds its not-applicable rules does not need to
-        // be told again that the rest passed -- the host row says so.
-        if (host_item->childCount() == 0) {
-            auto* row = new QTreeWidgetItem(host_item);
-            row->setText(0, QStringLiteral("%1  All %2 checked rules passing")
-                                 .arg(glyph_for_status(lm::core::CheckStatus::Pass))
-                                 .arg(summary.checked()));
-            row->setForeground(0, QColor(lm::ui::Theme::kOnline));
-            row->setForeground(1, QColor(lm::ui::Theme::kOnline));
-        }
-    }
-
-    compliance_tree_->resizeColumnToContents(0);
-
-    QString headline = QStringLiteral("%1 of %2 hosts fully compliant · %3 failing checks")
-                           .arg(fully_compliant)
-                           .arg(groups.size())
-                           .arg(total_failing);
-    if (silent > 0) {
-        headline += QStringLiteral(" · %1 not reporting").arg(silent);
-    }
-    compliance_summary_label_->setText(
-        groups.empty() ? QStringLiteral("No host has reported compliance yet") : headline);
-    // Silence counts as trouble here: an unreachable machine is a red line on
-    // the wall, not a quiet one.
-    compliance_summary_label_->setStyleSheet(
-        QStringLiteral("color: %1;")
-            .arg(total_failing == 0 && silent == 0 ? lm::ui::Theme::kOnline
-                                                   : lm::ui::Theme::kMissing));
-}
-
 QString FleetWindow::selected_host_id() const {
     if (host_view_->selectionModel() == nullptr) {
         return {};
@@ -852,10 +560,9 @@ void FleetWindow::refresh_adapter_list(const lm::core::ResourceSample* sample) {
 }
 
 void FleetWindow::on_compliance_report(QString host_id, lm::core::ComplianceReport report) {
-    // The summary tab covers every host, so it refreshes whoever reported --
-    // unlike the detail pane below, which only concerns the selected one.
-    rebuild_compliance_table();
-
+    // The fleet row itself is updated by ServerController, which owns the model
+    // and the published bundle the rule descriptions come from. Only the detail
+    // pane is this window's business, and only for the selected host.
     if (host_id != selected_host_id()) {
         return;
     }

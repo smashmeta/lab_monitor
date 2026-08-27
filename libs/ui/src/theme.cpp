@@ -80,6 +80,7 @@ QColor color_for(core::HostState state) {
         case core::HostState::Offline:    return QColor(kOffline);
         case core::HostState::Missing:    return QColor(kMissing);
         case core::HostState::Unexpected: return QColor(kUnexpected);
+        case core::HostState::Paused:     return QColor(kPaused);
     }
     return QColor(kNotApplicable);
 }
@@ -119,6 +120,7 @@ QString glyph_for(core::HostState state) {
         case core::HostState::Offline:    return QStringLiteral("!");
         case core::HostState::Missing:    return QStringLiteral("✕");  // multiplication x
         case core::HostState::Unexpected: return QStringLiteral("?");
+        case core::HostState::Paused:     return QStringLiteral("||");
     }
     return QStringLiteral("◌");  // dotted circle
 }

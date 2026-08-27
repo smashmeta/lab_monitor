@@ -12,6 +12,7 @@ add_library(lm_ui SHARED
   src/meter_bar.cpp
   src/fleet_model.cpp
   src/keep_foreground_delegate.cpp
+  src/compliance_tag_delegate.cpp
   src/rule_detail.cpp
   src/sample_coalescer.cpp
   src/token_edit.cpp
@@ -23,6 +24,7 @@ add_library(lm_ui SHARED
   include/lm/ui/meter_bar.hpp
   include/lm/ui/fleet_model.hpp
   include/lm/ui/keep_foreground_delegate.hpp
+  include/lm/ui/compliance_tag_delegate.hpp
   include/lm/ui/sample_coalescer.hpp
   include/lm/ui/token_edit.hpp
   include/lm/ui/adapter_list.hpp
@@ -59,6 +61,7 @@ lm_add_test(lm_ui_widget_tests
   NO_GTEST_MAIN
   SOURCES tests/widget_main.cpp tests/test_selection_colours.cpp tests/test_token_edit.cpp
           tests/test_sparkline.cpp tests/test_meter_bar.cpp
+          tests/test_compliance_tag_delegate.cpp
   LINK lm_ui Qt6::Test)
 # offscreen would keep this headless, but copy_qt_plugins() deploys the windows
 # platform plugin alone (see cmake/LabMonitorRuntime.cmake), so forcing

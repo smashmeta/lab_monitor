@@ -133,6 +133,18 @@ private:
     /// Re-writes the already-published bundle to the transport at its existing
     /// revision, so clients receive it after a server restart without waiting
     /// for an edit. Not a publish: nothing is bumped, hashed or saved.
+    /// Every Fail and Error in a report, labelled with its rule's description.
+    ///
+    /// Through core::rules_for(), never a walk over every template: this host's
+    /// rules are the baseline plus the templates assigned to it, which is
+    /// exactly the set the client evaluated. Walking all of them instead lets a
+    /// rule id reused in an unrelated template win the lookup and label a row
+    /// with a different rule's description -- and resolves collisions the
+    /// opposite way round from rules_for(), so the two ends disagree about the
+    /// same id.
+    [[nodiscard]] QVector<lm::ui::ComplianceTag> failing_tags(
+        const lm::core::ComplianceReport& report) const;
+
     void announce_published();
     /// Emits config_error() on a failed open or a short/failed write,
     /// mirroring load_config()'s own failure handling. No longer const,

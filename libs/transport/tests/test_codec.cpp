@@ -234,3 +234,40 @@ TEST(Codec, KeysComeFromTheHostId) {
     report.report.host_id = "PC-003";
     EXPECT_EQ(key_of(report), "PC-003");
 }
+
+TEST(Codec, ClientAnnounceCarriesThePauseFlag) {
+    ClientAnnounce original;
+    original.host_id = "PC-001";
+    original.agent_version = "1.2.3";
+    original.capabilities = 7;
+    original.paused = true;
+
+    ClientAnnounce decoded;
+    ASSERT_TRUE(decode(encode(original), decoded));
+    EXPECT_TRUE(decoded.paused);
+    EXPECT_EQ(decoded, original);
+}
+
+TEST(Codec, ClientAnnounceWithoutAPauseFieldStillDecodes) {
+    // What a client built before the flag existed puts on the wire: the same
+    // three fields and then the end of the buffer. Dropping such an announce
+    // would take the machine off the fleet entirely -- the announce is the only
+    // carrier of its capabilities -- so a short buffer has to mean "not
+    // paused", not "malformed".
+    ClientAnnounce original;
+    original.host_id = "PC-001";
+    original.agent_version = "1.2.3";
+    original.capabilities = 7;
+    original.paused = true;
+
+    std::vector<std::uint8_t> bytes = encode(original);
+    ASSERT_FALSE(bytes.empty());
+    bytes.pop_back();  // drop the trailing bool, leaving an old-format payload
+
+    ClientAnnounce decoded;
+    ASSERT_TRUE(decode(bytes, decoded)) << "an old announce must not fail to decode";
+    EXPECT_FALSE(decoded.paused);
+    EXPECT_EQ(decoded.host_id, "PC-001");
+    EXPECT_EQ(decoded.agent_version, "1.2.3");
+    EXPECT_EQ(decoded.capabilities, 7u);
+}
