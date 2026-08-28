@@ -11,6 +11,7 @@
 
 #include <boost/program_options.hpp>
 
+#include <spdlog/sinks/ringbuffer_sink.h>
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -113,6 +114,10 @@ LogTarget configure_logging(const std::string& app_name, const std::string& leve
 
     std::vector<spdlog::sink_ptr> sinks;
     sinks.push_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
+    // A ring of the most recent lines, so a LogView built later can replay what
+    // happened before it existed. configure_logging() necessarily runs before
+    // any window does, and the startup banner is the half worth reading.
+    sinks.push_back(std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(500));
 
     LogTarget target;
     const QString beside_exe = QCoreApplication::applicationDirPath() + QChar('/') + file_name;
@@ -274,6 +279,7 @@ int main(int argc, char** argv) {
         const QString qt_host_id = QString::fromStdString(host_id);
         auto* window = new DetailWindow(qt_host_id);
         window->set_tray_available(tray_available);
+        window->set_log_file_path(QString::fromStdString(log_target.path));
         auto* tray = new TrayController(qt_host_id, window);
 
         // Cross-thread connections resolve to Qt::QueuedConnection by default

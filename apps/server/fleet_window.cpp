@@ -46,6 +46,7 @@
 #include "lm/ui/fleet_model.hpp"
 #include "lm/ui/compliance_tag_delegate.hpp"
 #include "lm/ui/keep_foreground_delegate.hpp"
+#include "lm/ui/log_view.hpp"
 #include "lm/ui/rule_detail.hpp"
 #include "lm/ui/meter_bar.hpp"
 #include "lm/ui/sparkline.hpp"
@@ -201,6 +202,9 @@ FleetWindow::FleetWindow(ServerController* controller, QWidget* parent)
 
     build_fleet_tab();
     build_templates_tab();
+    // Last, so the Log tab sits to the right of the two tabs somebody opens
+    // this window to use.
+    build_log_tab();
 
     // The proxy sorts most-urgent-first without the source FleetModel ever
     // reordering its own rows (which stay stable, by host id, for apply()'s
@@ -381,6 +385,19 @@ void FleetWindow::build_fleet_tab() {
     connect(add_expected_host_button_, &QPushButton::clicked, this, &FleetWindow::on_add_expected_host_clicked);
 
     tabs_->addTab(page, QStringLiteral("Fleet"));
+}
+
+void FleetWindow::set_log_file_path(const QString& path) { log_view_->set_log_file_path(path); }
+
+void FleetWindow::build_log_tab() {
+    log_view_ = new lm::ui::LogView();
+    // Attached here rather than in main(): the view replays the ring buffer as
+    // it attaches, so it has to exist first, and this is where it comes into
+    // being. LogView removes its own sink in its destructor, which is what
+    // keeps the sink from outliving the widget when this window is deleted at
+    // shutdown -- both apps log after that point.
+    log_view_->attach_to_default_logger();
+    tabs_->addTab(log_view_, QStringLiteral("Log"));
 }
 
 void FleetWindow::build_templates_tab() {

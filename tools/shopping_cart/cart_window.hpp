@@ -5,6 +5,10 @@
 
 #include <cstdint>
 
+namespace lm::ui {
+class LogView;
+}  // namespace lm::ui
+
 #include "cart_publisher.hpp"
 #include "cart_state.hpp"
 
@@ -50,4 +54,5 @@ private:
     QTableWidget* items_table_;
     QTableWidget* paths_table_;
     QLabel* banner_;
+    lm::ui::LogView* log_view_ = nullptr;
 };

@@ -6,6 +6,8 @@
 #include <QDoubleSpinBox>
 #include <QFontDatabase>
 #include <QGroupBox>
+
+#include <spdlog/spdlog.h>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -19,6 +21,7 @@
 
 #include <utility>
 
+#include "lm/ui/log_view.hpp"
 #include "lm/ui/theme.hpp"
 
 namespace {
@@ -130,6 +133,23 @@ CartWindow::CartWindow(std::uint32_t domain_id, QString topic_name, bool localho
 
     layout->addWidget(paths_box);
 
+    // A collapsible panel rather than a tab. The whole point of this window is
+    // watching the cart and the effect of changing it together -- a tab would
+    // hide the cart to show the log, which is the one arrangement that helps
+    // nobody. Collapsed by default so the fixture still opens at its usual
+    // size; the sink is attached either way, so expanding it shows everything
+    // that happened while it was shut.
+    auto* log_box = new QGroupBox(QStringLiteral("Activity log"), central);
+    log_box->setCheckable(true);
+    log_box->setChecked(false);
+    auto* log_layout = new QVBoxLayout(log_box);
+    log_view_ = new lm::ui::LogView(log_box);
+    log_view_->attach_to_default_logger();
+    log_view_->setVisible(false);
+    log_layout->addWidget(log_view_);
+    connect(log_box, &QGroupBox::toggled, log_view_, &QWidget::setVisible);
+    layout->addWidget(log_box);
+
     setCentralWidget(central);
 
     connect(add_button, &QPushButton::clicked, this, &CartWindow::on_add_clicked);
@@ -139,6 +159,11 @@ CartWindow::CartWindow(std::uint32_t domain_id, QString topic_name, bool localho
 
     const std::string error = publisher_.start(domain_id, topic_name.toStdString(), localhost_only);
     publishing_ = error.empty();
+    if (publishing_) {
+        spdlog::info("publishing {} on domain {}", topic_name.toStdString(), domain_id);
+    } else {
+        spdlog::error("not publishing: {}", error);
+    }
     if (!publishing_) {
         // Said plainly and left on screen: a fixture that fails quietly sends
         // somebody hunting through the probe for a fault that is on this side.

@@ -699,3 +699,4 @@ TEST(FleetWindowPaused, ListsNoTagsWhilePausedButKeepsTheLastKnownScore) {
     EXPECT_EQ(compliance_text(harness, QStringLiteral("PC-001")).toStdString(), "last known 1 / 2");
     EXPECT_TRUE(compliance_tag_labels(harness, QStringLiteral("PC-001")).isEmpty());
 }
+

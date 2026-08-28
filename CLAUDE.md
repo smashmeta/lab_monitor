@@ -711,6 +711,43 @@ comparison `reconcile_now()` already makes to decide whether to emit
 line. Measured: a server and a live client produce 11 and 12 lines
 respectively over 45 seconds, all but two of them startup.
 
+### Every app shows its own log, through one shared `LogView`
+`lm::ui::LogView` is the widget; all three applications use it. The server and
+client each get a **Log tab**; the shopping cart gets a **collapsible
+\"Activity log\" panel** instead, because the whole point of that window is
+watching the cart and the effect of changing it *together* and a tab would hide
+the cart to show the log.
+
+**`~LogView()` detaches its sink.** `qt_color_sink` holds a raw `QTextEdit*`
+and posts to it from whatever thread logged, so a sink outliving the widget is
+a crash -- and both apps log *after* deleting their window in `aboutToQuit`, so
+that ordering is not hypothetical. Detaching in the destructor makes it
+impossible rather than merely unlikely, and does not depend on anyone getting
+the shutdown order right. `LoggingAfterTheViewIsDestroyedIsSafe` pins it.
+
+**The view replays the ring buffer as it attaches.** `configure_logging()`
+necessarily runs before any window exists, so a live sink alone would start at
+whatever happened after the widget was built -- missing the whole startup
+banner. It finds the ring buffer among the default logger's own sinks, so
+nothing is threaded through `main()`. Replay happens *before* the live sink is
+added, so a line cannot arrive down both paths.
+
+**The sink pattern must carry `%^` and `%$`.** `qt_color_sink` colours the
+range the *formatter* marked on the message; with no markers that range is
+whatever the last sink to format left behind -- the console one, whose pattern
+does have them. Observed, not theorised: the level colour landed midway through
+a word and again on a host id, because the offsets belonged to a different
+string.
+
+`lm_ui` still links spdlog **PRIVATE**: `log_view.hpp` mentions no spdlog type,
+holding the sink as a `shared_ptr<void>` so the .cpp can own the detail. Tests
+and the shopping cart link spdlog themselves.
+
+The cart logs to screen only -- console and ring buffer, no file. It is a
+fixture: what it did is worth watching while it runs and worth nothing an hour
+later, and a log file beside a tool nobody supports is one more thing to
+explain.
+
 ### nlohmann-json, not boost-json
 Team choice. Boost is consequently confined to `program_options` in the two apps.
 

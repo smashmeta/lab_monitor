@@ -27,6 +27,10 @@
 /// second of which asks first. Stopping a monitoring agent means the server
 /// stops hearing from this machine, which is not something to do by reflex on
 /// the way to getting a window off the screen.
+namespace lm::ui {
+class LogView;
+}  // namespace lm::ui
+
 class DetailWindow : public QWidget {
     Q_OBJECT
 
@@ -40,6 +44,10 @@ public:
     /// UI, so Minimize has to leave a taskbar button behind and a close must
     /// really close.
     void set_tray_available(bool tray_available) { tray_available_ = tray_available; }
+
+    /// Shows the log file path in the Log tab, with a button to open its
+    /// folder. Set from main(), which is what resolved the path.
+    void set_log_file_path(const QString& path);
 
 signals:
     /// The user confirmed the Close button. Wired to QApplication::quit in
@@ -78,6 +86,8 @@ private:
     lm::ui::AdapterList* adapter_list_;
 
     QTreeWidget* compliance_tree_;
+    lm::ui::LogView* log_view_ = nullptr;
+
     QPushButton* minimize_button_;
     QPushButton* close_button_;
 

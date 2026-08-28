@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QFont>
 #include <QHBoxLayout>
+#include <QTabWidget>
 #include <QMessageBox>
 #include <QSet>
 #include <QTreeWidgetItem>
@@ -15,6 +16,7 @@
 #include "lm/transport/messages.hpp"
 #include "lm/ui/theme.hpp"
 #include "lm/ui/keep_foreground_delegate.hpp"
+#include "lm/ui/log_view.hpp"
 
 namespace {
 
@@ -47,7 +49,9 @@ DetailWindow::DetailWindow(QString host_id, QWidget* parent)
       close_button_(new QPushButton(QStringLiteral("Close Program"), this)),
       host_id_(std::move(host_id)) {
     setWindowTitle(hostname_label_->text());
-    resize(480, 560);
+    // Wider than it was: a log line is a timestamp, a level and a sentence,
+    // and the Details tab was the only thing sizing this window before.
+    resize(720, 620);
 
     // No close button in the title bar: quitting a monitoring agent is done
     // through the Close Program button below, which asks first. Windows draws
@@ -59,6 +63,14 @@ DetailWindow::DetailWindow(QString host_id, QWidget* parent)
 
     auto* root = new QVBoxLayout(this);
 
+    // Two tabs, with Minimize and Close Program left *outside* them: those are
+    // window controls, not part of either view, and a Close Program button
+    // that disappears when you switch tabs is a button somebody cannot find.
+    auto* tabs = new QTabWidget(this);
+    auto* details = new QWidget(tabs);
+    auto* details_layout = new QVBoxLayout(details);
+    root->addWidget(tabs, 1);
+
     // Header band: hostname, connection pill, applied template revision.
     auto* header = new QHBoxLayout();
     QFont hostname_font = hostname_label_->font();
@@ -69,7 +81,7 @@ DetailWindow::DetailWindow(QString host_id, QWidget* parent)
     header->addWidget(connection_pill_);
     header->addStretch();
     header->addWidget(template_label_);
-    root->addLayout(header);
+    details_layout->addLayout(header);
 
     // Resource strip: CPU sparkline, memory bar, one bar per disk volume.
     auto* resources = new QVBoxLayout();
@@ -82,10 +94,10 @@ DetailWindow::DetailWindow(QString host_id, QWidget* parent)
     resources->addWidget(cpu_sparkline_);
     resources->addWidget(make_gauge_row(this, QStringLiteral("Memory"), memory_bar_));
     resources->addLayout(disk_layout_);
-    root->addLayout(resources);
+    details_layout->addLayout(resources);
 
-    root->addWidget(new QLabel(QStringLiteral("Network adapters"), this));
-    root->addWidget(adapter_list_, 1);
+    details_layout->addWidget(new QLabel(QStringLiteral("Network adapters"), this));
+    details_layout->addWidget(adapter_list_, 1);
 
     // Compliance list, grouped and dimmed per the brief's header comment.
     // Keeps each row's status colour when selected, instead of the style
@@ -94,7 +106,12 @@ DetailWindow::DetailWindow(QString host_id, QWidget* parent)
     compliance_tree_->setColumnCount(3);
     compliance_tree_->setHeaderLabels(
         {QStringLiteral("Rule"), QStringLiteral("Status"), QStringLiteral("Observed")});
-    root->addWidget(compliance_tree_, 1);
+    details_layout->addWidget(compliance_tree_, 1);
+
+    tabs->addTab(details, QStringLiteral("Details"));
+    log_view_ = new lm::ui::LogView(tabs);
+    log_view_->attach_to_default_logger();
+    tabs->addTab(log_view_, QStringLiteral("Log"));
 
     // Object names so tests (and any future QSS) can find these by role. The
     // labels are wording, free to change; what they do is not.
@@ -271,6 +288,8 @@ void DetailWindow::on_close_clicked() {
         emit quit_requested();
     }
 }
+
+void DetailWindow::set_log_file_path(const QString& path) { log_view_->set_log_file_path(path); }
 
 void DetailWindow::closeEvent(QCloseEvent* event) {
     // Reached by Alt+F4 and the system menu, since the platform only greys the

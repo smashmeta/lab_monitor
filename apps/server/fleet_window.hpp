@@ -39,6 +39,7 @@ namespace lm::ui {
 class AdapterList;
 class Sparkline;
 class MeterBar;
+class LogView;
 class TokenEdit;
 }  // namespace lm::ui
 
@@ -53,6 +54,10 @@ class FleetWindow : public QMainWindow {
 
 public:
     explicit FleetWindow(ServerController* controller, QWidget* parent = nullptr);
+
+    /// Shows the log file path in the Log tab, with a button to open its
+    /// folder. Set from main(), which is what resolved the path.
+    void set_log_file_path(const QString& path);
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -90,6 +95,7 @@ private slots:
 
 private:
     void build_fleet_tab();
+    void build_log_tab();
     /// "12 of 15 rules passed", per host, worst first.
     void build_templates_tab();
     void refresh_detail_pane(const QString& host_id);
@@ -150,6 +156,8 @@ private:
     QTreeWidget* detail_compliance_tree_;
 
     QTabWidget* tabs_;
+
+    lm::ui::LogView* log_view_;
 
     QListWidget* template_list_;
     QTableWidget* rule_table_;

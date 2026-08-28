@@ -1,5 +1,12 @@
 #include <QApplication>
 
+#include <spdlog/sinks/ringbuffer_sink.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
+
+#include <memory>
+#include <vector>
+
 #include <boost/program_options.hpp>
 
 #include <cstdlib>
@@ -53,10 +60,28 @@ int main(int argc, char** argv) {
     }
 
     QApplication app(argc, argv);
+
+    // Screen only, no file. This is a fixture: what it did is worth watching
+    // while it runs, and worth nothing an hour later -- and a log file beside
+    // a tool nobody supports is one more thing to explain. The ring buffer is
+    // what lets the panel show the startup lines it missed.
+    std::vector<spdlog::sink_ptr> sinks{
+        std::make_shared<spdlog::sinks::stdout_color_sink_mt>(),
+        std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(200)};
+    spdlog::set_default_logger(
+        std::make_shared<spdlog::logger>("shopping_cart", sinks.begin(), sinks.end()));
+    spdlog::set_level(spdlog::level::info);
+    spdlog::flush_on(spdlog::level::info);
     // The one piece of lab_monitor this fixture borrows, and only so it does
     // not look like a stranger next to the two real windows. Its DDS side is
     // deliberately independent -- see cart_publisher.hpp.
     lm::ui::Theme::apply(app);
+
+    spdlog::info("=== shopping_cart starting ===");
+    spdlog::info("  domain id : {}", domain_id);
+    spdlog::info("  topic     : {}", topic);
+    spdlog::info("  scope     : {}",
+                 network_wide ? "whole network (every adapter)" : "this PC only (loopback)");
 
     CartWindow window(domain_id, QString::fromStdString(topic), !network_wide);
     window.resize(720, 640);
