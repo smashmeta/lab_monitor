@@ -15,13 +15,17 @@ namespace po = boost::program_options;
 int main(int argc, char** argv) {
     std::uint32_t domain_id = 42;
     std::string topic = "ShoppingCart";
+    bool network_wide = false;
 
     po::options_description options("Shopping Cart — a DDS publisher to test rules against");
     options.add_options()
         ("help,h", "show this message")
         ("domain-id", po::value<std::uint32_t>(&domain_id)->default_value(42),
          "DDS domain to publish on")
-        ("topic", po::value<std::string>(&topic)->default_value("ShoppingCart"), "topic name");
+        ("topic", po::value<std::string>(&topic)->default_value("ShoppingCart"), "topic name")
+        ("network-wide", po::bool_switch(&network_wide),
+         "publish on every adapter instead of loopback only, so one cart serves the whole "
+         "network; off by default, see below");
 
     try {
         po::variables_map values;
@@ -35,7 +39,12 @@ int main(int argc, char** argv) {
                       << "     \"DDS: value on a topic\", domain " << domain_id << ", topic "
                       << topic << ",\n"
                       << "     path items_.length, equal to 2 -- then Publish\n"
-                      << "  3. add items here and watch the Compliance tab follow\n";
+                      << "  3. add items here and watch the Compliance tab follow\n\n"
+                      << "By default the cart is confined to the machine it runs on, so every\n"
+                      << "PC has its own on domain " << domain_id << " and one rule means the\n"
+                      << "same thing on all of them. --network-wide puts a single cart on the\n"
+                      << "bus for every client to read, which is a different test and rarely\n"
+                      << "the one you want.\n";
             return EXIT_SUCCESS;
         }
     } catch (const std::exception& error) {
@@ -49,7 +58,7 @@ int main(int argc, char** argv) {
     // deliberately independent -- see cart_publisher.hpp.
     lm::ui::Theme::apply(app);
 
-    CartWindow window(domain_id, QString::fromStdString(topic));
+    CartWindow window(domain_id, QString::fromStdString(topic), !network_wide);
     window.resize(720, 640);
     window.show();
 

@@ -36,11 +36,18 @@ QTableWidget* make_table(const QStringList& headers) {
 
 }  // namespace
 
-CartWindow::CartWindow(std::uint32_t domain_id, QString topic_name, QWidget* parent)
+CartWindow::CartWindow(std::uint32_t domain_id, QString topic_name, bool localhost_only,
+                       QWidget* parent)
     : QMainWindow(parent) {
-    setWindowTitle(QStringLiteral("Shopping Cart — domain %1, topic %2")
+    // The scope is in the title because it changes what a rule against this
+    // cart means. Confined, every PC answers "items_.length equal to 2" about
+    // its own cart; open, they are all one bus and a client reads whichever it
+    // discovers first -- and the two look identical from the server.
+    setWindowTitle(QStringLiteral("Shopping Cart — domain %1, topic %2 — %3")
                        .arg(domain_id)
-                       .arg(topic_name));
+                       .arg(topic_name)
+                       .arg(localhost_only ? QStringLiteral("this PC only")
+                                           : QStringLiteral("whole network")));
 
     auto* central = new QWidget(this);
     auto* layout = new QVBoxLayout(central);
@@ -130,7 +137,7 @@ CartWindow::CartWindow(std::uint32_t domain_id, QString topic_name, QWidget* par
     connect(remove_button, &QPushButton::clicked, this, &CartWindow::on_remove_clicked);
     connect(status_box_, &QComboBox::currentTextChanged, this, &CartWindow::on_status_changed);
 
-    const std::string error = publisher_.start(domain_id, topic_name.toStdString());
+    const std::string error = publisher_.start(domain_id, topic_name.toStdString(), localhost_only);
     publishing_ = error.empty();
     if (!publishing_) {
         // Said plainly and left on screen: a fixture that fails quietly sends

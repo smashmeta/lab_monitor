@@ -24,7 +24,10 @@ constexpr const char* kTopic = "ShoppingCart";
 /// application being watched -- which is the one thing that has to be.
 CheckResult check(const cart::State& state, Rule rule) {
     cart::Publisher publisher;
-    const std::string failure = publisher.start(kDomain, kTopic);
+    // localhost_only, which is how the fixture actually runs: every case below
+    // therefore proves the confined publisher is still readable by an
+    // unmodified probe -- the one thing the whitelist could plausibly break.
+    const std::string failure = publisher.start(kDomain, kTopic, true);
     EXPECT_TRUE(failure.empty()) << failure;
     EXPECT_TRUE(publisher.publish(state));
 

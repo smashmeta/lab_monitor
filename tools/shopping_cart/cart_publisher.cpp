@@ -4,6 +4,13 @@
 
 #include <fastdds/dds/domain/DomainParticipant.hpp>
 #include <fastdds/dds/domain/DomainParticipantFactory.hpp>
+#include <fastdds/dds/domain/qos/DomainParticipantQos.hpp>
+#include <fastdds/rtps/common/Locator.hpp>
+#include <fastdds/rtps/transport/UDPv4TransportDescriptor.hpp>
+#include <fastdds/rtps/transport/shared_mem/SharedMemTransportDescriptor.hpp>
+#include <fastdds/utils/IPLocator.hpp>
+
+#include <memory>
 #include <fastdds/dds/publisher/DataWriter.hpp>
 #include <fastdds/dds/publisher/Publisher.hpp>
 #include <fastdds/dds/publisher/qos/DataWriterQos.hpp>
@@ -92,17 +99,67 @@ struct Publisher::Impl {
     }
 };
 
+namespace {
+
+/// Participant QoS confining this publisher to the machine it runs on.
+///
+/// The whitelist is the whole mechanism: a UDPv4 transport told to use only
+/// 127.0.0.1 binds no other adapter, so nothing this participant sends leaves
+/// the host and nothing from another host reaches it. That has to replace the
+/// builtin transports rather than sit alongside them -- interfaceWhiteList is
+/// a property of a transport descriptor, and the builtin UDPv4 is created with
+/// no whitelist at all, so leaving it in place would keep every adapter open.
+///
+/// Shared memory is added back deliberately. It cannot leave the machine by
+/// construction, so it costs nothing in isolation, and dropping it would make
+/// this participant slower than the default for the one case it exists to
+/// serve -- two processes on one PC.
+///
+/// The localhost initial peer is what makes discovery reliable rather than
+/// lucky. Fast DDS discovers over multicast by default, and loopback multicast
+/// is the least dependable corner of the stack on Windows; naming 127.0.0.1 as
+/// an initial peer adds a unicast announcement to the well-known ports on this
+/// host, which is exactly and only where the reader can be.
+eprosima::fastdds::dds::DomainParticipantQos localhost_only_qos() {
+    using eprosima::fastdds::rtps::IPLocator;
+    using eprosima::fastdds::rtps::Locator_t;
+    using eprosima::fastdds::rtps::SharedMemTransportDescriptor;
+    using eprosima::fastdds::rtps::UDPv4TransportDescriptor;
+
+    eprosima::fastdds::dds::DomainParticipantQos qos =
+        eprosima::fastdds::dds::PARTICIPANT_QOS_DEFAULT;
+    qos.transport().use_builtin_transports = false;
+
+    auto udp = std::make_shared<UDPv4TransportDescriptor>();
+    udp->interfaceWhiteList.emplace_back("127.0.0.1");
+    qos.transport().user_transports.push_back(udp);
+    qos.transport().user_transports.push_back(std::make_shared<SharedMemTransportDescriptor>());
+
+    Locator_t peer;
+    peer.kind = LOCATOR_KIND_UDPv4;
+    // Port 0 means "every participant id on that address", so the reader is
+    // found whatever order the two processes were started in.
+    peer.port = 0;
+    IPLocator::setIPv4(peer, 127, 0, 0, 1);
+    qos.wire_protocol().builtin.initialPeersList.push_back(peer);
+
+    return qos;
+}
+
+}  // namespace
+
 Publisher::Publisher() : impl_(std::make_unique<Impl>()) {}
 Publisher::~Publisher() = default;
 
-std::string Publisher::start(std::uint32_t domain_id, const std::string& topic_name) {
+std::string Publisher::start(std::uint32_t domain_id, const std::string& topic_name,
+                             bool localhost_only) {
     impl_->type = build_cart_type();
     if (!impl_->type) {
         return "the ShoppingCart type could not be built";
     }
 
     impl_->participant = DomainParticipantFactory::get_instance()->create_participant(
-        domain_id, PARTICIPANT_QOS_DEFAULT);
+        domain_id, localhost_only ? localhost_only_qos() : PARTICIPANT_QOS_DEFAULT);
     if (impl_->participant == nullptr) {
         return "could not join DDS domain " + std::to_string(domain_id);
     }

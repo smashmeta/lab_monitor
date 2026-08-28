@@ -24,7 +24,8 @@ class CartWindow : public QMainWindow {
     Q_OBJECT
 
 public:
-    CartWindow(std::uint32_t domain_id, QString topic_name, QWidget* parent = nullptr);
+    CartWindow(std::uint32_t domain_id, QString topic_name, bool localhost_only,
+               QWidget* parent = nullptr);
 
 private slots:
     void on_add_clicked();

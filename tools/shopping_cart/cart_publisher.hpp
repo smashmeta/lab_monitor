@@ -30,7 +30,17 @@ public:
     /// success, or a message fit to show the operator — a fixture that fails
     /// silently would send someone hunting through the probe for a fault that
     /// is on this side.
-    [[nodiscard]] std::string start(std::uint32_t domain_id, const std::string& topic_name);
+    /// Joins the domain and creates the writer. Returns an empty string on
+    /// success, or a message describing what went wrong.
+    ///
+    /// With localhost_only set, the participant is confined to this machine:
+    /// every PC running the fixture then has its own cart on the same domain,
+    /// so one rule -- "items_.length equal to 2 on domain 42" -- means the
+    /// same thing everywhere and each machine answers it about itself. Without
+    /// it, several carts on one network are all on one bus and every client
+    /// reads whichever it discovers first.
+    [[nodiscard]] std::string start(std::uint32_t domain_id, const std::string& topic_name,
+                                    bool localhost_only);
 
     /// Writes the cart. TRANSIENT_LOCAL, so a probe attaching afterwards still
     /// reads the current state rather than waiting for the next edit — which
