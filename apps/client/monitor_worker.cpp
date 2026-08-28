@@ -162,7 +162,15 @@ void MonitorWorker::evaluate_compliance() {
     emit report_ready(report, details);
 }
 
-void MonitorWorker::set_reporting_paused(bool paused) { paused_ = paused; }
+void MonitorWorker::set_reporting_paused(bool paused) {
+    if (paused_ == paused) {
+        return;
+    }
+    paused_ = paused;
+    // An operator action, and the explanation for a machine that goes quiet
+    // without going away -- worth a line every time it is toggled.
+    spdlog::info("reporting {} by the operator", paused ? "paused" : "resumed");
+}
 
 void MonitorWorker::on_bundle(const lm::transport::TemplateBundleMessage& message) {
     if (message.revision == bundle_.revision) {
@@ -176,6 +184,10 @@ void MonitorWorker::on_bundle(const lm::transport::TemplateBundleMessage& messag
     }
 
     bundle_ = *parsed;
+    // Guarded by the revision check at the top, so this fires when the server
+    // publishes -- not on the 30 s evaluation, and not on the re-announce.
+    spdlog::info("applied template bundle revision {} ({} rules apply to this host)",
+                 bundle_.revision, lm::core::rules_for(bundle_, probes_->host_id()).size());
     emit template_applied(bundle_.revision);
     evaluate_compliance();
 }

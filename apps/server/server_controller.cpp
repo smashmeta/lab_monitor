@@ -2,6 +2,8 @@
 
 #include <QByteArray>
 #include <QHash>
+
+#include <map>
 #include <QDir>
 #include <QFile>
 #include <QIODevice>
@@ -18,6 +20,44 @@
 #include "lm/core/json.hpp"
 #include "lm/ui/rule_detail.hpp"
 
+namespace {
+
+/// One line per host whose state actually moved.
+///
+/// Driven off the same host -> state comparison reconcile_now() already makes
+/// to decide whether to emit fleet_changed(), so a steady fleet writes nothing
+/// at all -- the reconcile timer ticks once a second and must never be audible
+/// in the log. What does get written is the line somebody wants when they ask
+/// why a machine looked wrong at 14:20.
+void log_state_transitions(const std::vector<lm::core::FleetEntry>& before,
+                           const std::vector<lm::core::FleetEntry>& after) {
+    std::map<lm::core::HostId, lm::core::HostState> previous;
+    for (const lm::core::FleetEntry& entry : before) {
+        previous.emplace(entry.host_id, entry.state);
+    }
+
+    for (const lm::core::FleetEntry& entry : after) {
+        const auto found = previous.find(entry.host_id);
+        if (found == previous.end()) {
+            spdlog::info("fleet: {} appeared as {}", entry.host_id,
+                         lm::core::to_string(entry.state));
+        } else if (found->second != entry.state) {
+            spdlog::info("fleet: {} {} -> {}", entry.host_id,
+                         lm::core::to_string(found->second), lm::core::to_string(entry.state));
+        }
+        previous.erase(entry.host_id);
+    }
+
+    // Whatever is left was listed before and is not listed now: an unexpected
+    // host whose registry entry was dropped, or an expected host removed from
+    // the list. Both are worth a line -- a row vanishing is otherwise silent.
+    for (const auto& [host_id, state] : previous) {
+        spdlog::info("fleet: {} no longer listed (was {})", host_id, lm::core::to_string(state));
+    }
+}
+
+}  // namespace
+
 ServerController::ServerController(std::unique_ptr<lm::transport::IServerTransport> transport,
                                     QString config_dir, QObject* parent)
     : QObject(parent), transport_(std::move(transport)), config_dir_(std::move(config_dir)) {}
@@ -28,6 +68,7 @@ bool ServerController::can_publish() const {
 
 void ServerController::stop() {
     reconcile_timer_.stop();
+    spdlog::info("reconciliation stopped");
     // Resetting transport_ runs IServerTransport's destructor synchronously,
     // right here, on the GUI thread. For the DDS transport that tears down
     // the Fast DDS participant (delete_contained_entities() +
@@ -139,6 +180,8 @@ void ServerController::add_expected_host(const lm::core::HostId& host_id, const 
         expected_.push_back(lm::core::ExpectedHost{host_id, address});
     }
     save_expected_hosts();
+    spdlog::info("expected host added: {}{}", host_id,
+                 address.empty() ? std::string{} : " at " + address);
     emit expected_hosts_changed();
     reconcile_now();
 }
@@ -152,6 +195,7 @@ void ServerController::remove_expected_host(const lm::core::HostId& host_id) {
         return;
     }
     save_expected_hosts();
+    spdlog::info("expected host removed: {}", host_id);
     emit expected_hosts_changed();
     reconcile_now();
 }
@@ -174,6 +218,10 @@ void ServerController::publish() {
     transport_->publish_bundle(message);
 
     options_.current_revision = published_.revision;
+    spdlog::info("published template bundle revision {} ({} templates, {} baseline rules, "
+                 "{} assignments)",
+                 published_.revision, published_.templates.size(),
+                 published_.baseline.rules.size(), published_.assignments.size());
 
     emit published_changed();
     emit draft_publishable_changed(can_publish());
@@ -295,6 +343,10 @@ void ServerController::reconcile_now() {
         fleet_.entries, view.entries, [](const lm::core::FleetEntry& lhs, const lm::core::FleetEntry& rhs) {
             return lhs.host_id == rhs.host_id && lhs.state == rhs.state;
         });
+
+    if (states_changed) {
+        log_state_transitions(fleet_.entries, view.entries);
+    }
 
     fleet_ = std::move(view);
     emit counts_changed(fleet_.counts);

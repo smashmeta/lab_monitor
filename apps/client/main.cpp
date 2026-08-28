@@ -1,5 +1,8 @@
 #include <QApplication>
+#include <QCoreApplication>
+#include <QDir>
 #include <QMessageBox>
+#include <QStandardPaths>
 #include <QMetaObject>
 #include <QObject>
 #include <QString>
@@ -83,16 +86,81 @@ std::optional<Options> parse_options(int argc, char** argv) {
     return options;
 }
 
-void configure_logging(const std::string& level) {
+/// Where the log ended up, and why, so startup can say both.
+struct LogTarget {
+    std::string path;
+    /// Empty unless the executable's own directory could not be written to.
+    std::string fallback_reason;
+};
+
+/// Beside the executable, falling back to the per-user data directory.
+///
+/// The filename used to be relative, which meant the log landed in whatever
+/// the process happened to have as its working directory -- the exe's folder
+/// when launched from Explorer, a shortcut's "Start in" when launched from
+/// one, and C:\Windows\System32 when launched as a service. Nowhere to tell
+/// somebody to look. applicationDirPath() pins it.
+///
+/// That trade has a cost: an install under Program Files is read-only, and a
+/// rotating sink that cannot open its file throws. Falling back keeps a
+/// locked-down machine -- the kind where the log matters most -- from failing
+/// to start over it. The fallback path is reported rather than silently taken,
+/// because a log file nobody can find is the problem being fixed here.
+LogTarget configure_logging(const std::string& app_name, const std::string& level) {
+    constexpr std::size_t kMaxBytes = 5u * 1024u * 1024u;
+    constexpr std::size_t kMaxFiles = 3;
+    const QString file_name = QString::fromStdString(app_name) + QStringLiteral(".log");
+
     std::vector<spdlog::sink_ptr> sinks;
     sinks.push_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
-    sinks.push_back(std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-        "lab_monitor_client.log", 5u * 1024u * 1024u, 3));
 
-    auto logger = std::make_shared<spdlog::logger>("lab_monitor_client", sinks.begin(), sinks.end());
+    LogTarget target;
+    const QString beside_exe = QCoreApplication::applicationDirPath() + QChar('/') + file_name;
+    try {
+        sinks.push_back(std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+            beside_exe.toStdString(), kMaxBytes, kMaxFiles));
+        target.path = beside_exe.toStdString();
+    } catch (const spdlog::spdlog_ex& error) {
+        const QString data_dir =
+            QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        QDir().mkpath(data_dir);
+        const QString fallback = data_dir + QChar('/') + file_name;
+        // Deliberately not guarded: if the per-user data directory is not
+        // writable either, there is nowhere left to fall back to, and failing
+        // at startup with the reason beats running with no record at all.
+        sinks.push_back(std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+            fallback.toStdString(), kMaxBytes, kMaxFiles));
+        target.path = fallback.toStdString();
+        target.fallback_reason = std::string("could not write beside the executable (") +
+                                 beside_exe.toStdString() + "): " + error.what();
+    }
+
+    auto logger = std::make_shared<spdlog::logger>(app_name, sinks.begin(), sinks.end());
     spdlog::set_default_logger(logger);
     spdlog::set_level(spdlog::level::from_str(level));
-    spdlog::flush_on(spdlog::level::warn);
+    // info, not warn. These are low-volume, event-driven lines by design --
+    // nothing periodic is logged at all -- so the cost of flushing each one is
+    // negligible, and the alternative is a file that stays empty while the app
+    // runs and loses everything if the process is killed rather than closed.
+    // A log you cannot read until the thing you are diagnosing has exited is
+    // not much of a log.
+    spdlog::flush_on(spdlog::level::info);
+    return target;
+}
+
+/// The first lines of every run: what this is, how it was told to behave, and
+/// where the rest of the file will be. Logged before anything can fail, so a
+/// startup that dies still says which build died and with what options.
+void log_startup_banner(const std::string& app_name, const LogTarget& target,
+                        bool offline, std::uint32_t domain_id, const std::string& level) {
+    spdlog::info("=== {} starting ===", app_name);
+    spdlog::info("  transport   : {}", offline ? "in-process bus (--offline)" : "DDS");
+    spdlog::info("  domain id   : {}", domain_id);
+    spdlog::info("  log level   : {}", level);
+    spdlog::info("  log file    : {}", target.path);
+    if (!target.fallback_reason.empty()) {
+        spdlog::warn("  log fallback: {}", target.fallback_reason);
+    }
 }
 
 }  // namespace
@@ -130,12 +198,14 @@ int main(int argc, char** argv) {
     // runs -- log the failure there instead, so it is at least diagnosable
     // from lab_monitor_client.log.
     try {
-        configure_logging(options.log_level);
-        spdlog::info("lab_monitor_client starting (offline={}, domain-id={})", options.offline, options.domain_id);
+        const LogTarget log_target = configure_logging("lab_monitor_client", options.log_level);
+        log_startup_banner("lab_monitor_client", log_target, options.offline, options.domain_id,
+                           options.log_level);
 
         lm::ui::Theme::apply(app);
 
         const std::string host_id = lm::platform::local_host_name();
+        spdlog::info("  host id     : {}", host_id);
 
         // Owned by main() for the process lifetime; only referenced when
         // --offline selects the in-memory transport.
@@ -153,7 +223,11 @@ int main(int argc, char** argv) {
         if (!options.offline) {
             probe_set.dds = lm::transport::make_dds_probe();
             capabilities.add(lm::core::Capability::Dds);
+            spdlog::info("  dds probe   : built; DDS rules will be evaluated");
+        } else {
+            spdlog::info("  dds probe   : skipped (--offline); DDS rules report NotApplicable");
         }
+        spdlog::info("  capabilities: 0x{:04x}", capabilities.raw());
 
         auto probes = std::make_unique<lm::platform::HostProbes>(host_id, std::move(probe_set),
                                                                  capabilities);
@@ -166,6 +240,9 @@ int main(int argc, char** argv) {
             config.domain_id = options.domain_id;
             transport = lm::transport::make_dds_client(config);
         }
+        spdlog::info("  joined      : {}",
+                     options.offline ? "in-process bus"
+                                     : "DDS domain " + std::to_string(options.domain_id));
 
         // MonitorWorker owns all probing and messaging and lives entirely on
         // this worker thread; the GUI thread never touches probes_ or
@@ -216,8 +293,17 @@ int main(int argc, char** argv) {
         // Both quit routes -- the tray's Quit action and the window's confirmed
         // Close Program button -- land on the same shutdown, so the worker
         // teardown below runs identically whichever one the user reached for.
-        QObject::connect(tray, &TrayController::quit_requested, &app, &QApplication::quit);
-        QObject::connect(window, &DetailWindow::quit_requested, &app, &QApplication::quit);
+        QObject::connect(tray, &TrayController::quit_requested, &app, [] {
+            spdlog::info("quit requested from the tray menu");
+            QApplication::quit();
+        });
+        QObject::connect(window, &DetailWindow::quit_requested, &app, [] {
+            // Named separately from the tray route: when a machine stops
+            // reporting, the first question is whether somebody meant to stop
+            // it, and "which button" is most of that answer.
+            spdlog::info("quit requested from the detail window (Close Program)");
+            QApplication::quit();
+        });
 
         // Context must be &app (GUI thread), never `worker`: the 4-arg connect
         // overload runs the functor on the *context* object's thread when
@@ -229,8 +315,10 @@ int main(int argc, char** argv) {
         // mid-shutdown (or mid-publish, on a live DDS transport) when the
         // process exits.
         QObject::connect(&app, &QApplication::aboutToQuit, &app, [worker, worker_thread, window, tray] {
+            spdlog::info("=== lab_monitor_client shutting down ===");
             worker_thread->quit();
             worker_thread->wait();
+            spdlog::info("  worker thread joined");
             // worker's thread affinity is worker_thread, which has just been
             // joined and is therefore no longer running an event loop --
             // deleteLater() would post a DeferredDelete event to a queue
@@ -249,6 +337,9 @@ int main(int argc, char** argv) {
             // back to window.
             delete tray;
             delete window;
+            // After the transport is gone, so this line is the proof a clean
+            // DDS departure was announced rather than the process just ending.
+            spdlog::info("  shutdown complete");
         });
         QObject::connect(worker_thread, &QThread::finished, worker_thread, &QThread::deleteLater);
 
@@ -261,7 +352,11 @@ int main(int argc, char** argv) {
         // only UI surface, so it must be visible from the start.
         if (!tray_available) {
             window->show();
+            spdlog::info("  window      : shown (no system tray available)");
+        } else {
+            spdlog::info("  window      : hidden; the tray icon is the only visible surface");
         }
+        spdlog::info("=== lab_monitor_client running ===");
 
         return QApplication::exec();
     } catch (const std::exception& e) {

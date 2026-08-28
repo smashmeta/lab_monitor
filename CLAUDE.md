@@ -679,6 +679,38 @@ value and message — never the description. Rather than widen the wire format,
 `MonitorWorker` recovers display fields from the `TemplateBundle` it already holds
 and emits them alongside the report (`apps/client/rule_detail.hpp`).
 
+### The log sits beside the executable, and says only what happened once
+`configure_logging()` writes to `QCoreApplication::applicationDirPath()`. The
+filename used to be relative, so the log landed in whatever the process had as
+its working directory — the exe folder from Explorer, a shortcut's "Start in"
+from a shortcut, `C:\Windows\System32` from a service. There was nowhere to
+tell somebody to look.
+
+Falling back matters: an install under Program Files is read-only and a
+rotating sink that cannot open its file throws, which would have turned a
+logging problem into a won't-start problem. On failure it falls back to
+`QStandardPaths::AppDataLocation` and **reports the fallback**, since a log file
+nobody can find is the thing being fixed.
+
+**`flush_on` is `info`, not `warn`.** With `warn` the file stayed *empty* for
+the entire life of a healthy process and lost everything if it was killed
+rather than closed — measured, not theorised. These lines are low-volume by
+design, so flushing each one costs nothing worth having.
+
+**Nothing periodic is logged.** Not the 2 s resource sample, the 10 s announce,
+the 30 s evaluation, or the 1 s reconcile tick. What is logged is startup (the
+transport, domain, capabilities, config directory, log path, and whether the
+window or the tray is the visible surface), shutdown (including *which* quit
+route was taken, since "did somebody mean to stop it" is the first question
+about a machine that stopped reporting), and operator actions: pause/resume,
+publish, template and rule edits, assignment changes, expected-host edits.
+
+Host state transitions are logged, at `info`, off the same host → state
+comparison `reconcile_now()` already makes to decide whether to emit
+`fleet_changed()` — so a steady fleet writes nothing and a change writes one
+line. Measured: a server and a live client produce 11 and 12 lines
+respectively over 45 seconds, all but two of them startup.
+
 ### nlohmann-json, not boost-json
 Team choice. Boost is consequently confined to `program_options` in the two apps.
 

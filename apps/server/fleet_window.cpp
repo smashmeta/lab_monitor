@@ -13,6 +13,8 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
+
+#include <spdlog/spdlog.h>
 #include <QModelIndex>
 #include <QPushButton>
 #include <QSet>
@@ -998,6 +1000,7 @@ void FleetWindow::on_add_template_clicked() {
     }
     lm::core::Template tmpl;
     tmpl.name = name.trimmed().toStdString();
+    spdlog::info("template added: '{}'", tmpl.name);
     controller_->draft().templates.push_back(std::move(tmpl));
     controller_->mark_draft_dirty();
     rebuild_template_list();
@@ -1018,6 +1021,7 @@ void FleetWindow::on_remove_template_clicked() {
     std::erase_if(templates, [&](const lm::core::Template& tmpl) {
         return QString::fromStdString(tmpl.name) == name;
     });
+    spdlog::info("template removed: '{}'", name.toStdString());
     controller_->mark_draft_dirty();
     rebuild_template_list();
     rebuild_rule_table();
@@ -1050,6 +1054,11 @@ void FleetWindow::on_add_rule_clicked() {
     // of them is taken here too. The dialog cannot see the draft.
     rule.id = lm::core::make_rule_id(controller_->draft(), rule);
 
+    // Logged with what it checks rather than its id: the id is generated and
+    // says nothing, and the draft is not published yet, so this is the only
+    // record of the edit until somebody presses Publish.
+    spdlog::info("rule added to template '{}': {} [{}]", tmpl->name,
+                 lm::ui::describe(rule).label.toStdString(), rule.id);
     tmpl->rules.push_back(std::move(rule));
     controller_->mark_draft_dirty();
     rebuild_rule_table();
@@ -1064,6 +1073,9 @@ void FleetWindow::on_remove_rule_clicked() {
     if (row < 0 || static_cast<std::size_t>(row) >= tmpl->rules.size()) {
         return;
     }
+    spdlog::info("rule removed from template '{}': {} [{}]", tmpl->name,
+                 lm::ui::describe(tmpl->rules[static_cast<std::size_t>(row)]).label.toStdString(),
+                 tmpl->rules[static_cast<std::size_t>(row)].id);
     tmpl->rules.erase(tmpl->rules.begin() + row);
     controller_->mark_draft_dirty();
     rebuild_rule_table();
@@ -1127,6 +1139,10 @@ void FleetWindow::on_assignment_tokens_changed(const QString& host_id, lm::ui::T
         if (!exists) {
             lm::core::Template tmpl;
             tmpl.name = standard;
+            // Worth its own line: a template appearing without anyone visiting
+            // the Add Template button is the least obvious edit in this tab.
+            spdlog::info("template '{}' created by naming it in an assignment for {}",
+                         standard, host_id.toStdString());
             controller_->draft().templates.push_back(std::move(tmpl));
             created = true;
         }
@@ -1134,6 +1150,8 @@ void FleetWindow::on_assignment_tokens_changed(const QString& host_id, lm::ui::T
         names.push_back(std::move(standard));
     }
 
+    spdlog::info("assignments for {} set to [{}]", host_id.toStdString(),
+                 accepted.join(QStringLiteral(", ")).toStdString());
     controller_->draft().assignments[host_id.toStdString()] = std::move(names);
     controller_->mark_draft_dirty();
 
