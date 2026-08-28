@@ -96,15 +96,15 @@ is simply not offered off-CI.
 
 | Target | Responsibility | Tests |
 |---|---|---|
-| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 167 |
+| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 173 |
 | `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 57 |
-| `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend, the XTypes DDS probe | 28 |
-| `lm_ui` | Shared Qt 6 widgets, theme, `FleetModel`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 51 + 35 |
+| `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend, the XTypes DDS probe | 30 |
+| `lm_ui` | Shared Qt 6 widgets, theme, `FleetModel`, `ComplianceTagDelegate`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 64 + 40 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 17 |
-| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing, the Add Rule dialog | 50 |
+| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing, the Add Rule dialog | 53 |
 | `shopping_cart` | A hand-driven DDS publisher to test rules against — see *Tools* | 8 |
 
-**413 unit tests**, plus 14 Fast DDS integration tests gated behind
+**442 unit tests**, plus 14 Fast DDS integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they open real DDS domains).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -315,8 +315,9 @@ dial-up configured.
 for a `Fail`** — "expected at least 1 connected", "expected version >= 2.0",
 "expected the value to be \"2.0\"". Without it a failure only ever states the
 observation ("2 of 4 connected"), leaving the reader to work out which rule that
-violates. That is a guessing game on a wall display, where the rule's own
-free-text description is the only other text on the row.
+violates. That is a guessing game wherever the rule's own free-text description
+is the only other text alongside it — which is both places a result is shown:
+the fleet row's compliance tag, and the detail pane below it.
 
 `resolve()` takes the expectation and attaches it **only on failure**: repeating
 it beside a tick is noise, and both compliance views append `message` to
@@ -327,72 +328,67 @@ own `Presence`, so a `MustBeAbsent` failure does not read backwards.
 rule of every kind at once and asserts each result explains itself. A new rule
 kind that forgets this trips it.
 
-### The Compliance tab is written for a wall display
-It is read from across a room, on a screen nobody walks over to. That drives
-every choice in it, and none of them should be "tidied" toward the conventions
-the other tabs follow:
+### Compliance is a column on the fleet row, not a tab
+There was a Compliance tab. It was a second view of data the Fleet tab already
+had, and the two could disagree about which host was most urgent — which is
+worse than either view alone. `FleetModel::ComplianceColumn` carries it now:
+the score, then a tag per rule the host is failing or could not check, then
+`+3 more` when they do not fit. `ComplianceTagDelegate` paints it.
 
-- **Nothing hides behind interaction.** No tooltips carrying the real content,
-  no collapsed groups, no selection. Groups are expanded on creation and the
-  tree is `NoSelection` with `NoFocus`.
-- **Passing rules are counted, never listed.** A wall of green pushes the two red
-  lines that matter off the screen. The host row already says `3 / 5 rules
-  passed`; only failures, errors and not-applicable rules get their own line.
-- **A group that would be empty says "All N checked rules passing"** instead —
-  blank space reads as "no data" at a distance. Only when it would otherwise be
-  empty: a host with not-applicable rows does not need telling twice.
-- **Rows are ordered failing → error → not applicable**, and hosts worst-first.
-- The font is deliberately larger than the rest of the window, where the fleet
-  table is instead sized to fit ~35 rows for someone at the keyboard.
+Most of the tab's reasoning survived the tab, and is still load-bearing.
 
-### The Compliance tab lists the whole fleet, not the report cache
-`rebuild_compliance_table()` walks `ServerController::fleet()` and looks each
-host's report up, rather than iterating `report_cache()`. Driving it off the
-cache had two consequences on a display nobody walks over to. A host that had
-**never reported** — `Missing` — was simply absent, and absence on a wall reads
-as "nothing wrong with it". A host that reported once and then **died** kept its
-last score on the glass forever, because the cache only ever grows: a dead
-machine sat there at a green `5 / 5`.
+**The score is `passed / checked()`, and `checked()` excludes NotApplicable.**
+A rule the client cannot evaluate can never pass, so counting it would park a
+Linux machine at "5 of 10" forever for having no registry, with no action able
+to improve it. Errors *are* in the denominator even though `is_compliant()`
+ignores them: "could not check it" is not "passed" and must not be scored as
+one. It is a ratio rather than a percentage because that is how it is shown —
+"3 / 5", not "60 %" — and one representation is enough.
 
-So `Missing` and `Offline` hosts get their own group, above the failing ones
-(the Fleet tab already ranks them that way, and two views disagreeing about
-which host is most urgent is worse than either order). Their row says
-`Missing — never reported` or `Offline — last seen 14:22:07`, and their single
-child line is **"Not reporting — no rules are being checked"**, never
-`0 / 0 rules passed`, which reads as a clean bill of health. A cached report from
-before the machine went quiet is shown only as `last known 3 / 5`. Silence also
-counts in the headline (`· 2 not reporting`) and paints it red — an unreachable
-machine is a red line, not a quiet one. The colour comes from
-`FleetModel::colour_for()`, so the two tabs cannot paint the same host
-differently.
+**A host that is not reporting never reads `0 / 0`.** On a machine nobody has
+heard from that is a clean bill of health rather than the absence of one. The
+cell says `Not reporting`, or `Paused` when the silence was chosen, and a
+report from before it went quiet shows as `last known 3 / 5` — labelled as the
+historical reading it is.
 
-An `Online` host with no report yet is listed too, saying so, rather than
-appearing only once it has evaluated something.
+**Passing rules are counted, never listed.** A row of green pushes the one red
+tag that matters off the cell.
 
-This is why `on_announce()` and `on_report()` now call `reconcile_now()`: the tab
-reads liveness and the report together, so a host whose first report has just
-arrived would otherwise be drawn as silent for up to a second. `reconcile_now()`
-emits the new `fleet_changed()` — compared on the host → state mapping alone,
-because `last_seen` advances on every sample and comparing whole entries would
-fire it every tick and rebuild the tree once a second.
+**Tags are `Online` only** (`shows_tags()`). Not while a host is silent: those
+rules describe a machine that is no longer answering, and live-looking tags
+claim a freshness the reading does not have. Not while it is `Unexpected`
+either — that host's problem is that it is on the network at all, and naming
+its rule failures buries the one fact worth acting on under detail about a
+machine nobody has agreed to manage. The ratio stays in both cases, because it
+is a real reading, and the full list is in the cell's tooltip.
 
-### The Compliance tab scores against what was *checked*
-`core::summarise()` reduces a report to counts, and `ComplianceSummary::checked()`
-is `passed + failing + errors` — **NotApplicable is excluded from the
-denominator**. A rule the client cannot evaluate can never pass, so counting it
-would park a Linux machine at "5 of 10" forever for having no registry, with no
-action able to improve it. The excluded rules keep their own visible column
-rather than disappearing.
+**Failures sort before errors** (`ServerController::failing_tags()`). The cell
+truncates, so that order decides what survives: a rule that is definitely
+broken must not be pushed off the row by one that merely could not be read.
 
-Errors *are* in the denominator even though `is_compliant()` ignores them:
-"could not check it" is not "passed" and must not be scored as one.
+**Worst-first survived too.** `SeverityRole` ranks by state and then, inside the
+`Online` band, by the ratio — so the fleet table orders hosts the way the tab
+used to. Note the consequence: state picks the band *before* compliance breaks
+any tie inside it, so a `Paused` or `Offline` machine outranks a host failing
+every rule it has. That is deliberate and matches what `RowHealth` already did.
 
-The score is a ratio (`passed_ratio()`, 0–1) rather than a percentage, because
-that is how it is displayed — "3 / 5", not "60 %" — and one representation is
-enough. The row colour reuses `Theme::color_for_load()` inverted, since a fully
-compliant host is the good end where full load is the bad one. Rows sort
-worst-first: the tab exists to find what needs attention, and alphabetical order
-would bury a host with three failures under one with none.
+**The labels are resolved by the caller, never by the model.**
+`core::CheckResult` carries only a rule id, and the bundle that maps an id to a
+description lives in the server — so `ServerController::failing_tags()` builds
+them and `FleetModel::apply_compliance()` takes them as an argument. That keeps
+`lm_ui` out of `TemplateBundle` lookups, and keeps `rules_for()` the single
+route to that mapping: walking every template instead lets an id reused in an
+unrelated template win the lookup and label a row with a different rule's
+description.
+
+Two things the row **cannot** do that the tab could, and they were the price:
+it is not readable across a room, and the truncated tags need a hover. Both are
+acceptable here and would not have been on a wall display — the Fleet tab is
+sized for someone at the keyboard, which is what makes a tooltip a legitimate
+place to put the rest.
+
+The per-host detail pane below the table is untouched and still lists every
+result, including passes and not-applicable rules, grouped by status.
 
 ### DDS rules read another bus, and need no IDL
 A client can be asked about a topic on a domain its *sibling* application uses —
@@ -457,6 +453,50 @@ JSON uses its own wire names (`"AtLeast"`, `"NoMedia"`), deliberately not
 `core::to_string()`'s display strings ("at least", "No link"): the latter are
 free to be reworded, while anything in a saved bundle has to keep parsing.
 
+### Pause is a state on the wire, not silence
+"Pause reporting" in the client's tray suppresses the resource samples and the
+compliance reports. It deliberately does **not** suppress the announce.
+
+Before, it suppressed nothing else either — and the server, still hearing the
+10 s announce, kept calling the machine `Online` with stale CPU numbers painted
+in their old load colours. That is precisely the reading the "load colours only
+while `Online`" rule exists to prevent, reached by another route.
+
+Making pause stop announcing too would have been worse. `ClientAnnounce` is the
+only carrier of a client's `Capabilities`, and a client that went fully quiet
+would be indistinguishable from a dead one. So the flag rides the announce
+instead: `ClientAnnounce::paused`, and the announce is the one thing pause does
+not gate.
+
+`reconcile()` resolves it. Inside the liveliness lease and announcing paused →
+`HostState::Paused`. **Outside the lease → `Offline` regardless**, because "it
+said it was paused" is a claim about intent, and a machine we have stopped
+hearing from has made no liveness claim at all. `Unexpected` still wins over
+`Paused` — not being on the expected list is the more important fact.
+
+`Paused` sorts between `Unexpected` and `Online`: somebody chose it, so it is
+not an alarm, but it is not being checked either and must not sit among the
+healthy machines where it can be left paused and forgotten.
+
+**`liveliness_lease` is 30 s — three announce intervals, not one.** The client
+announces every 10 s, and a lease of the same 10 s was always a knife-edge; once
+the announce became the only carrier of the pause flag, a single jittered
+heartbeat would have flickered a paused machine to `Offline` and back. The cost
+is that a genuinely dead host takes up to 30 s rather than 10 s to be called
+`Offline`.
+
+**The codec reads `paused` in its own guard.** It was appended to a message that
+had already shipped with three fields, so a client built before it sends a
+buffer that simply ends. A short buffer therefore means "not paused", not
+"malformed" — a failed decode would drop the announce outright and take an older
+agent off the fleet entirely, with nothing on screen to say why. A wrong pause
+flag is a far smaller wrong than a missing machine.
+
+Adding the enumerator turned every exhaustive `HostState` switch into a build
+failure — seven of them, across `fleet.cpp`, `fleet_model.cpp` and `theme.cpp` —
+which is how each site needing a `Paused` arm was found, rather than by grep.
+Keep those switches exhaustive (no `default:`) for the same reason.
+
 ### The client quits deliberately, never incidentally
 `DetailWindow` drops `Qt::WindowCloseButtonHint` and carries its own **Minimize**
 and **Close Program** buttons; the second asks first, defaulting to No, and names
@@ -490,6 +530,12 @@ hides. The override applies **only while the host is `Online`**: the last sample
 from a host that has gone quiet is stale, and painting it green would read as a
 live, idle machine. `load_percent()` is the single source for both the number
 and the colour, so they cannot disagree.
+
+`RowHealth` has a `Paused` arm of its own (`Theme::kPaused`, a blue that is
+neither an alarm colour nor the green of a machine actually being checked), and
+`Paused` counts as not-`Online` here — so a paused host keeps its percentage
+cells in the health colour rather than repainting them by load. Its last sample
+is exactly as stale as a dead machine's.
 
 Consequences worth knowing. The status hues now do double duty — a red CPU cell
 and a red `Missing` host are the same colour meaning different things — which is
@@ -553,6 +599,15 @@ not a walk over every template: the latter both admits rules the host was never
 assigned and resolves collisions last-wins, the opposite of `rules_for()`. That
 is what made the server label a row with a different rule's description than the
 client showed for the same result.
+
+**And a generated id is not something to put in front of an operator.** The
+Templates tab's rule table leads with the description, through
+`lm::ui::describe()`'s `label` — which substitutes `Kind: target` when the
+author left the description blank, so an undescribed rule reads
+`Application: antivirus.exe` rather than showing an empty cell that looks like a
+broken row. The id stays in the row tooltip, where a support conversation needs
+it. Column 0 is capped in width because a description is free text and
+`resizeColumnsToContents()` has no ceiling of its own.
 
 ### "Baseline" is a reserved template name
 `TemplateBundle::baseline` is a **field**, not an entry in `templates`, but the
@@ -669,7 +724,9 @@ Team choice. Boost is consequently confined to `program_options` in the two apps
   restarting the *client* fixed it. `TRANSIENT_LOCAL` does not save you here: it
   covers a server that has never seen the client, not one that saw it and then
   forgot. Repeating every 10 s turns a permanent state into a blip, and lets an
-  upgraded agent's new capabilities reach a running server.
+  upgraded agent's new capabilities reach a running server. It is also the only
+  thing still arriving from a **paused** client, and so the only thing that can
+  say why the rest went quiet — see *Pause is a state on the wire*.
 - **A Fast DDS `DataReader` listener can match and still never fire.** The DDS
   probe waited on `on_data_available` after `on_subscription_matched` had already
   reported a match, and sat through the whole timeout: the sample was there, the
@@ -687,6 +744,33 @@ Team choice. Boost is consequently confined to `program_options` in the two apps
 - **An unset `TypeIdentifier` handed to the type registry faults**, rather than
   returning not-found. `_d() != TK_NONE` has to be checked first; a writer that
   advertised nothing leaves both identifiers unset.
+- **Fast DDS throws and catches internally, and the debugger reports it.**
+  Shutting down either app under VS Code's `cppvsdbg` prints three or four
+  "Exception thrown … std::system_error / std::runtime_error" lines. They are
+  *first-chance* reports: Fast DDS throws them tearing down its participant,
+  reader and writer threads and handles every one itself. The process exits 0
+  and nothing reaches `main()`'s handlers — measured with a vectored exception
+  handler, which attributed every throw to `fastddsd-3.6.dll`, and confirmed by
+  `--offline` (no Fast DDS) producing none at all. The Server, Client and
+  Shopping Cart launch configurations set `"logging": { "exceptions": false }`
+  to silence the report, not the exceptions; a genuinely unhandled one still
+  stops the debugger. Do not go hunting for a shutdown bug on this evidence.
+- **`create_participant(domain, PARTICIPANT_QOS_DEFAULT)` ignores XML profiles.**
+  Fast DDS reads `FASTDDS_DEFAULT_PROFILES_FILE` (a malformed file really does
+  log `[XMLPARSER Error]`), and a profile marked `is_default_profile="true"`
+  parses without complaint — and is then simply not applied to a participant
+  created this way. Only `create_participant_with_profile(domain, name)` or
+  `create_participant_with_default_profile()` pick it up, and the latter takes
+  its domain id from the XML too. So "just configure it in XML" is never a
+  zero-code change here: every participant in this repo is created the first
+  way. Verified by measuring the bound sockets in each case.
+- **JSON escapes bite Windows paths in `.vscode/settings.json`.** A path written
+  `"C:\Program Files\...\bin\cmake.exe"` is not the path it looks like: most of
+  those are invalid escapes and `\b` is a *valid* one meaning backspace, so it
+  fails silently rather than being flagged. CMake Tools then cannot spawn cmake
+  and reports only `Unable to configure the project {}`. Use forward slashes.
+  The `[Environment]::SetEnvironmentVariable` line under *Building* is fine as
+  PowerShell and becomes this trap the moment it is pasted into JSON.
 - **Include hygiene**: the Linux leg compiles with libstdc++, far stricter than
   MSVC's STL about transitive includes. Include what you use, directly.
 
@@ -715,6 +799,14 @@ verification aid nobody remembers exists is no aid at all.
 build\windows\bin\Debug\shopping_cart.exe --domain-id 42 --topic ShoppingCart
 ```
 
+**It is confined to the machine it runs on**, so every PC has its own cart on
+domain 42 and one rule — "`items_.length` equal to 2 on domain 42" — means the
+same thing on all of them, with each machine answering it about itself.
+`--network-wide` restores the old behaviour of publishing on every adapter,
+which puts a single cart on the bus for every client to read; that is a
+different test and rarely the one you want. The window title says which mode it
+is in, because the two are indistinguishable from the server.
+
 It publishes `struct ShoppingCart { string status; long unit_count; double
 total; sequence<CartLine> items_; }`, which is enough for one fixture to
 exercise every shape of rule: `items_.length` as a count, `total` as a numeric
@@ -722,7 +814,7 @@ comparison, `status` as a text match, and `items_[0].sku` as a read through a
 sequence into a nested structure. `items_` keeps the trailing underscore from
 the original example so a rule copied out of that conversation lands.
 
-Two decisions in it are load-bearing.
+Three decisions in it are load-bearing.
 
 **It is built on Fast DDS directly, never on `lm_transport`.** A fixture that
 shares the product's transport code proves considerably less than one that does
@@ -745,8 +837,8 @@ The loop it exists for:
    `Capability::Dds`, is only built when a real bus is in use)
 2. on the server's Templates tab: Add Rule → *DDS: value on a topic* → domain
    42, topic `ShoppingCart`, path `items_.length`, `equal to` 2 → **Publish**
-3. add items and watch the Compliance tab follow within the client's next
-   30 s evaluation
+3. add items and watch the fleet row's Compliance column follow within the
+   client's next 30 s evaluation
 
 `shopping_cart_dds_tests` automates exactly that loop minus the two GUIs: the
 fixture publishes, the real probe reads a type it was never compiled against,
@@ -760,11 +852,21 @@ build\windows\bin\Debug\lab_monitor_server.exe
 build\windows\bin\Debug\lab_monitor_client.exe
 ```
 
-Every binary lands in `build\windows\bin\<config>\` — both apps, all seven test
+Every binary lands in `build\windows\bin\<config>\` — both apps, all eight test
 executables, and the four `lm_*.dll` they load. That single directory is
 deliberate; see *The libraries are shared* below.
 
 Both accept `--domain-id`, `--config`, `--offline` (in-process transport, no DDS)
 and `--log-level`. The client **starts hidden** — look for the tray icon.
-`.vscode/launch.json` has configurations for both apps and every test binary,
-including a compound that starts server and client together.
+
+`.vscode/launch.json` has configurations for both apps, the shopping cart,
+offline variants of both apps and every test binary, plus two compounds:
+*Server + Client*, and *Server + Client + Shopping Cart* for the whole DDS rule
+loop. It has no `preLaunchTask` — F5 runs what is already built. Note that the
+two `--offline` configurations cannot see each other: `--offline` selects an
+**in-process** `MessageBus`, so an offline server and an offline client are two
+isolated processes, which is why they are deliberately not compounded.
+
+`.vscode/` is gitignored, so both that file and `settings.json` are per-clone and
+have to be recreated — see the JSON-escape gotcha before typing paths into
+either.
