@@ -52,15 +52,6 @@ int severity_score(core::HostState state, const std::optional<core::ComplianceSu
     return band + static_cast<int>(std::lround(summary->passed_ratio() * 899.0));
 }
 
-/// Above this, a percentage cell paints itself by its reading rather than
-/// taking the row's health colour.
-///
-/// 90 rather than something lower because the colour here is an exception
-/// marker, not a gauge: the detail pane's meters and sparkline still show the
-/// whole ramp, and that is where a reading is *watched*. In the fleet table it
-/// only has to answer "is this the machine to look at".
-constexpr double kLoadColourThreshold = 90.0;
-
 /// True for a host that is not currently reporting.
 ///
 /// Paused belongs here even though the machine is demonstrably alive and still
@@ -202,25 +193,14 @@ QVariant FleetModel::data(const QModelIndex& index, int role) const {
     // Colour the whole row by health, so an operator scanning the list sees
     // which machines need attention without reading a single word.
     if (role == Qt::ForegroundRole) {
-        // Except a percentage column that is *near its limit*, which reports
-        // its own reading instead: a machine can be perfectly compliant and out
-        // of disk, and the row's health colour hides precisely that.
-        //
-        // Only past the threshold, though. Colouring every percentage by its
-        // own load made a healthy row three different colours at all times, so
-        // the colour said "this is a percentage" far more often than it said
-        // "look at this" -- and a genuinely full disk had to compete with two
-        // cells already shouting. Below it the cell takes the row's colour and
-        // the number alone carries the reading, which is what a number is for.
-        //
-        // Only while the host is actually reporting, too: the last sample from
-        // one that has gone quiet is stale, and painting it by load would read
-        // as a live machine.
+        // Except the percentage columns, which report their own reading: a
+        // machine can be perfectly compliant and out of disk, and the row's
+        // health colour hides precisely that. Only while the host is actually
+        // reporting, though -- the last sample from one that has gone quiet is
+        // stale, and painting it green would read as a live, idle machine.
         if (row.entry.state == core::HostState::Online) {
             if (const std::optional<double> percent = load_percent(row, index.column())) {
-                if (*percent > kLoadColourThreshold) {
-                    return Theme::color_for_load(*percent);
-                }
+                return Theme::color_for_load(*percent);
             }
         }
         return colour_for(health_of(index.row()));
@@ -231,9 +211,25 @@ QVariant FleetModel::data(const QModelIndex& index, int role) const {
     }
 
     switch (index.column()) {
-        case HostColumn:
-            return role == Qt::ToolTipRole ? QString::fromStdString(row.entry.address)
-                                            : QString::fromStdString(row.entry.host_id);
+        case HostColumn: {
+            if (role != Qt::ToolTipRole) {
+                return QString::fromStdString(row.entry.host_id);
+            }
+            // Revision and Last Seen are hidden columns now, and the detail
+            // pane shows neither -- so without this, when a machine was last
+            // heard from would be nowhere in the UI, which is the one thing
+            // worth knowing about a host that has gone quiet.
+            QStringList lines;
+            if (!row.entry.address.empty()) {
+                lines << QString::fromStdString(row.entry.address);
+                lines << QString();
+            }
+            lines << QStringLiteral("Last seen:\t%1").arg(format_last_seen(row.entry.last_seen));
+            lines << QStringLiteral("Template:\t%1")
+                         .arg(row.entry.stale ? QStringLiteral("Stale")
+                                              : QStringLiteral("Current"));
+            return lines.join(QChar(u'\n'));
+        }
         case StateColumn:
             return QString::fromStdString(core::to_string(row.entry.state));
         case CpuColumn:
@@ -305,13 +301,13 @@ QVariant FleetModel::headerData(int section, Qt::Orientation orientation, int ro
         return QAbstractTableModel::headerData(section, orientation, role);
     }
     switch (section) {
-        case HostColumn:     return QStringLiteral("Host");
-        case StateColumn:    return QStringLiteral("State");
-        case CpuColumn:      return QStringLiteral("CPU");
-        case MemoryColumn:   return QStringLiteral("Memory");
-        case DiskColumn:     return QStringLiteral("Disk");
-        case AdaptersColumn: return QStringLiteral("Adapters");
+        case HostColumn:       return QStringLiteral("Host");
+        case StateColumn:      return QStringLiteral("State");
         case ComplianceColumn: return QStringLiteral("Compliance");
+        case CpuColumn:        return QStringLiteral("CPU");
+        case MemoryColumn:     return QStringLiteral("Memory");
+        case DiskColumn:       return QStringLiteral("Disk");
+        case AdaptersColumn:   return QStringLiteral("Adapters");
         case RevisionColumn: return QStringLiteral("Revision");
         case LastSeenColumn: return QStringLiteral("Last Seen");
         default:             return {};

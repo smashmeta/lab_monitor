@@ -315,6 +315,12 @@ void FleetWindow::build_fleet_tab() {
                         ? QHeaderView::Stretch
                         : QHeaderView::ResizeToContents);
     }
+    // Hidden rather than removed from the model: both are still real readings,
+    // the stale flag still drives the ribbon's Stale counter and its filter,
+    // and the Host cell's tooltip carries both -- so nothing is lost, it is
+    // just no longer taking width from the row every second of every day.
+    host_view_->setColumnHidden(lm::ui::FleetModel::RevisionColumn, true);
+    host_view_->setColumnHidden(lm::ui::FleetModel::LastSeenColumn, true);
     main_splitter_->addWidget(host_view_);
 
     auto* detail_panel = new QWidget(main_splitter_);

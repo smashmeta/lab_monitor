@@ -555,34 +555,40 @@ that opens it — `QMessageBox::question` blocks until something clicks it.
 and everything percentage-based uses it: the fleet list's CPU, Memory and Disk
 cells, both detail panes' CPU sparkline, and every `MeterBar`.
 
-`FleetModel::data()` still paints whole rows by `RowHealth` — but a percentage
-column **above 90%** overrides that with its own reading, because a machine can
+`FleetModel::data()` still paints whole rows by `RowHealth` — but the three
+percentage columns override that with their own reading, because a machine can
 be perfectly compliant and out of disk, which is exactly what a health colour
-hides. `load_percent()` is the single source for both the number and the
-colour, so they cannot disagree.
-
-**The threshold is what makes the colour mean something.** Colouring every
-percentage by its own load put three different colours on every healthy row at
-all times, so the colour said "this is a percentage" far more often than it
-said "look at this" — and a genuinely full disk had to compete with two cells
-already shouting. Below `kLoadColourThreshold` the cell takes the row colour
-and the number alone carries the reading, which is what a number is for. The
-comparison is strictly greater, so 90.0 itself is still quiet.
-
-The detail pane is deliberately not filtered this way: its `MeterBar`s and CPU
-sparkline still show the whole ramp, because that is where a reading is
-*watched* rather than scanned. In the fleet table the colour only has to answer
-"is this the machine to look at".
-
-The override applies **only while the host is `Online`**: the last sample from a
-host that has gone quiet is stale, and painting it by load would read as a live
-machine.
+hides. The override applies **only while the host is `Online`**: the last sample
+from a host that has gone quiet is stale, and painting it green would read as a
+live, idle machine. `load_percent()` is the single source for both the number
+and the colour, so they cannot disagree.
 
 `RowHealth` has a `Paused` arm of its own (`Theme::kPaused`, a blue that is
 neither an alarm colour nor the green of a machine actually being checked), and
 `Paused` counts as not-`Online` here — so a paused host keeps its percentage
 cells in the health colour rather than repainting them by load. Its last sample
 is exactly as stale as a dead machine's.
+
+**The resources sit to the right of Compliance, not left of it.** Column order
+is the enum's declaration order, and it was Host, State, CPU, Memory, Disk,
+Adapters, Compliance -- which put three coloured readings at the front of every
+row, where they read as a verdict on the machine. What a host is *failing* and
+what it is *using* are different questions, and the row now answers them in that
+order with the wide Compliance column between, so nothing has to explain that a
+red disk is not a rule failure.
+
+A threshold was tried first -- percentages kept the row colour until they passed
+90% -- and reverted. It worked, but it solved the wrong half: the problem was
+never that the colours were too loud, it was that their *position* implied they
+meant compliance. Spacing says that; suppressing the colour just removed a
+reading that people wanted at a glance.
+
+**Revision and Last Seen are hidden by the view, not dropped from the model.**
+`setColumnHidden()` in `build_fleet_tab()`. The data is still live: the stale
+flag drives the ribbon's Stale counter and its filter, and the Host cell's
+tooltip carries both readings -- which matters most for a silent host, where
+"when did we last hear from it" is the one thing worth knowing and the detail
+pane shows only the state.
 
 Consequences worth knowing. The status hues now do double duty — a red CPU cell
 and a red `Missing` host are the same colour meaning different things — which is

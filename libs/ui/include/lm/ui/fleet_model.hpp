@@ -45,14 +45,27 @@ class LM_UI_EXPORT FleetModel : public QAbstractTableModel {
     Q_OBJECT
 
 public:
+    /// Declaration order is display order.
+    ///
+    /// Compliance sits directly after State, and the resource readings come
+    /// after it rather than before: what a host *is failing* and what it is
+    /// *using* are different questions, and with CPU, Memory and Disk leading
+    /// the row their colours read as a verdict on the machine. Putting the
+    /// verdict first and the readings to the right of it says which is which
+    /// without needing a legend.
+    ///
+    /// Two adjacency assumptions live in the .cpp and are preserved here:
+    /// Cpu..Disk must stay contiguous and Revision..LastSeen must stay
+    /// adjacent, because apply()/apply_sample() emit dataChanged over those
+    /// ranges.
     enum Column {
         HostColumn = 0,
         StateColumn,
+        ComplianceColumn,
         CpuColumn,
         MemoryColumn,
         DiskColumn,
         AdaptersColumn,
-        ComplianceColumn,
         RevisionColumn,
         LastSeenColumn,
         ColumnCount
