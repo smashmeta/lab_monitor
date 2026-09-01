@@ -11,6 +11,9 @@
 #include <QStackedWidget>
 #include <QVBoxLayout>
 
+#include <type_traits>
+#include <variant>
+
 #include "lm/ui/rule_detail.hpp"
 #include "lm/ui/theme.hpp"
 
@@ -266,6 +269,115 @@ void AddRuleDialog::on_kind_changed() {
     const bool asks = kind_uses_expectation();
     expectation_label_->setVisible(asks);
     expectation_box_->setVisible(asks);
+    refresh();
+}
+
+namespace {
+
+/// The inverse of link_state_from_choice(), so an edited rule reopens showing
+/// the state it already has rather than the combo's first entry.
+QString choice_for_link_state(lm::core::LinkState state) {
+    switch (state) {
+        case lm::core::LinkState::Connected:    return QStringLiteral("Up");
+        case lm::core::LinkState::NoMedia:      return QStringLiteral("No link");
+        case lm::core::LinkState::Connecting:   return QStringLiteral("Connecting");
+        case lm::core::LinkState::Disabled:     return QStringLiteral("Disabled");
+        case lm::core::LinkState::Faulted:      return QStringLiteral("Faulted");
+        case lm::core::LinkState::Disconnected: break;
+    }
+    return QStringLiteral("Disconnected");
+}
+
+/// The inverse of dds_match_from_choice().
+QString choice_for_dds_match(lm::core::DdsMatch match) {
+    switch (match) {
+        case lm::core::DdsMatch::Contains: return QStringLiteral("containing");
+        case lm::core::DdsMatch::AtLeast:  return QStringLiteral("at least");
+        case lm::core::DdsMatch::AtMost:   return QStringLiteral("at most");
+        case lm::core::DdsMatch::Equals:   break;
+    }
+    return QStringLiteral("equal to");
+}
+
+QString choice_for_comparison(lm::core::Comparison comparison) {
+    switch (comparison) {
+        case lm::core::Comparison::Exactly: return QStringLiteral("exactly");
+        case lm::core::Comparison::AtMost:  return QStringLiteral("at most");
+        case lm::core::Comparison::AtLeast: break;
+    }
+    return QStringLiteral("at least");
+}
+
+QString choice_for_registry_match(lm::core::RegistryMatch match) {
+    switch (match) {
+        case lm::core::RegistryMatch::Equals:   return QStringLiteral("Equals");
+        case lm::core::RegistryMatch::Contains: return QStringLiteral("Contains");
+        case lm::core::RegistryMatch::Exists:   break;
+    }
+    return QStringLiteral("Exists");
+}
+
+}  // namespace
+
+void AddRuleDialog::set_rule(const lm::core::Rule& rule) {
+    editing_ = true;
+    setWindowTitle(QStringLiteral("Edit Rule"));
+    buttons_->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Save"));
+
+    description_edit_->setText(QString::fromStdString(rule.description));
+    expectation_box_->setCurrentText(rule.expectation == lm::core::Presence::MustBeAbsent
+                                         ? QStringLiteral("Must be absent")
+                                         : QStringLiteral("Must be present"));
+
+    std::visit(
+        [&](const auto& payload) {
+            using T = std::decay_t<decltype(payload)>;
+            if constexpr (std::is_same_v<T, lm::core::ProcessRule>) {
+                pages_->setCurrentIndex(kProcess);
+                process_executable_->setText(QString::fromStdString(payload.executable));
+            } else if constexpr (std::is_same_v<T, lm::core::ServiceRule>) {
+                pages_->setCurrentIndex(kService);
+                service_name_->setText(QString::fromStdString(payload.service_name));
+            } else if constexpr (std::is_same_v<T, lm::core::RegistryRule>) {
+                pages_->setCurrentIndex(kRegistry);
+                registry_hive_->setCurrentText(
+                    QString::fromStdString(lm::core::to_string(payload.hive)));
+                registry_key_path_->setText(QString::fromStdString(payload.key_path));
+                registry_value_name_->setText(QString::fromStdString(payload.value_name));
+                registry_match_->setCurrentText(choice_for_registry_match(payload.match));
+                registry_expected_->setText(QString::fromStdString(payload.expected_value));
+            } else if constexpr (std::is_same_v<T, lm::core::AdapterCountRule>) {
+                pages_->setCurrentIndex(kAdapterCount);
+                adapter_comparison_->setCurrentText(choice_for_comparison(payload.comparison));
+                adapter_count_->setValue(payload.count);
+            } else if constexpr (std::is_same_v<T, lm::core::AdapterStateRule>) {
+                pages_->setCurrentIndex(kAdapterState);
+                adapter_name_->setText(QString::fromStdString(payload.adapter_name));
+                adapter_link_->setCurrentText(choice_for_link_state(payload.expected));
+            } else if constexpr (std::is_same_v<T, lm::core::DdsTopicRule>) {
+                pages_->setCurrentIndex(kDdsTopic);
+                dds_topic_domain_->setValue(static_cast<int>(payload.domain_id));
+                dds_topic_name_->setText(QString::fromStdString(payload.topic_name));
+            } else {
+                pages_->setCurrentIndex(kDdsValue);
+                dds_value_domain_->setValue(static_cast<int>(payload.domain_id));
+                dds_value_topic_->setText(QString::fromStdString(payload.topic_name));
+                dds_value_path_->setText(QString::fromStdString(payload.path));
+                dds_value_match_->setCurrentText(choice_for_dds_match(payload.match));
+                dds_value_expected_->setText(QString::fromStdString(payload.expected_value));
+            }
+        },
+        rule.payload);
+
+    // The kind combo follows the page rather than driving it, and is then
+    // disabled: changing a rule's kind keeps nothing of the original except its
+    // position in the list, so that is Remove plus Add rather than an edit --
+    // and it keeps the generated id's kind prefix honest for the rule's life.
+    kind_box_->setCurrentIndex(pages_->currentIndex());
+    kind_box_->setEnabled(false);
+    kind_box_->setToolTip(
+        QStringLiteral("A rule's kind cannot be changed. Remove this rule and add a new one."));
+
     refresh();
 }
 

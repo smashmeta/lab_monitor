@@ -443,8 +443,11 @@ void FleetWindow::build_templates_tab() {
     right_layout->addWidget(rule_table_, 1);
     auto* rule_buttons = new QHBoxLayout();
     auto* add_rule_button = new QPushButton(QStringLiteral("Add Rule"), right);
+    auto* edit_rule_button = new QPushButton(QStringLiteral("Edit Rule"), right);
     auto* remove_rule_button = new QPushButton(QStringLiteral("Remove Rule"), right);
+    edit_rule_button->setObjectName(QStringLiteral("EditRuleButton"));
     rule_buttons->addWidget(add_rule_button);
+    rule_buttons->addWidget(edit_rule_button);
     rule_buttons->addWidget(remove_rule_button);
     right_layout->addLayout(rule_buttons);
 
@@ -475,7 +478,13 @@ void FleetWindow::build_templates_tab() {
     connect(add_template_button, &QPushButton::clicked, this, &FleetWindow::on_add_template_clicked);
     connect(remove_template_button_, &QPushButton::clicked, this, &FleetWindow::on_remove_template_clicked);
     connect(add_rule_button, &QPushButton::clicked, this, &FleetWindow::on_add_rule_clicked);
+    connect(edit_rule_button, &QPushButton::clicked, this, &FleetWindow::on_edit_rule_clicked);
     connect(remove_rule_button, &QPushButton::clicked, this, &FleetWindow::on_remove_rule_clicked);
+    // The button is what makes editing discoverable; the double-click is what
+    // anyone tries first on a table. Both land on the same slot rather than on
+    // two paths that could drift apart.
+    connect(rule_table_, &QTableWidget::itemDoubleClicked, this,
+            [this](QTableWidgetItem*) { on_edit_rule_clicked(); });
     connect(assignment_table_, &QTableWidget::cellChanged, this, &FleetWindow::on_assignment_cell_changed);
     connect(add_assignment_button, &QPushButton::clicked, this, &FleetWindow::on_add_assignment_clicked);
     connect(remove_assignment_button, &QPushButton::clicked, this, &FleetWindow::on_remove_assignment_clicked);
@@ -1085,6 +1094,40 @@ void FleetWindow::on_add_rule_clicked() {
     tmpl->rules.push_back(std::move(rule));
     controller_->mark_draft_dirty();
     rebuild_rule_table();
+}
+
+void FleetWindow::on_edit_rule_clicked() {
+    lm::core::Template* tmpl = selected_template();
+    if (tmpl == nullptr) {
+        return;
+    }
+    const int row = rule_table_->currentRow();
+    if (row < 0 || static_cast<std::size_t>(row) >= tmpl->rules.size()) {
+        return;
+    }
+
+    lm::core::Rule& existing = tmpl->rules[static_cast<std::size_t>(row)];
+    AddRuleDialog dialog(this);
+    dialog.set_rule(existing);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    lm::core::Rule edited = dialog.rule();
+    // The id is kept, never regenerated. It is the join key between this rule
+    // and the CheckResults already reported for it, so regenerating would strip
+    // the labels off every cached result until each client re-evaluated -- and
+    // the id is not a row's identity on screen anyway, the description is.
+    edited.id = existing.id;
+
+    spdlog::info("rule edited in template '{}': {} -> {} [{}]", tmpl->name,
+                 lm::ui::describe(existing).label.toStdString(),
+                 lm::ui::describe(edited).label.toStdString(), edited.id);
+
+    existing = std::move(edited);
+    controller_->mark_draft_dirty();
+    rebuild_rule_table();
+    rule_table_->selectRow(row);
 }
 
 void FleetWindow::on_remove_rule_clicked() {

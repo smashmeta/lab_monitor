@@ -83,6 +83,7 @@ private slots:
     void on_remove_template_clicked();
     void on_template_selection_changed();
     void on_add_rule_clicked();
+    void on_edit_rule_clicked();
     void on_remove_rule_clicked();
     void on_add_assignment_clicked();
     void on_remove_assignment_clicked();

@@ -39,6 +39,20 @@ public:
     /// is a rule nobody can create, however completely the stack supports it.
     [[nodiscard]] static QStringList kind_choices();
 
+    /// Loads an existing rule for editing: fills every field, retitles the
+    /// dialog, relabels Add as Save, and locks the kind.
+    ///
+    /// The kind is locked because changing it keeps nothing of the original
+    /// rule but its position in the list -- that is a Remove plus an Add, and
+    /// pretending otherwise would let a generated id like process-chrome-exe
+    /// end up naming a registry rule.
+    void set_rule(const lm::core::Rule& rule);
+
+    /// Whether set_rule() was called. The caller keeps the rule's existing id
+    /// on save rather than regenerating it, so that reports already received
+    /// under that id keep their labels through the edit.
+    [[nodiscard]] bool is_editing() const { return editing_; }
+
     /// The configured rule, with **no id** — the caller generates that from the
     /// bundle, because uniqueness is bundle-wide and this dialog cannot see it.
     /// Only meaningful once accepted; call is_complete() otherwise.
@@ -70,6 +84,8 @@ private:
     /// count in its comparison, the DDS value in its match. Asking those for a
     /// presence as well would be a second, contradictable answer.
     [[nodiscard]] bool kind_uses_expectation() const;
+
+    bool editing_ = false;
 
     QComboBox* kind_box_;
     QLineEdit* description_edit_;

@@ -7,10 +7,13 @@
 #include <QPushButton>
 #include <QSpinBox>
 
+#include <optional>
 #include <string>
 #include <variant>
+#include <vector>
 
 #include "add_rule_dialog.hpp"
+#include "lm/ui/rule_detail.hpp"
 
 using namespace lm::core;
 
@@ -223,4 +226,122 @@ TEST(AddRuleDialog, LeavesTheIdToTheCaller) {
     choose(dialog, "KindBox", QStringLiteral("Process"));
     type(dialog, "ProcessExecutable", QStringLiteral("chrome.exe"));
     EXPECT_TRUE(dialog.rule().id.empty());
+}
+
+namespace {
+
+/// A rule of each kind, so the round-trip is checked against every payload
+/// rather than the one that happened to be written first.
+std::vector<Rule> one_of_every_kind() {
+    std::vector<Rule> rules;
+
+    Rule process;
+    process.description = "Antivirus must be running";
+    process.payload = ProcessRule{"antivirus.exe"};
+    rules.push_back(process);
+
+    Rule service;
+    service.description = "Spooler stopped";
+    service.expectation = Presence::MustBeAbsent;
+    service.payload = ServiceRule{"Spooler", std::nullopt};
+    rules.push_back(service);
+
+    Rule registry;
+    registry.payload = RegistryRule{RegistryHive::CurrentUser, "SOFTWARE\\Acme", "Version",
+                                    RegistryMatch::Contains, "2.0"};
+    rules.push_back(registry);
+
+    Rule count;
+    count.payload = AdapterCountRule{Comparison::AtMost, 3};
+    rules.push_back(count);
+
+    Rule state;
+    state.payload = AdapterStateRule{"smash-wifi", LinkState::Disabled};
+    rules.push_back(state);
+
+    Rule topic;
+    topic.payload = DdsTopicRule{7, "Conveyor"};
+    rules.push_back(topic);
+
+    Rule value;
+    value.payload = DdsValueRule{42, "ShoppingCart", "items_[*].sku", DdsMatch::Equals, "bread"};
+    rules.push_back(value);
+
+    return rules;
+}
+
+}  // namespace
+
+TEST(AddRuleDialogEditing, ReloadsEveryKindWithoutChangingIt) {
+    // The round-trip that matters: opening a rule for editing and saving it
+    // untouched must give back the rule that went in. A field set() forgets is
+    // invisible on screen -- the box just looks empty -- and silently discards
+    // whatever the author had put there.
+    for (const Rule& original : one_of_every_kind()) {
+        AddRuleDialog dialog;
+        dialog.set_rule(original);
+
+        const Rule reloaded = dialog.rule();
+        // EXPECT_TRUE rather than EXPECT_EQ: RulePayload is a std::variant and
+        // gtest cannot stream one into a failure message. describe() gives a
+        // far more useful line than a byte dump would anyway.
+        EXPECT_TRUE(reloaded.payload == original.payload)
+            << "payload changed for " << lm::ui::describe(original).label.toStdString() << " -> "
+            << lm::ui::describe(reloaded).label.toStdString();
+        EXPECT_EQ(reloaded.description, original.description);
+        EXPECT_TRUE(reloaded.expectation == original.expectation);
+    }
+}
+
+TEST(AddRuleDialogEditing, SaysItIsEditingAndOffersSave) {
+    Rule rule;
+    rule.payload = ProcessRule{"antivirus.exe"};
+    AddRuleDialog dialog;
+    EXPECT_FALSE(dialog.is_editing());
+
+    dialog.set_rule(rule);
+    EXPECT_TRUE(dialog.is_editing());
+    EXPECT_EQ(dialog.windowTitle().toStdString(), "Edit Rule");
+}
+
+TEST(AddRuleDialogEditing, LocksTheKind) {
+    // Changing a rule's kind keeps nothing of the original but its position in
+    // the list, so it is Remove plus Add -- and an unlocked combo would let a
+    // generated id like process-chrome-exe end up naming a registry rule.
+    Rule rule;
+    rule.payload = ProcessRule{"antivirus.exe"};
+    AddRuleDialog dialog;
+    dialog.set_rule(rule);
+
+    auto* kind = dialog.findChild<QComboBox*>(QStringLiteral("KindBox"));
+    ASSERT_NE(kind, nullptr);
+    EXPECT_FALSE(kind->isEnabled());
+    EXPECT_EQ(kind->currentText().toStdString(), "Process");
+}
+
+TEST(AddRuleDialogEditing, ShowsTheEditedRuleInTheSummaryAsItIsChanged) {
+    Rule rule;
+    rule.payload = ProcessRule{"antivirus.exe"};
+    AddRuleDialog dialog;
+    dialog.set_rule(rule);
+    ASSERT_NE(dialog.summary().indexOf(QStringLiteral("antivirus.exe")), -1)
+        << dialog.summary().toStdString();
+
+    auto* executable = dialog.findChild<QLineEdit*>(QStringLiteral("ProcessExecutable"));
+    ASSERT_NE(executable, nullptr);
+    executable->setText(QStringLiteral("firefox.exe"));
+
+    EXPECT_NE(dialog.summary().indexOf(QStringLiteral("firefox.exe")), -1)
+        << dialog.summary().toStdString();
+}
+
+TEST(AddRuleDialogEditing, StillRefusesToSaveAnIncompleteRule) {
+    Rule rule;
+    rule.payload = ProcessRule{"antivirus.exe"};
+    AddRuleDialog dialog;
+    dialog.set_rule(rule);
+    ASSERT_TRUE(dialog.is_complete());
+
+    dialog.findChild<QLineEdit*>(QStringLiteral("ProcessExecutable"))->clear();
+    EXPECT_FALSE(dialog.is_complete()) << "an edit can empty a required field too";
 }

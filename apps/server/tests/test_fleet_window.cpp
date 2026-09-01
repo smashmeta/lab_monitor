@@ -12,10 +12,12 @@
 #include <QTemporaryDir>
 #include <QTreeWidget>
 #include <QTest>
+#include <QTimer>
 
 #include <algorithm>
 #include <cstddef>
 #include <memory>
+#include <variant>
 
 #include "add_rule_dialog.hpp"
 #include "fleet_window.hpp"
@@ -700,3 +702,68 @@ TEST(FleetWindowPaused, ListsNoTagsWhilePausedButKeepsTheLastKnownScore) {
     EXPECT_TRUE(compliance_tag_labels(harness, QStringLiteral("PC-001")).isEmpty());
 }
 
+
+TEST(FleetWindowRules, KeepsARulesIdWhenItIsEdited) {
+    // The id is the join key between this rule and the CheckResults already
+    // reported for it. Regenerating on save would strip the labels off every
+    // cached result until each client re-evaluated, up to 30 s later.
+    Harness harness;
+    Rule rule;
+    rule.id = "process-antivirus-exe";
+    rule.description = "Antivirus must be running";
+    rule.payload = ProcessRule{"antivirus.exe"};
+    harness.controller->draft().templates.front().rules.push_back(rule);
+
+    select_template(harness, QStringLiteral("Lab Workstation"));
+    QTableWidget* table = rule_table(harness);
+    ASSERT_NE(table, nullptr);
+    table->selectRow(0);
+
+    // The dialog is modal, so the answer is scheduled before the click that
+    // opens it -- the same trick the client's Close Program confirmation uses.
+    QTimer::singleShot(0, [&harness] {
+        auto* dialog = harness.window->findChild<AddRuleDialog*>(QStringLiteral("AddRuleDialog"));
+        ASSERT_NE(dialog, nullptr);
+        dialog->findChild<QLineEdit*>(QStringLiteral("ProcessExecutable"))
+            ->setText(QStringLiteral("firefox.exe"));
+        dialog->accept();
+    });
+    QPushButton* edit = harness.window->findChild<QPushButton*>(QStringLiteral("EditRuleButton"));
+    ASSERT_NE(edit, nullptr) << "no Edit Rule button";
+    edit->click();
+    QApplication::processEvents();
+
+    const auto& rules = harness.controller->draft().templates.front().rules;
+    ASSERT_EQ(rules.size(), 1u);
+    EXPECT_EQ(rules.front().id, "process-antivirus-exe") << "the id must survive the edit";
+    EXPECT_EQ(std::get<ProcessRule>(rules.front().payload).executable, "firefox.exe")
+        << "the edit must actually have been applied";
+}
+
+TEST(FleetWindowRules, EditingIsReachableByDoubleClickingARow) {
+    // The button makes it discoverable; the double-click is what anyone tries
+    // first on a table. Both have to reach the same place.
+    Harness harness;
+    Rule rule;
+    rule.id = "process-antivirus-exe";
+    rule.payload = ProcessRule{"antivirus.exe"};
+    harness.controller->draft().templates.front().rules.push_back(rule);
+
+    select_template(harness, QStringLiteral("Lab Workstation"));
+    QTableWidget* table = rule_table(harness);
+    ASSERT_NE(table, nullptr);
+    table->selectRow(0);
+
+    bool opened = false;
+    QTimer::singleShot(0, [&harness, &opened] {
+        auto* dialog = harness.window->findChild<AddRuleDialog*>(QStringLiteral("AddRuleDialog"));
+        if (dialog != nullptr) {
+            opened = dialog->is_editing();
+            dialog->reject();
+        }
+    });
+    emit table->itemDoubleClicked(table->item(0, 0));
+    QApplication::processEvents();
+
+    EXPECT_TRUE(opened) << "a double-click did not open the rule for editing";
+}

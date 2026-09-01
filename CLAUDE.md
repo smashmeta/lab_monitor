@@ -101,10 +101,10 @@ is simply not offered off-CI.
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend, the XTypes DDS probe | 30 |
 | `lm_ui` | Shared Qt 6 widgets, theme, `FleetModel`, `ComplianceTagDelegate`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 64 + 40 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 17 |
-| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing, the Add Rule dialog | 53 |
+| `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing, the Add/Edit Rule dialog | 60 |
 | `shopping_cart` | A hand-driven DDS publisher to test rules against — see *Tools* | 10 |
 
-**470 unit tests**, plus 17 Fast DDS integration tests gated behind
+**477 unit tests**, plus 17 Fast DDS integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they open real DDS domains).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -597,7 +597,7 @@ why every percentage cell also shows its number. And a state change must emit
 health colours every cell, and the percentage cells additionally swap between
 their load colour and the health one as a host starts and stops reporting.
 
-### Add Rule is one dialog, not a chain of prompts
+### Add and Edit Rule are one dialog, not a chain of prompts
 `AddRuleDialog` replaced seven `QInputDialog` prompts shown one after another.
 The chain worked, and it produced a genuinely mis-authored rule in practice: the
 DDS path was typed into the topic box, giving
@@ -625,6 +625,26 @@ It is also the first version of this flow that can be tested at all: every field
 carries an object name, so `test_add_rule_dialog.cpp` drives all seven kinds,
 the validation and the summary. A chain of modal prompts could only be driven by
 a human, which is why the mis-entry reached an operator in the first place.
+
+**The same dialog edits.** `set_rule()` fills every field from an existing
+rule, retitles to Edit Rule and relabels Add as Save; the Templates tab reaches
+it from an Edit Rule button and from double-clicking a row, both landing on the
+same slot. `ReloadsEveryKindWithoutChangingIt` round-trips one rule of all
+seven kinds through `set_rule()` and back out of `rule()` -- a field the setter
+forgets is invisible on screen, since the box just looks empty, and would
+silently discard whatever the author had put there.
+
+**Editing locks the kind.** Changing a rule's kind keeps nothing of the
+original but its position in the list, so that is Remove plus Add -- and an
+unlocked combo would let `process-chrome-exe` end up naming a registry rule.
+
+**An edit keeps the rule's existing id**, never regenerating it. The id is the
+join key to the `CheckResult`s already reported for it, so regenerating would
+strip the labels off every cached result until each client re-evaluated, up to
+30 s later. The id may then drift from its target -- `process-chrome-exe`
+pointing at firefox.exe -- which is acceptable precisely because the id is not
+a row's identity on screen: the description is, and the id stays in the
+tooltip for support.
 
 `rule()` deliberately returns a rule with **no id**: uniqueness is bundle-wide,
 and the dialog cannot see the bundle. `FleetWindow::on_add_rule_clicked()` calls
