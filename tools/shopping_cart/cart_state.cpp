@@ -50,12 +50,43 @@ double total(const State& state) {
                             });
 }
 
+namespace {
+
+/// One field of every line, comma-separated, as the "current value" for a
+/// wildcard path. A `[*]` path addresses several values at once, so the pane
+/// has to show several -- and showing only the first would make the path look
+/// like it meant `items_[0]`.
+template <typename Field>
+std::string every(const State& state, Field field) {
+    if (state.items.empty()) {
+        return "(no lines)";
+    }
+    std::string text;
+    for (const Item& item : state.items) {
+        if (!text.empty()) {
+            text += ", ";
+        }
+        text += field(item);
+    }
+    return text;
+}
+
+}  // namespace
+
 std::vector<std::pair<std::string, std::string>> rule_paths(const State& state) {
     std::vector<std::pair<std::string, std::string>> paths;
     paths.emplace_back("items_.length", std::to_string(state.items.size()));
     paths.emplace_back("unit_count", std::to_string(unit_count(state)));
     paths.emplace_back("total", money(total(state)));
     paths.emplace_back("status", state.status);
+
+    // Offered whatever the cart holds, unlike the indexed paths below: a rule
+    // on items_[*].sku is answerable against an empty cart -- it simply fails,
+    // which is the reading an operator wants -- so there is nothing to protect
+    // them from here.
+    paths.emplace_back("items_[*].sku", every(state, [](const Item& item) { return item.sku; }));
+    paths.emplace_back("items_[*].quantity",
+                       every(state, [](const Item& item) { return std::to_string(item.quantity); }));
 
     // Only for lines that exist. Offering items_[0].sku on an empty cart would
     // invite a rule addressed at nothing, which reports Error rather than the

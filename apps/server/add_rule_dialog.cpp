@@ -244,8 +244,10 @@ QWidget* AddRuleDialog::build_dds_value_page() {
     // The server has never seen this type and cannot offer its fields, so the
     // grammar has to be written down where the path is typed.
     auto* hint = new QLabel(
-        QStringLiteral("Path addresses one value: <code>status</code>, "
-                        "<code>items_.length</code>, <code>items_[0].sku</code>"),
+        QStringLiteral("Path addresses a value: <code>status</code>, "
+                        "<code>items_.length</code>, <code>items_[0].sku</code>.<br>"
+                        "<code>[*]</code> addresses every element and the rule passes if "
+                        "<b>any</b> of them matches: <code>items_[*].sku</code>"),
         page);
     hint->setObjectName(QStringLiteral("DdsPathHint"));
     hint->setTextFormat(Qt::RichText);

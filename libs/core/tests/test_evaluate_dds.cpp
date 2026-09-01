@@ -244,3 +244,115 @@ TEST(DdsRuleId, IsGeneratedFromTheTopicAndPath) {
     EXPECT_EQ(make_rule_id(bundle, value_rule("items_.length", DdsMatch::Equals, "2")),
               "dds-basket-items-length");
 }
+
+namespace {
+
+/// The motivating shape: a basket whose lines each carry a sku and a price.
+const char* kStockedBasket =
+    R"({"status":"Ready","items_":[{"sku":"A-100","price":2.5},)"
+    R"({"sku":"bread","price":5.0},{"sku":"milk","price":1.25}]})";
+
+}  // namespace
+
+TEST(EvaluateDdsAny, PassesWhenOneElementCarriesTheValue) {
+    // "at least one line in the basket is bread", which is the question the
+    // wildcard was added for.
+    const CheckResult result =
+        only_result(bundle_with(value_rule("items_[*].sku", DdsMatch::Equals, "bread")),
+                    facts_with_sample(kStockedBasket));
+
+    EXPECT_EQ(result.status, CheckStatus::Pass);
+}
+
+TEST(EvaluateDdsAny, FailsWhenNoElementCarriesTheValue) {
+    const CheckResult result =
+        only_result(bundle_with(value_rule("items_[*].sku", DdsMatch::Equals, "caviar")),
+                    facts_with_sample(kStockedBasket));
+
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    // Says "any", so the reader is not left thinking one particular line was
+    // meant to be caviar.
+    EXPECT_NE(result.message.find("any items_[*].sku"), std::string::npos) << result.message;
+}
+
+TEST(EvaluateDdsAny, ListsWhatItActuallySawWhenItFails) {
+    const CheckResult result =
+        only_result(bundle_with(value_rule("items_[*].sku", DdsMatch::Equals, "caviar")),
+                    facts_with_sample(kStockedBasket));
+
+    EXPECT_NE(result.observed.find("3 values"), std::string::npos) << result.observed;
+    EXPECT_NE(result.observed.find("bread"), std::string::npos) << result.observed;
+}
+
+TEST(EvaluateDdsAny, AnEmptySequenceFailsRatherThanErroring) {
+    // Nothing is wrong with the machine: there is simply no line that matches,
+    // because there are no lines. That is a finding, and the fleet should read
+    // it as one.
+    const CheckResult result =
+        only_result(bundle_with(value_rule("items_[*].sku", DdsMatch::Equals, "bread")),
+                    facts_with_sample(R"({"status":"Ready","items_":[]})"));
+
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_EQ(result.observed, "no elements");
+}
+
+TEST(EvaluateDdsAny, ComparesNumbersAcrossElementsToo) {
+    // Not only text: "some line costs at least 5".
+    EXPECT_EQ(only_result(bundle_with(value_rule("items_[*].price", DdsMatch::AtLeast, "5")),
+                          facts_with_sample(kStockedBasket))
+                  .status,
+              CheckStatus::Pass);
+    EXPECT_EQ(only_result(bundle_with(value_rule("items_[*].price", DdsMatch::AtLeast, "99")),
+                          facts_with_sample(kStockedBasket))
+                  .status,
+              CheckStatus::Fail);
+}
+
+TEST(EvaluateDdsAny, MatchesOnASubstringOfAnyElement) {
+    EXPECT_EQ(only_result(bundle_with(value_rule("items_[*].sku", DdsMatch::Contains, "rea")),
+                          facts_with_sample(kStockedBasket))
+                  .status,
+              CheckStatus::Pass);
+}
+
+TEST(EvaluateDdsAny, AMisspeltFieldIsAnErrorNamingIt) {
+    // The authoring mistake the wildcard makes easy: every element lacks the
+    // field, so nothing was addressed and the rule cannot be answered.
+    const CheckResult result =
+        only_result(bundle_with(value_rule("items_[*].skew", DdsMatch::Equals, "bread")),
+                    facts_with_sample(kStockedBasket));
+
+    EXPECT_EQ(result.status, CheckStatus::Error);
+    EXPECT_NE(result.message.find("skew"), std::string::npos) << result.message;
+}
+
+TEST(EvaluateDdsAny, ANumericRuleAgainstTextIsStillAnError) {
+    const CheckResult result =
+        only_result(bundle_with(value_rule("items_[*].sku", DdsMatch::AtLeast, "5")),
+                    facts_with_sample(kStockedBasket));
+
+    EXPECT_EQ(result.status, CheckStatus::Error);
+}
+
+TEST(EvaluateDdsAny, OneOddMemberDoesNotTurnARealAnswerIntoAnError) {
+    // A sequence with a stray non-numeric member still says whether any member
+    // matched -- so the answer stands rather than collapsing into "could not
+    // check". Only a sequence where *nothing* could be compared is an Error.
+    const char* mixed =
+        R"({"items_":[{"price":"free"},{"price":7.0}]})";
+    EXPECT_EQ(only_result(bundle_with(value_rule("items_[*].price", DdsMatch::AtLeast, "5")),
+                          facts_with_sample(mixed))
+                  .status,
+              CheckStatus::Pass);
+}
+
+TEST(EvaluateDdsAny, LeavesSingularPathsExactlyAsTheyWere) {
+    // The regression that matters: adding a plural form must not change what a
+    // singular path means, and its observed value is still the bare reading.
+    const CheckResult result =
+        only_result(bundle_with(value_rule("items_[1].sku", DdsMatch::Equals, "bread")),
+                    facts_with_sample(kStockedBasket));
+
+    EXPECT_EQ(result.status, CheckStatus::Pass);
+    EXPECT_EQ(result.observed, "bread");
+}

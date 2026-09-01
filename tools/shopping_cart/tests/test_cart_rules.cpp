@@ -120,3 +120,34 @@ TEST(CartRules, TheTopicRulePassesWithoutReadingTheDataAtAll) {
     rule.payload = DdsTopicRule{kDomain, kTopic};
     EXPECT_EQ(check(cart::State{}, std::move(rule)).status, CheckStatus::Pass);
 }
+
+TEST(CartRules, FindsALineByItsSkuAnywhereInTheBasket) {
+    // The motivating case for the wildcard: an operator does not know, and
+    // should not have to know, which index the bread landed on.
+    cart::State state;
+    state.items.push_back(cart::Item{"A-100", 2.50, 1});
+    state.items.push_back(cart::Item{"bread", 5.00, 2});
+
+    Rule rule;
+    rule.payload = DdsValueRule{kDomain, kTopic, "items_[*].sku", DdsMatch::Equals, "bread"};
+    EXPECT_EQ(check(state, rule).status, CheckStatus::Pass);
+}
+
+TEST(CartRules, AndFailsWhenNoLineCarriesIt) {
+    cart::State state;
+    state.items.push_back(cart::Item{"A-100", 2.50, 1});
+
+    Rule rule;
+    rule.payload = DdsValueRule{kDomain, kTopic, "items_[*].sku", DdsMatch::Equals, "bread"};
+    const CheckResult result = check(state, rule);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_NE(result.message.find("any items_[*].sku"), std::string::npos) << result.message;
+}
+
+TEST(CartRules, AnEmptyBasketFailsTheWildcardRatherThanErroring) {
+    Rule rule;
+    rule.payload = DdsValueRule{kDomain, kTopic, "items_[*].sku", DdsMatch::Equals, "bread"};
+    const CheckResult result = check(cart::State{}, rule);
+    EXPECT_EQ(result.status, CheckStatus::Fail);
+    EXPECT_EQ(result.observed, "no elements");
+}

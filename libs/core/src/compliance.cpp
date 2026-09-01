@@ -295,6 +295,63 @@ std::string readable(const nlohmann::json& value) {
     return value.dump();
 }
 
+/// What the report shows for the values a path addressed.
+///
+/// One value reads as itself, exactly as it always did. Several are listed, and
+/// capped: a cart with forty lines would otherwise put forty skus on a fleet
+/// row, and the count at the front is the part worth reading anyway.
+std::string observed_text(const std::vector<nlohmann::json>& values) {
+    if (values.size() == 1) {
+        return readable(values.front());
+    }
+    constexpr std::size_t kMaxListed = 5;
+    std::string text = std::to_string(values.size()) + " values: ";
+    for (std::size_t i = 0; i < values.size() && i < kMaxListed; ++i) {
+        if (i > 0) {
+            text += ", ";
+        }
+        text += readable(values[i]);
+    }
+    if (values.size() > kMaxListed) {
+        text += ", +" + std::to_string(values.size() - kMaxListed) + " more";
+    }
+    return text;
+}
+
+/// Whether one value satisfies the rule, or why it could not be compared.
+///
+/// Split out of evaluate_dds_value() when `[*]` arrived: the decision is now
+/// made once per addressed value rather than once per rule, and "could not
+/// compare this one" has to be answerable separately from "this one did not
+/// match" so that a single odd member of a sequence does not turn a real answer
+/// into an Error.
+std::expected<bool, std::string> matches(const nlohmann::json& value, const DdsValueRule& payload) {
+    const bool numeric_match = payload.match == DdsMatch::AtLeast || payload.match == DdsMatch::AtMost;
+    if (numeric_match || (payload.match == DdsMatch::Equals && value.is_number())) {
+        if (!value.is_number()) {
+            return std::unexpected("expected a number at " + payload.path + " to compare against " +
+                                   payload.expected_value + ", found " + document_kind(value));
+        }
+        double expected = 0.0;
+        try {
+            expected = std::stod(payload.expected_value);
+        } catch (const std::exception&) {
+            return std::unexpected("the rule's expected value \"" + payload.expected_value +
+                                   "\" is not a number");
+        }
+        const double observed = value.get<double>();
+        return payload.match == DdsMatch::AtLeast  ? observed >= expected
+               : payload.match == DdsMatch::AtMost ? observed <= expected
+                                                   : observed == expected;
+    }
+
+    // Textual from here: Equals against a non-number, and Contains.
+    const std::string observed = readable(value);
+    return payload.match == DdsMatch::Contains
+               ? observed.find(payload.expected_value) != std::string::npos
+               : observed == payload.expected_value;
+}
+
 CheckResult evaluate_dds_value(const Rule& rule, const DdsValueRule& payload,
                                const HostFacts& facts) {
     const DdsTopicSample* sample = find_topic(facts, payload.domain_id, payload.topic_name);
@@ -331,7 +388,7 @@ CheckResult evaluate_dds_value(const Rule& rule, const DdsValueRule& payload,
                      std::string("the sample could not be read as JSON: ") + parse_error.what());
     }
 
-    const auto found = resolve_path(document, payload.path);
+    const auto found = resolve_all(document, payload.path);
     if (!found.has_value()) {
         // A malformed path is the author's mistake and a missing field is a
         // fact about the data, but neither one lets the rule be answered, so
@@ -340,48 +397,56 @@ CheckResult evaluate_dds_value(const Rule& rule, const DdsValueRule& payload,
                      found.error().message);
     }
 
-    const std::string expectation =
-        "expected " + payload.path + " " + to_string(payload.match) + " " + payload.expected_value;
+    const bool plural = payload.path.find("[*]") != std::string::npos;
+    const std::string expectation = "expected " + std::string(plural ? "any " : "") + payload.path +
+                                    " " + to_string(payload.match) + " " + payload.expected_value;
 
     CheckResult result;
     result.rule_id = rule.id;
-    result.observed = readable(*found);
 
-    const bool numeric_match = payload.match == DdsMatch::AtLeast || payload.match == DdsMatch::AtMost;
-    if (numeric_match || (payload.match == DdsMatch::Equals && found->is_number())) {
-        if (!found->is_number()) {
-            return error(rule, result.observed,
-                         "expected a number at " + payload.path + " to compare against " +
-                             payload.expected_value + ", found " + document_kind(*found));
-        }
-        double expected = 0.0;
-        try {
-            expected = std::stod(payload.expected_value);
-        } catch (const std::exception&) {
-            return error(rule, result.observed,
-                         "the rule's expected value \"" + payload.expected_value +
-                             "\" is not a number");
-        }
-        const double observed = found->get<double>();
-        const bool ok = payload.match == DdsMatch::AtLeast   ? observed >= expected
-                        : payload.match == DdsMatch::AtMost  ? observed <= expected
-                                                             : observed == expected;
-        result.status = ok ? CheckStatus::Pass : CheckStatus::Fail;
-        if (!ok) {
-            result.message = expectation;
-        }
+    if (found->empty()) {
+        // Only reachable through `[*]` over an empty sequence, and it is a
+        // finding rather than a fault: nothing in the cart has that sku,
+        // because there is nothing in the cart.
+        result.status = CheckStatus::Fail;
+        result.observed = "no elements";
+        result.message = expectation;
         return result;
     }
 
-    // Textual from here: Equals against a non-number, and Contains.
-    const std::string observed = result.observed;
-    const bool ok = payload.match == DdsMatch::Contains
-                        ? observed.find(payload.expected_value) != std::string::npos
-                        : observed == payload.expected_value;
-    result.status = ok ? CheckStatus::Pass : CheckStatus::Fail;
-    if (!ok) {
-        result.message = expectation;
+    result.observed = observed_text(*found);
+
+    // Any, not all. A singular path yields exactly one value, so this is the
+    // same question it always asked; a `[*]` path asks it of every element and
+    // passes on the first that answers yes.
+    std::optional<std::string> first_error;
+    std::size_t comparable = 0;
+    for (const nlohmann::json& value : *found) {
+        const std::expected<bool, std::string> matched = matches(value, payload);
+        if (!matched.has_value()) {
+            if (!first_error.has_value()) {
+                first_error = matched.error();
+            }
+            continue;
+        }
+        ++comparable;
+        if (*matched) {
+            result.status = CheckStatus::Pass;
+            return result;
+        }
     }
+
+    // Nothing could be compared at all -- a numeric rule against text, say.
+    // Nothing is wrong with the machine and the rule cannot be answered, which
+    // is an Error rather than a Fail. One comparable value is enough to make it
+    // a real answer: a sequence with a stray non-numeric member still tells you
+    // whether any member matched.
+    if (comparable == 0 && first_error.has_value()) {
+        return error(rule, result.observed, *first_error);
+    }
+
+    result.status = CheckStatus::Fail;
+    result.message = expectation;
     return result;
 }
 

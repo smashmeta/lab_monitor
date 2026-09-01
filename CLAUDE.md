@@ -96,15 +96,15 @@ is simply not offered off-CI.
 
 | Target | Responsibility | Tests |
 |---|---|---|
-| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 173 |
+| `lm_core` | Pure domain logic: rules, templates, JSON, `evaluate()`, `reconcile()`, `ClientRegistry` | 193 |
 | `lm_platform` | OS probes behind interfaces, plus public fakes in `fakes.hpp` | 57 |
 | `lm_transport` | `IClientTransport`/`IServerTransport`, FastCDR codecs, in-memory bus, Fast DDS backend, the XTypes DDS probe | 30 |
 | `lm_ui` | Shared Qt 6 widgets, theme, `FleetModel`, `ComplianceTagDelegate`, `SampleCoalescer`, `RuleDetail`, `TokenEdit`, `AdapterList` | 64 + 40 |
 | `lab_monitor_client` | Hidden tray app; worker thread samples and publishes | 17 |
 | `lab_monitor_server` | Fleet console; discovery, reconciliation, template publishing, the Add Rule dialog | 53 |
-| `shopping_cart` | A hand-driven DDS publisher to test rules against — see *Tools* | 8 |
+| `shopping_cart` | A hand-driven DDS publisher to test rules against — see *Tools* | 10 |
 
-**442 unit tests**, plus 14 Fast DDS integration tests gated behind
+**470 unit tests**, plus 17 Fast DDS integration tests gated behind
 `LM_BUILD_INTEGRATION_TESTS` (default OFF — they open real DDS domains).
 
 `lm_ui`'s second figure is `lm_ui_widget_tests`, a separate binary because it
@@ -402,10 +402,42 @@ against a publisher that describes nothing and has never published.
 `DdsValueRule` reads one value by path.
 
 The path grammar is an address, not a query language: `status`, `owner.shift`,
-`items_[0].sku`, `items_.length`. **`length` is a projection in final position**,
+`items_[0].sku`, `items_[*].sku`, `items_.length`. **`length` is a projection in final position**,
 not a flag on the rule, so the path stays the single statement of what is read —
 and a field genuinely named `length` is still addressable when the path
 continues past it.
+
+**`[*]` addresses every element, and the rule asks whether *any* matches.**
+`items_[*].sku equal to bread` answers "is there bread in the basket" without
+anyone having to know which line it landed on. It is still an address rather
+than a query: the path names a set, and what to do with those values is the
+rule's business. `resolve_all()` is the general form and `resolve_path()` the
+special case -- the latter now refuses a path that addresses several, rather
+than silently returning the first and making `items_[*].sku` look like it
+worked.
+
+Three decisions in it are worth keeping:
+
+A `[*]` over an **empty sequence is a Fail, not an Error**. Nothing is wrong
+with the machine; there is simply no line that matches, because there are no
+lines. The cell reads `no elements`. That is why the shopping cart offers
+`items_[*].sku` on an empty cart while still withholding `items_[0].sku`, which
+would address nothing and Error.
+
+**A field missing from every element is an Error naming it**, which is the
+`items_[*].skew` typo. A field missing from *some* elements is skipped: a
+sequence whose members differ is data, not an authoring mistake. Likewise one
+value that cannot be compared -- text under a numeric match -- does not sink the
+answer; only a set where *nothing* could be compared becomes an Error.
+
+**The failure message says "any".** `expected any items_[*].sku equal to
+caviar`, and `observed` becomes `3 values: A-100, bread, milk`, capped at five
+with `+N more`. Without the word, a reader would think one particular line was
+meant to be caviar.
+
+`[all]` and `[none]` were deliberately left out -- only "at least one" was
+asked for -- but the spelling leaves room for them without touching the payload
+or anything already saved in a bundle.
 
 **The line is drawn so `lm_core` stays DDS-free.** `IDdsProbe` is declared in
 `lm_platform` with no DDS type in its signature; the Fast DDS implementation

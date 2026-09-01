@@ -97,6 +97,29 @@ TEST(CartPaths, StayUsableOnAnEmptyCart) {
 
     EXPECT_EQ(value_at(state, "items_.length"), "0");
     EXPECT_TRUE(std::ranges::none_of(paths, [](const auto& entry) {
-        return entry.first.find('[') != std::string::npos;
+        return entry.first.find("[0]") != std::string::npos;
     })) << "an empty cart has no items_[0] to address";
+}
+
+TEST(CartPaths, OfferTheWildcardEvenOnAnEmptyCart) {
+    // Unlike items_[0], a rule on items_[*].sku is answerable against an empty
+    // cart: it fails, which is the reading an operator wants, rather than
+    // erroring the way an address to a missing element does. So there is
+    // nothing to protect them from, and the path is offered from the start.
+    const cart::State state;
+    const auto paths = cart::rule_paths(state);
+
+    const auto wildcard = std::ranges::find(paths, "items_[*].sku", &std::pair<std::string, std::string>::first);
+    ASSERT_NE(wildcard, paths.end());
+    EXPECT_EQ(wildcard->second, "(no lines)");
+}
+
+TEST(CartPaths, ShowEveryLineForAWildcardPath) {
+    // Showing only the first value would make items_[*].sku look like it meant
+    // items_[0].sku, which is the one misreading this path must not invite.
+    cart::State state;
+    state.items.push_back(cart::Item{"A-100", 2.5, 1});
+    state.items.push_back(cart::Item{"bread", 5.0, 2});
+
+    EXPECT_EQ(value_at(state, "items_[*].sku"), "A-100, bread");
 }

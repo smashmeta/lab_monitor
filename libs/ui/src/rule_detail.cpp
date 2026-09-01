@@ -111,9 +111,17 @@ RuleDetail describe(const lm::core::Rule& rule) {
                 detail.constraint = QStringLiteral("the topic is published");
             } else {
                 detail.kind = QStringLiteral("DDS");
+                // "any" for a wildcard path, because the rule passes on the
+                // first element that matches and reading it as though one
+                // particular element were meant would be wrong in exactly the
+                // situation the wildcard exists for.
+                const QString path = to_qstring(payload.path);
+                const QString addressed = path.contains(QStringLiteral("[*]"))
+                                              ? QStringLiteral("any %1").arg(path)
+                                              : path;
                 detail.target = QStringLiteral("%1.%2 on domain %3")
                                     .arg(to_qstring(payload.topic_name))
-                                    .arg(to_qstring(payload.path))
+                                    .arg(addressed)
                                     .arg(payload.domain_id);
                 detail.constraint = QStringLiteral("%1 %2")
                                         .arg(to_qstring(lm::core::to_string(payload.match)))

@@ -4,6 +4,10 @@
 
 #include "lm/core/json_path.hpp"
 
+#include <string>
+#include <string_view>
+#include <vector>
+
 using namespace lm::core;
 
 namespace {
@@ -101,4 +105,102 @@ TEST(JsonPath, NeverThrowsOnAnyInput) {
     for (const char* path : {"", ".", "[", "]", "[]", "...", "a[0][1]", "length", "["}) {
         EXPECT_NO_THROW({ (void)resolve_path(basket(), path); }) << path;
     }
+}
+
+namespace {
+
+/// A cart shaped like the one the shopping_cart fixture publishes.
+const nlohmann::json kCart = nlohmann::json::parse(R"({
+  "status": "Ready",
+  "unit_count": 4,
+  "total": 12.5,
+  "items_": [
+    {"sku": "A-100", "price": 2.5, "quantity": 1},
+    {"sku": "bread", "price": 5.0, "quantity": 2},
+    {"sku": "milk",  "price": 5.0, "quantity": 1}
+  ]
+})");
+
+std::vector<std::string> readable_all(const nlohmann::json& document, std::string_view path) {
+    const auto values = resolve_all(document, path);
+    EXPECT_TRUE(values.has_value()) << (values ? "" : values.error().message);
+    std::vector<std::string> text;
+    for (const nlohmann::json& value : values.value_or(std::vector<nlohmann::json>{})) {
+        text.push_back(value.is_string() ? value.get<std::string>() : value.dump());
+    }
+    return text;
+}
+
+}  // namespace
+
+TEST(JsonPathWildcard, AddressesTheFieldOfEveryElement) {
+    EXPECT_EQ(readable_all(kCart, "items_[*].sku"),
+              (std::vector<std::string>{"A-100", "bread", "milk"}));
+}
+
+TEST(JsonPathWildcard, AddressesWholeElements) {
+    const auto values = resolve_all(kCart, "items_[*]");
+    ASSERT_TRUE(values.has_value());
+    ASSERT_EQ(values->size(), 3u);
+    EXPECT_EQ((*values)[1]["sku"], "bread");
+}
+
+TEST(JsonPathWildcard, CarriesTheLengthProjectionThrough) {
+    // One length per element, not the length of the sequence: the projection
+    // applies to whatever the segments before it addressed.
+    EXPECT_EQ(readable_all(kCart, "items_[*].sku.length"),
+              (std::vector<std::string>{"5", "5", "4"}));
+}
+
+TEST(JsonPathWildcard, AnEmptySequenceAddressesNothingAndThatIsNotAnError) {
+    // The distinction the whole feature turns on: "no element has that sku"
+    // is an answer, and a rule must be able to Fail on it rather than Error.
+    const nlohmann::json empty = nlohmann::json::parse(R"({"items_": []})");
+    const auto values = resolve_all(empty, "items_[*].sku");
+    ASSERT_TRUE(values.has_value()) << values.error().message;
+    EXPECT_TRUE(values->empty());
+}
+
+TEST(JsonPathWildcard, SkipsElementsMissingTheFieldWhenOthersHaveIt) {
+    // A sequence whose members differ is data, not an authoring mistake.
+    const nlohmann::json mixed =
+        nlohmann::json::parse(R"({"items_": [{"sku": "A-100"}, {"note": "no sku here"}]})");
+    EXPECT_EQ(readable_all(mixed, "items_[*].sku"), (std::vector<std::string>{"A-100"}));
+}
+
+TEST(JsonPathWildcard, ReportsTheMissingFieldWhenNoElementHasIt) {
+    // The typo case -- items_[*].skew -- which has to say what it could not
+    // find rather than quietly addressing nothing.
+    const auto values = resolve_all(kCart, "items_[*].skew");
+    ASSERT_FALSE(values.has_value());
+    EXPECT_EQ(values.error().kind, PathError::NoSuchField);
+    EXPECT_NE(values.error().message.find("skew"), std::string::npos) << values.error().message;
+}
+
+TEST(JsonPathWildcard, RefusesToIndexSomethingThatIsNotASequence) {
+    const auto values = resolve_all(kCart, "status[*]");
+    ASSERT_FALSE(values.has_value());
+    EXPECT_NE(values.error().message.find("not a sequence"), std::string::npos)
+        << values.error().message;
+}
+
+TEST(JsonPathWildcard, StillRejectsAnIndexThatIsNeitherANumberNorAStar) {
+    const auto values = resolve_all(kCart, "items_[x].sku");
+    ASSERT_FALSE(values.has_value());
+    EXPECT_EQ(values.error().kind, PathError::Malformed);
+    EXPECT_NE(values.error().message.find("*"), std::string::npos) << values.error().message;
+}
+
+TEST(JsonPathWildcard, ResolvePathStillReturnsTheOneValueForASingularPath) {
+    const auto value = resolve_path(kCart, "items_[1].sku");
+    ASSERT_TRUE(value.has_value());
+    EXPECT_EQ(*value, "bread");
+}
+
+TEST(JsonPathWildcard, ResolvePathRefusesAPathThatAddressesSeveral) {
+    // Rather than silently picking the first, which would make items_[*].sku
+    // look like it had worked.
+    const auto value = resolve_path(kCart, "items_[*].sku");
+    ASSERT_FALSE(value.has_value());
+    EXPECT_EQ(value.error().kind, PathError::Malformed);
 }
