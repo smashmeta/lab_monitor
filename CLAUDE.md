@@ -555,13 +555,28 @@ that opens it — `QMessageBox::question` blocks until something clicks it.
 and everything percentage-based uses it: the fleet list's CPU, Memory and Disk
 cells, both detail panes' CPU sparkline, and every `MeterBar`.
 
-`FleetModel::data()` still paints whole rows by `RowHealth` — but the three
-percentage columns override that with their own reading, because a machine can
+`FleetModel::data()` still paints whole rows by `RowHealth` — but a percentage
+column **above 90%** overrides that with its own reading, because a machine can
 be perfectly compliant and out of disk, which is exactly what a health colour
-hides. The override applies **only while the host is `Online`**: the last sample
-from a host that has gone quiet is stale, and painting it green would read as a
-live, idle machine. `load_percent()` is the single source for both the number
-and the colour, so they cannot disagree.
+hides. `load_percent()` is the single source for both the number and the
+colour, so they cannot disagree.
+
+**The threshold is what makes the colour mean something.** Colouring every
+percentage by its own load put three different colours on every healthy row at
+all times, so the colour said "this is a percentage" far more often than it
+said "look at this" — and a genuinely full disk had to compete with two cells
+already shouting. Below `kLoadColourThreshold` the cell takes the row colour
+and the number alone carries the reading, which is what a number is for. The
+comparison is strictly greater, so 90.0 itself is still quiet.
+
+The detail pane is deliberately not filtered this way: its `MeterBar`s and CPU
+sparkline still show the whole ramp, because that is where a reading is
+*watched* rather than scanned. In the fleet table the colour only has to answer
+"is this the machine to look at".
+
+The override applies **only while the host is `Online`**: the last sample from a
+host that has gone quiet is stale, and painting it by load would read as a live
+machine.
 
 `RowHealth` has a `Paused` arm of its own (`Theme::kPaused`, a blue that is
 neither an alarm colour nor the green of a machine actually being checked), and

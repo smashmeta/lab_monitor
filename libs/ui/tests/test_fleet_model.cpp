@@ -54,7 +54,7 @@ QColor foreground_at(const FleetModel& model, int row, int column) {
 
 }  // namespace
 
-TEST(FleetModel, ColoursTheCpuCellByItsLoadRatherThanTheRowHealth) {
+TEST(FleetModel, ColoursTheCpuCellByItsLoadOncePastTheThreshold) {
     // A machine can be perfectly compliant and pegged at 100%. Painting the
     // CPU cell with the row's health colour hides exactly that.
     FleetModel model;
@@ -67,27 +67,47 @@ TEST(FleetModel, ColoursTheCpuCellByItsLoadRatherThanTheRowHealth) {
         << "the CPU cell must not still be taking the row's colour";
 }
 
+TEST(FleetModel, LeavesAPercentageOnTheRowColourUntilItNearsItsLimit) {
+    // The colour is an exception marker, not a gauge. A busy-but-fine machine
+    // reads as one colour, so the one cell that does deviate is the one worth
+    // looking at rather than one of three competing for attention.
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+
+    lm::transport::ResourceSampleMessage message = sample_for(QStringLiteral("PC-001"), 88.0);
+    message.sample.mem_total_bytes = 1000;
+    message.sample.mem_used_bytes = 800;                          // 80%
+    message.sample.disks.push_back(DiskUsage{"C:\\", 1000, 250});  // 75% used
+    model.apply_sample(message);
+
+    const QColor health = FleetModel::colour_for(model.health_of(0));
+    for (const int column :
+         {FleetModel::CpuColumn, FleetModel::MemoryColumn, FleetModel::DiskColumn}) {
+        EXPECT_EQ(foreground_at(model, 0, column), health) << "column " << column;
+    }
+}
+
 TEST(FleetModel, ColoursMemoryAndDiskByTheirOwnReadingsToo) {
     FleetModel model;
     model.apply(view_with({{"PC-001", HostState::Online}}));
 
     lm::transport::ResourceSampleMessage message = sample_for(QStringLiteral("PC-001"), 5.0);
     message.sample.mem_total_bytes = 1000;
-    message.sample.mem_used_bytes = 800;  // 80%
+    message.sample.mem_used_bytes = 940;  // 94%
     // {mount, total, free}: 75% used, then 97% used.
     message.sample.disks.push_back(DiskUsage{"C:\\", 1000, 250});
     message.sample.disks.push_back(DiskUsage{"D:\\", 1000, 30});
     model.apply_sample(message);
 
-    EXPECT_EQ(foreground_at(model, 0, FleetModel::MemoryColumn), Theme::color_for_load(80.0));
+    EXPECT_EQ(foreground_at(model, 0, FleetModel::MemoryColumn), Theme::color_for_load(94.0));
     // The fullest volume, not the first or an average: a machine with one full
     // disk is in trouble however much room the others have.
     EXPECT_EQ(foreground_at(model, 0, FleetModel::DiskColumn), Theme::color_for_load(97.0));
 }
 
 TEST(FleetModel, ColoursEachPercentageColumnIndependently) {
-    // An idle machine that is out of disk has to show green CPU and red disk in
-    // the same row, or the whole point of the colour is lost.
+    // An idle machine that is out of disk has to leave the CPU cell alone and
+    // light the disk one, or the whole point of the colour is lost.
     FleetModel model;
     model.apply(view_with({{"PC-001", HostState::Online}}));
 
@@ -97,10 +117,25 @@ TEST(FleetModel, ColoursEachPercentageColumnIndependently) {
     message.sample.disks.push_back(DiskUsage{"C:\\", 1000, 20});  // 98% full
     model.apply_sample(message);
 
-    const QColor cpu = foreground_at(model, 0, FleetModel::CpuColumn);
+    const QColor health = FleetModel::colour_for(model.health_of(0));
     const QColor disk = foreground_at(model, 0, FleetModel::DiskColumn);
-    EXPECT_LT(cpu.redF() - cpu.greenF(), 0.0) << "an idle CPU reads cool";
+    EXPECT_EQ(foreground_at(model, 0, FleetModel::CpuColumn), health) << "an idle CPU says nothing";
+    EXPECT_NE(disk, health);
     EXPECT_GT(disk.redF() - disk.greenF(), 0.0) << "a full disk reads hot";
+}
+
+TEST(FleetModel, TheThresholdIsExclusiveSoNinetyIsStillQuiet) {
+    // "Exceeds 90%" -- 90 itself is not past it. Pinned because an off-by-one
+    // here is invisible on screen and only shows up as a cell that lights a
+    // percentage too early, or one that never lights at all.
+    FleetModel model;
+    model.apply(view_with({{"PC-001", HostState::Online}}));
+    model.apply_sample(sample_for(QStringLiteral("PC-001"), 90.0));
+    EXPECT_EQ(foreground_at(model, 0, FleetModel::CpuColumn),
+              FleetModel::colour_for(model.health_of(0)));
+
+    model.apply_sample(sample_for(QStringLiteral("PC-001"), 90.5));
+    EXPECT_EQ(foreground_at(model, 0, FleetModel::CpuColumn), Theme::color_for_load(90.5));
 }
 
 TEST(FleetModel, LeavesTheNonPercentageColumnsOnTheRowHealthColour) {
@@ -129,15 +164,18 @@ TEST(FleetModel, KeepsTheHealthColourOnAPercentageColumnWithNothingToReport) {
 }
 
 TEST(FleetModel, TracksTheLoadColourAsTheReadingChanges) {
+    // Both readings are past the threshold, so this is about the ramp itself
+    // rather than about crossing into it -- a machine at 99% has to read
+    // warmer than one at 92%.
     FleetModel model;
     model.apply(view_with({{"PC-001", HostState::Online}}));
 
-    model.apply_sample(sample_for(QStringLiteral("PC-001"), 3.0));
-    const QColor idle = foreground_at(model, 0, FleetModel::CpuColumn);
+    model.apply_sample(sample_for(QStringLiteral("PC-001"), 92.0));
+    const QColor warm = foreground_at(model, 0, FleetModel::CpuColumn);
     model.apply_sample(sample_for(QStringLiteral("PC-001"), 99.0));
     const QColor pegged = foreground_at(model, 0, FleetModel::CpuColumn);
 
-    EXPECT_GT(pegged.redF() - pegged.greenF(), idle.redF() - idle.greenF())
+    EXPECT_GT(pegged.redF() - pegged.greenF(), warm.redF() - warm.greenF())
         << "a busier machine has to read warmer";
 }
 
