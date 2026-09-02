@@ -124,14 +124,18 @@ HostNote note_for(const lm::core::FleetEntry& entry) {
 /// signal -- "Completed" reads as itself in greyscale -- and the colour only
 /// makes the one row worth acting on findable at a glance.
 ///
-/// Pending and Dispatched share the muted grey deliberately: neither is an
-/// outcome, and an in-flight row must not compete for attention with one that
-/// has actually landed. They are told apart by their text.
+/// Pending is the muted grey of a row nothing has happened to yet. Dispatched
+/// takes kPaused, the blue that already means "somebody chose this, it is
+/// neither an alarm nor healthy" in the fleet table -- it cannot share the grey
+/// with NoResponse, because kTextMuted and kNotApplicable are the same value
+/// and "still waiting" and "gave up waiting" would then be indistinguishable.
+/// NoResponse is the row an operator most needs to find on a ninety-row table.
 QColor colour_for(TargetState state) {
     switch (state) {
         case TargetState::Pending:
-        case TargetState::Dispatched:
             return QColor(lm::ui::Theme::kTextMuted);
+        case TargetState::Dispatched:
+            return QColor(lm::ui::Theme::kPaused);
         case TargetState::Completed:
             return QColor(lm::ui::Theme::kOnline);
         case TargetState::Failed:
@@ -142,6 +146,26 @@ QColor colour_for(TargetState state) {
             return QColor(lm::ui::Theme::kNotApplicable);
     }
     return QColor(lm::ui::Theme::kText);
+}
+
+/// What the Outcome column says.
+///
+/// to_string(TargetState) is the wire and log spelling and stays exactly as it
+/// is -- other tests assert its values verbatim. Only NoResponse reads badly to
+/// an operator, so the view spells that one itself rather than reshaping a
+/// helper that is not the view's to own.
+QString display_name(TargetState state) {
+    switch (state) {
+        case TargetState::NoResponse:
+            return QStringLiteral("No response");
+        case TargetState::Pending:
+        case TargetState::Dispatched:
+        case TargetState::Completed:
+        case TargetState::Failed:
+        case TargetState::Refused:
+            break;
+    }
+    return QString::fromStdString(to_string(state));
 }
 
 /// The one-line "why" beside an outcome: the refusal reason, else whatever the
@@ -217,13 +241,14 @@ QString output_for(const RunTarget& target) {
         // A refused host has no output -- nothing ran. An empty pane here
         // would read as "ran and printed nothing", which is a different and
         // far more worrying thing, so the reason takes output's place.
-        const std::string& reason =
-            !target.detail.empty()
-                ? target.detail
-                : (target.result.has_value() ? target.result->refusal_reason : std::string{});
+        //
+        // detail is the only place to look: refuse_at_dispatch() always passes
+        // a reason, and apply_result() copies refusal_reason into detail for
+        // every Refused result, so a second read of the message itself could
+        // never say anything this does not.
         return QStringLiteral("%1 was not asked to run this script.\n\n%2")
-            .arg(host, reason.empty() ? QStringLiteral("No reason was given.")
-                                      : QString::fromStdString(reason));
+            .arg(host, target.detail.empty() ? QStringLiteral("No reason was given.")
+                                             : QString::fromStdString(target.detail));
     }
     if (!target.result.has_value()) {
         return waiting_text(target);
@@ -232,7 +257,7 @@ QString output_for(const RunTarget& target) {
     const lm::transport::ScriptResultMessage& result = *target.result;
     QStringList lines;
     lines << QStringLiteral("%1 — %2, exit code %3, %4 ms")
-                 .arg(host, QString::fromStdString(to_string(target.state)),
+                 .arg(host, display_name(target.state),
                       QString::number(result.exit_code),
                       QString::number(static_cast<qulonglong>(result.duration_ms)));
     if (result.has_reported) {
@@ -516,7 +541,6 @@ void ScriptsTab::on_run_clicked() {
     // nothing rather than written over the previous run's -- a row updated in
     // place would keep the old run's selection while standing for another
     // machine.
-    run_targets_->clearContents();
     run_targets_->setRowCount(0);
     refresh_run_view();
     if (run_targets_->rowCount() > 0) {
@@ -560,8 +584,7 @@ void ScriptsTab::refresh_run_view() {
     for (int row = 0; row < rows; ++row) {
         const RunTarget& target = run->targets[static_cast<std::size_t>(row)];
         set_cell(run_targets_, row, 0, QString::fromStdString(target.host_id), text_colour);
-        set_cell(run_targets_, row, 1, QString::fromStdString(to_string(target.state)),
-                 colour_for(target.state));
+        set_cell(run_targets_, row, 1, display_name(target.state), colour_for(target.state));
         set_cell(run_targets_, row, 2, detail_for(target), muted);
     }
     run_targets_->resizeColumnToContents(0);
@@ -591,11 +614,19 @@ const RunTarget* ScriptsTab::selected_target() const {
 
 void ScriptsTab::update_run_output() {
     const RunTarget* target = selected_target();
-    if (target == nullptr) {
-        run_output_->setPlainText(displayed_run() == nullptr
-                                      ? QStringLiteral("Press Run to send the script.")
-                                      : QStringLiteral("Select a host to see what it reported."));
-        return;
+    const QString text =
+        target != nullptr
+            ? output_for(*target)
+            : (displayed_run() == nullptr
+                   ? QStringLiteral("Press Run to send the script.")
+                   : QStringLiteral("Select a host to see what it reported."));
+
+    // Only when it actually changed. setPlainText() replaces the whole
+    // document -- scrollbar to the top, cursor to the start, any selected text
+    // gone -- and this runs on every script_run_changed. On the ninety-host run
+    // this view exists for, somebody reading PC-007's transcript would be
+    // yanked back to the top each time an unrelated host reported.
+    if (run_output_->toPlainText() != text) {
+        run_output_->setPlainText(text);
     }
-    run_output_->setPlainText(output_for(*target));
 }

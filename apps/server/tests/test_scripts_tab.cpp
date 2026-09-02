@@ -7,7 +7,11 @@
 #include <QPushButton>
 #include <QStringList>
 #include <QTableWidget>
+#include <QTabWidget>
 #include <QTemporaryDir>
+
+#include <QColor>
+#include <QImage>
 
 #include <algorithm>
 #include <memory>
@@ -15,9 +19,11 @@
 #include <vector>
 
 #include "fleet_window.hpp"
+#include "lm/ui/theme.hpp"
 #include "lm/transport/in_memory_transport.hpp"
 #include "script_run.hpp"
 #include "scripts_tab.hpp"
+#include "pixel_probe.hpp"
 #include "server_controller.hpp"
 
 using namespace lm::core;
@@ -161,6 +167,24 @@ QString press_run(const Harness& harness) {
     return QString::fromStdString(harness.controller->script_runs().back().run_id);
 }
 
+/// The run table's row for a host. By id rather than by position, so no case
+/// here silently depends on the order the fleet happens to be in.
+int run_row_of(const Harness& harness, const QString& host_id);
+
+/// Brings the Scripts tab to the front. Only a painting case needs this: a
+/// widget on a background tab is never shown, so it is never polished against
+/// the stylesheet and renders the unstyled fallback instead.
+void show_scripts_tab(const Harness& harness) {
+    auto* tabs = harness.window->findChild<QTabWidget*>();
+    ASSERT_NE(tabs, nullptr);
+    for (int i = 0; i < tabs->count(); ++i) {
+        if (tabs->tabText(i) == QStringLiteral("Scripts")) {
+            tabs->setCurrentIndex(i);
+        }
+    }
+    QApplication::processEvents();
+}
+
 QTableWidget* run_targets(const Harness& harness) {
     return harness.window->findChild<QTableWidget*>(QStringLiteral("RunTargets"));
 }
@@ -172,6 +196,16 @@ QStringList outcome_column(const Harness& harness) {
         outcomes << table->item(row, 1)->text();
     }
     return outcomes;
+}
+
+int run_row_of(const Harness& harness, const QString& host_id) {
+    QTableWidget* table = run_targets(harness);
+    for (int row = 0; row < table->rowCount(); ++row) {
+        if (table->item(row, 0)->text() == host_id) {
+            return row;
+        }
+    }
+    return -1;
 }
 
 QListWidgetItem* row_for(const Harness& harness, const QString& host_id) {
@@ -395,11 +429,12 @@ TEST(ScriptRunView, MovesATargetInPlaceWhenItsResultArrives) {
 
     harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
 
+    // The whole ordered list, not containment: a rebuilt, reordered or
+    // wholesale-replaced table would satisfy containment, and not replacing
+    // rows is the one thing set_cell() exists for.
     const QStringList outcomes = outcome_column(harness);
-    ASSERT_EQ(outcomes.size(), 2);
-    EXPECT_TRUE(outcomes.contains(QStringLiteral("Completed")));
-    EXPECT_TRUE(outcomes.contains(QStringLiteral("Dispatched")))
-        << "the host that has not answered must not move";
+    EXPECT_EQ(outcomes, (QStringList{QStringLiteral("Completed"), QStringLiteral("Dispatched")}))
+        << "the host that has not answered must not move, and neither must its row";
 }
 
 TEST(ScriptRunView, SummarisesTheRunWithACountPerOutcome) {
@@ -422,19 +457,25 @@ TEST(ScriptRunView, SummarisesTheRunWithACountPerOutcome) {
 }
 
 TEST(ScriptRunView, ShowsTheOutputOfTheSelectedTarget) {
+    // Two hosts, and the output of the one the run did *not* auto-select:
+    // pressing Run already selects row 0, so a case that then selects row 0
+    // would pass with the selection-changed connection deleted.
     Harness harness;
     harness.announce("PC-001", enrolled());
-    check_hosts(harness, {"PC-001"});
+    harness.announce("PC-002", enrolled());
+    check_hosts(harness, {"PC-001", "PC-002"});
     const QString run_id = press_run(harness);
 
     ScriptResultMessage result;
-    result.host_id = "PC-001";
+    result.host_id = "PC-002";
     result.run_id = run_id.toStdString();
     result.status = ScriptStatus::Completed;
     result.stdout_text = "cleaned 3 files";
     harness.publish_result_message(result);
 
-    run_targets(harness)->selectRow(0);
+    const int row = run_row_of(harness, QStringLiteral("PC-002"));
+    ASSERT_GT(row, 0) << "PC-002 must not be the row Run already selected";
+    run_targets(harness)->selectRow(row);
     QApplication::processEvents();
 
     auto* output = harness.window->findChild<QPlainTextEdit*>(QStringLiteral("RunOutput"));
@@ -460,4 +501,124 @@ TEST(ScriptRunView, ShowsARefusalsReasonRatherThanItsOutput) {
     ASSERT_NE(output, nullptr);
     EXPECT_NE(output->toPlainText().indexOf(QStringLiteral("enrol")), -1)
         << output->toPlainText().toStdString();
+}
+
+TEST(ScriptRunView, KeepsTheSelectedRowWhenAnotherHostReports) {
+    // The pane below the table is somebody reading one machine's transcript.
+    // A result for a different machine must not move them off it.
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    harness.announce("PC-002", enrolled());
+    check_hosts(harness, {"PC-001", "PC-002"});
+    const QString run_id = press_run(harness);
+
+    QTableWidget* table = run_targets(harness);
+    table->selectRow(1);
+    QApplication::processEvents();
+
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+
+    const QModelIndexList selected = table->selectionModel()->selectedRows();
+    ASSERT_EQ(selected.size(), 1);
+    EXPECT_EQ(selected.front().row(), 1)
+        << "a result for another host moved the selection";
+}
+
+TEST(ScriptRunView, PaintsEachOutcomeInThePalettesColourForIt) {
+    // Named colours, so the run view and the fleet table cannot drift into
+    // disagreeing about what red means. Dispatched deliberately does not share
+    // NoResponse's grey: kTextMuted and kNotApplicable are the same value, and
+    // "still waiting" must not look like "gave up waiting".
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    harness.announce("PC-002", enrolled());
+    harness.announce("PC-003", enrolled());
+    harness.announce("PC-004", not_enrolled());
+    check_hosts(harness, {"PC-001", "PC-002", "PC-003", "PC-004"});
+    const QString run_id = press_run(harness);
+
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+    harness.publish_result("PC-002", run_id.toStdString(), ScriptStatus::Failed);
+
+    QTableWidget* table = run_targets(harness);
+    const auto outcome_colour = [&](const QString& host) {
+        return table->item(run_row_of(harness, host), 1)->foreground().color();
+    };
+    EXPECT_EQ(outcome_colour(QStringLiteral("PC-001")), QColor(lm::ui::Theme::kOnline));
+    EXPECT_EQ(outcome_colour(QStringLiteral("PC-002")), QColor(lm::ui::Theme::kMissing));
+    EXPECT_EQ(outcome_colour(QStringLiteral("PC-003")), QColor(lm::ui::Theme::kPaused));
+    EXPECT_EQ(outcome_colour(QStringLiteral("PC-004")), QColor(lm::ui::Theme::kOffline));
+}
+
+TEST(ScriptRunView, KeepsAnOutcomeColourOnTheRowThatIsSelected) {
+    // QSS beats an item delegate and does it last: with a stylesheet active,
+    // QStyleSheetStyle hands the ::item rule's own colour in as
+    // HighlightedText *after* the delegate has run, so the one row an operator
+    // clicked on is the one row whose outcome loses its colour. Only painting
+    // can see that -- it is invisible to every logical assertion above, and
+    // this trap has now caught three widgets in this codebase.
+    Harness harness;
+    show_scripts_tab(harness);
+    harness.announce("PC-001", enrolled());
+    check_hosts(harness, {"PC-001"});
+    const QString run_id = press_run(harness);
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+
+    QTableWidget* table = run_targets(harness);
+    table->selectRow(0);
+    QApplication::processEvents();
+
+    // The Outcome cell alone. The Host cell beside it is painted kText on
+    // purpose, which would make the negative assertion below meaningless over
+    // the whole viewport.
+    const QRect cell = table->visualRect(table->model()->index(0, 1));
+    ASSERT_FALSE(cell.isEmpty());
+    const QImage painted = lm::ui::test::paint(*table->viewport()).copy(cell);
+
+    EXPECT_TRUE(lm::ui::test::contains_colour(painted, QColor(lm::ui::Theme::kOnline)))
+        << "the selected row lost the outcome colour it carries when unselected";
+    EXPECT_FALSE(lm::ui::test::contains_colour(painted, QColor(lm::ui::Theme::kText)))
+        << "something repainted the selected outcome in kText, discarding its colour";
+}
+
+TEST(ScriptRunView, CountsOnlyTheOutcomesThatHappened) {
+    // The whole string. "1 completed" is a substring of
+    // "0 pending · 0 dispatched · 1 completed", and four zeroes beside the one
+    // number that matters is exactly what this omits.
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    harness.announce("PC-002", enrolled());
+    check_hosts(harness, {"PC-001", "PC-002"});
+    const QString run_id = press_run(harness);
+
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+    harness.publish_result("PC-002", run_id.toStdString(), ScriptStatus::Failed);
+
+    auto* summary = harness.window->findChild<QLabel*>(QStringLiteral("RunSummary"));
+    ASSERT_NE(summary, nullptr);
+    EXPECT_EQ(summary->text().toStdString(), std::string("1 completed · 1 failed"));
+}
+
+TEST(ScriptRunView, IgnoresAResultForARunItIsNotShowing) {
+    // script_run_changed fires for every result of every run this server has
+    // issued. Repainting the view on one that is not on screen would show the
+    // operator numbers belonging to a different dispatch.
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    harness.announce("PC-002", enrolled());
+    check_hosts(harness, {"PC-001", "PC-002"});
+    const QString first_run = press_run(harness);
+    const QString second_run = press_run(harness);
+    ASSERT_NE(first_run, second_run);
+
+    auto* summary = harness.window->findChild<QLabel*>(QStringLiteral("RunSummary"));
+    const QString before = summary->text();
+
+    harness.publish_result("PC-001", first_run.toStdString(), ScriptStatus::Completed);
+
+    EXPECT_EQ(summary->text().toStdString(), before.toStdString());
+    for (const QString& outcome : outcome_column(harness)) {
+        EXPECT_EQ(outcome.toStdString(), "Dispatched")
+            << "the displayed run moved because an older one did";
+    }
 }

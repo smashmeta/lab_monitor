@@ -23,31 +23,12 @@ lm_add_test(lm_transport_tests
   LINK lm_transport)
 
 if(LM_BUILD_INTEGRATION_TESTS)
-  # Qt and spdlog are here only for the end-to-end script case below, which
-  # drives the client's real MonitorWorker. Nothing in lm_transport itself
-  # touches either.
-  find_package(Qt6 COMPONENTS Core REQUIRED)
-  find_package(spdlog CONFIG REQUIRED)
-
   # The malformed-payload test talks to Fast DDS directly (a hand-rolled
   # TopicDataType/participant/writer), not just through lm_transport, so it
   # needs fastdds linked itself -- lm_transport only links it PRIVATE.
-  #
-  # It also carries the one case that runs the whole stack: a real domain, the
-  # real MonitorWorker, the real PowerShell runner. That is why an
-  # apps/client source is compiled into a libs/ test target here, which is
-  # otherwise backwards -- the worker is the *client half* of this loopback,
-  # and the alternative was a second integration target whose only job was to
-  # hold one test. lm_ui comes with it because MonitorWorker's report signal
-  # carries lm::ui::RuleDetail.
   lm_add_test(lm_transport_dds_tests
     SOURCES tests/test_fastdds_loopback.cpp
-            ${CMAKE_SOURCE_DIR}/apps/client/monitor_worker.cpp
-    LINK lm_transport lm_ui fastdds Qt6::Core spdlog::spdlog)
-  target_include_directories(lm_transport_dds_tests PRIVATE ${CMAKE_SOURCE_DIR}/apps/client)
-  # MonitorWorker is a Q_OBJECT, and this directory does not set CMAKE_AUTOMOC
-  # globally the way the app directories do.
-  set_target_properties(lm_transport_dds_tests PROPERTIES AUTOMOC ON)
+    LINK lm_transport fastdds)
 
   # The one test that proves the no-IDL claim end to end: it publishes a type
   # built at runtime and reads it back through the probe, which has no

@@ -49,3 +49,16 @@ lm_add_test(lab_monitor_client_tests
   # key simulation against the confirmation dialog.
   LINK lm_core lm_platform lm_transport lm_ui Qt6::Widgets Qt6::Test spdlog::spdlog)
 target_include_directories(lab_monitor_client_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+if(LM_BUILD_INTEGRATION_TESTS)
+  # The one case that runs the whole stack: a real DDS domain, the real
+  # MonitorWorker on its own thread, and the real PowerShell runner. It belongs
+  # here rather than beside the transport's loopback tests because the client
+  # half of the loop is MonitorWorker -- this directory already sets AUTOMOC and
+  # already links everything it needs. Gated with the rest because it opens a
+  # real domain.
+  lm_add_test(lab_monitor_client_dds_tests
+    SOURCES tests/test_script_loopback.cpp monitor_worker.cpp
+    LINK lm_core lm_platform lm_transport lm_ui Qt6::Widgets spdlog::spdlog)
+  target_include_directories(lab_monitor_client_dds_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
