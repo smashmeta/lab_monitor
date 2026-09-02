@@ -8,11 +8,13 @@ if(WIN32)
     src/windows/resource_probe_windows.cpp
     src/windows/registry_probe_windows.cpp
     src/windows/process_probe_windows.cpp
-    src/windows/network_probe_windows.cpp)
+    src/windows/network_probe_windows.cpp
+    src/windows/elevation_windows.cpp)
 else()
   target_sources(lm_platform PRIVATE
     src/linux/platform_linux.cpp
-    src/linux/resource_probe_linux.cpp)
+    src/linux/resource_probe_linux.cpp
+    src/linux/elevation_linux.cpp)
 endif()
 
 target_include_directories(lm_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -28,7 +30,8 @@ endif()
 
 set(lm_platform_test_sources
   tests/test_host_probes.cpp
-  tests/test_resource_probe.cpp)
+  tests/test_resource_probe.cpp
+  tests/test_elevation.cpp)
 
 if(WIN32)
   # These exercise the real Windows registry and process list, so they only

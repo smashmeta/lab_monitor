@@ -10,6 +10,8 @@ std::string to_string(Capability capability) {
         case Capability::Registry:  return "Registry";
         case Capability::Network:   return "Network";
         case Capability::Dds:       return "DDS";
+        case Capability::Scripts:   return "Scripts";
+        case Capability::Elevated:  return "Elevated";
     }
     return "Unknown";
 }

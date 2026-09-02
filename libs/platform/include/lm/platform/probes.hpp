@@ -122,4 +122,11 @@ private:
 /// core::RegistryValue::error.
 [[nodiscard]] std::unique_ptr<IRegistryProbe> make_registry_probe();
 
+/// Whether this process holds an elevated token.
+///
+/// Constant for the life of the process: a token does not change underneath a
+/// running program, which is why the announce can carry it as a capability
+/// rather than re-checking per script.
+[[nodiscard]] bool is_elevated();
+
 }  // namespace lm::platform

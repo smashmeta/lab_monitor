@@ -19,6 +19,7 @@ lm_add_test(lm_core_tests
   SOURCES
     tests/test_smoke.cpp
     tests/test_version.cpp
+    tests/test_capabilities.cpp
     tests/test_template_bundle.cpp
     tests/test_rule_id.cpp
     tests/test_json.cpp
