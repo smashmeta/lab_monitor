@@ -3,8 +3,10 @@
 #include <QApplication>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QTest>
 
 #include <algorithm>
+#include <chrono>
 #include <memory>
 #include <vector>
 
@@ -24,9 +26,15 @@ struct Harness {
     std::unique_ptr<ServerController> controller;
     std::vector<ScriptCommand> dispatched;
 
-    Harness() {
+    /// The deadline margin is a constructor seam so the deadline tests below
+    /// can run in milliseconds rather than the fifteen seconds the product
+    /// waits. Everything else uses the real default.
+    explicit Harness(
+        std::chrono::milliseconds margin = ServerController::kDefaultDeadlineMargin) {
         EXPECT_TRUE(dir.isValid());
-        controller = std::make_unique<ServerController>(make_in_memory_server(bus), dir.path());
+        controller =
+            std::make_unique<ServerController>(make_in_memory_server(bus), dir.path(), nullptr,
+                                               margin);
         bus.subscribe_script_command(
             [this](const ScriptCommand& command) { dispatched.push_back(command); });
         controller->start();
@@ -103,6 +111,12 @@ TEST(ScriptDispatch, RefusesAHostThatIsNotOnlineWithoutSendingAnything) {
     EXPECT_EQ(run.run_id, run_id.toStdString());
     EXPECT_EQ(target_for(run, "PC-gone").state, TargetState::Refused);
     EXPECT_FALSE(target_for(run, "PC-gone").detail.empty());
+    // The reason names the state rather than summarising it as "not online": a
+    // Paused host is online and merely silent, and Offline, Missing and
+    // Unexpected each send the reader somewhere different.
+    EXPECT_NE(target_for(run, "PC-gone").detail.find(to_string(HostState::Missing)),
+              std::string::npos)
+        << target_for(run, "PC-gone").detail;
 }
 
 TEST(ScriptDispatch, RefusesAHostWithoutTheScriptsCapability) {
@@ -165,4 +179,85 @@ TEST(ScriptDispatch, EmitsRunChangedWhenATargetMoves) {
 
     ASSERT_GT(spy.count(), 0) << "the view has no other way to know a result arrived";
     EXPECT_EQ(spy.front().at(0).toString(), run_id);
+}
+
+TEST(ScriptDispatch, ARefusedHostIsNotMovedByAResultCarryingTheRunId) {
+    // The enrolment opt-in is the whole bound on this feature. A result from a
+    // host that was never sent the script cannot be an answer to it, and
+    // letting one through would leave the audit record saying an un-enrolled
+    // machine ran it.
+    Harness harness;
+    Capabilities bare;
+    bare.add(Capability::Resources);
+    harness.announce("PC-001", bare);
+    const QString run_id =
+        harness.controller->start_script_run("(custom script)", "exit 0", {"PC-001"}, 60);
+
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+
+    const ScriptRun& run = harness.controller->script_runs().back();
+    EXPECT_EQ(target_for(run, "PC-001").state, TargetState::Refused);
+    EXPECT_NE(target_for(run, "PC-001").detail.find("enrol"), std::string::npos)
+        << "the refusal reason must survive: it is what the audit trail says happened";
+}
+
+TEST(ScriptDispatch, TurnsASilentHostIntoNoResponseWhenTheDeadlinePasses) {
+    // The only wiring for one of the four terminal outcomes. Driven through a
+    // millisecond margin rather than a sleep, so the suite stays fast.
+    Harness harness{std::chrono::milliseconds{5}};
+    harness.announce("PC-001", enrolled());
+    const QString run_id =
+        harness.controller->start_script_run("(custom script)", "exit 0", {"PC-001"}, 0);
+    ASSERT_EQ(target_for(harness.controller->script_runs().back(), "PC-001").state,
+              TargetState::Dispatched);
+
+    QSignalSpy spy(harness.controller.get(), &ServerController::script_run_changed);
+    ASSERT_TRUE(spy.isValid());
+    ASSERT_TRUE(spy.wait(5000)) << "the deadline timer never fired";
+
+    const ScriptRun& run = harness.controller->script_runs().back();
+    EXPECT_EQ(target_for(run, "PC-001").state, TargetState::NoResponse);
+    EXPECT_TRUE(run.is_finished());
+    EXPECT_EQ(spy.front().at(0).toString(), run_id);
+}
+
+TEST(ScriptDispatch, DoesNotArmADeadlineForARunThatDispatchedToNobody) {
+    // Every target is already terminal, so a deadline has nothing it could
+    // move -- and a run_changed for a run nothing happened to would have the
+    // view redraw a finished run on a timer.
+    Harness harness{std::chrono::milliseconds{5}};
+    harness.controller->add_expected_host("PC-gone", "");
+    QApplication::processEvents();
+    harness.controller->start_script_run("(custom script)", "exit 0", {"PC-gone"}, 0);
+
+    QSignalSpy spy(harness.controller.get(), &ServerController::script_run_changed);
+    ASSERT_TRUE(spy.isValid());
+    QTest::qWait(80);
+
+    EXPECT_EQ(spy.count(), 0) << "no deadline should have been armed";
+    EXPECT_EQ(target_for(harness.controller->script_runs().back(), "PC-gone").state,
+              TargetState::Refused);
+}
+
+TEST(ScriptDispatch, TheDeadlineSaysNothingAboutARunEverybodyAnswered) {
+    // A wide margin here on purpose, unlike the tests above. The result has to
+    // be *processed* before the deadline fires, and a 5 ms margin loses that
+    // race under load -- the deadline event and the queued result are both
+    // sitting in the same queue, and this test then sees two emissions for a
+    // reason that has nothing to do with what it is checking. Observed, not
+    // theorised: it passed alone and failed in the full run.
+    Harness harness{std::chrono::milliseconds{300}};
+    harness.announce("PC-001", enrolled());
+    const QString run_id =
+        harness.controller->start_script_run("(custom script)", "exit 0", {"PC-001"}, 0);
+
+    QSignalSpy spy(harness.controller.get(), &ServerController::script_run_changed);
+    ASSERT_TRUE(spy.isValid());
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+    QTest::qWait(600);  // long past the 300 ms margin
+
+    const ScriptRun& run = harness.controller->script_runs().back();
+    EXPECT_EQ(target_for(run, "PC-001").state, TargetState::Completed)
+        << "a deadline must never overwrite an answer";
+    EXPECT_EQ(spy.count(), 1) << "only the result moved anything; the deadline had nothing to say";
 }

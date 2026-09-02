@@ -6,6 +6,7 @@
 #include <QTimer>
 #include <QVector>
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -40,8 +41,22 @@ class ServerController : public QObject {
     Q_OBJECT
 
 public:
+    /// How long past a script's own timeout a run waits before calling a
+    /// silent host non-responsive.
+    ///
+    /// The client kills its script at timeout_seconds and only then
+    /// serialises, publishes and lets the sample cross the wire. Deadlining at
+    /// exactly timeout_seconds would race that result and report NoResponse
+    /// for a machine that answered -- the one reading an operator must be able
+    /// to trust, since it is what sends somebody to a desk.
+    static constexpr std::chrono::milliseconds kDefaultDeadlineMargin{std::chrono::seconds{15}};
+
+    /// `deadline_margin` is a seam for tests, which cannot spend fifteen
+    /// seconds proving that a deadline fires. Nothing in the application
+    /// passes it.
     ServerController(std::unique_ptr<lm::transport::IServerTransport> transport, QString config_dir,
-                      QObject* parent = nullptr);
+                      QObject* parent = nullptr,
+                      std::chrono::milliseconds deadline_margin = kDefaultDeadlineMargin);
 
     /// Loads persisted config, wires transport callbacks and starts the 1 s
     /// reconcile timer. Call once, on the GUI thread, after construction.
@@ -186,6 +201,7 @@ private:
 
     std::unique_ptr<lm::transport::IServerTransport> transport_;
     QString config_dir_;
+    std::chrono::milliseconds deadline_margin_;
 
     lm::core::ClientRegistry registry_;
     lm::ui::FleetModel model_;

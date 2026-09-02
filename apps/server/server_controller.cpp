@@ -11,9 +11,9 @@
 #include <QMetaObject>
 #include <QRandomGenerator>
 
-#include <chrono>
-
 #include <algorithm>
+#include <chrono>
+#include <cstddef>
 #include <exception>
 #include <expected>
 #include <utility>
@@ -60,24 +60,15 @@ void log_state_transitions(const std::vector<lm::core::FleetEntry>& before,
     }
 }
 
-/// How long past the client's own timeout a run waits before calling a silent
-/// host non-responsive.
-///
-/// The client kills its script at timeout_seconds and only then serialises,
-/// publishes and lets the sample cross the wire. Deadlining at exactly
-/// timeout_seconds would therefore race that result and report NoResponse for
-/// a machine that answered -- the one reading an operator must be able to
-/// trust, since it is what sends somebody to a desk.
-constexpr std::chrono::seconds kDeadlineMargin{15};
-
 /// A sortable UTC timestamp plus 32 random bits.
 ///
 /// The timestamp is what makes a run id readable in a log next to the lines it
-/// explains; the suffix is what makes it unique. Two runs would have to be
-/// issued in the same millisecond *and* draw the same 32-bit value to collide,
-/// and the operator issuing them is one person at one keyboard. A counter
-/// would repeat across a server restart, where these ids meet results from
-/// clients that outlived it.
+/// explains; the suffix is what makes it unique. A counter would repeat across
+/// a server restart, where these ids meet results from clients that outlived
+/// it. Two runs would have to be issued in the same millisecond *and* draw the
+/// same 32-bit value to collide -- which start_script_run() nonetheless checks
+/// for, since find_run() resolves an id to its first match and a duplicate
+/// would misroute every result of the second run into the first.
 std::string make_run_id() {
     const QString stamp = QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss-zzz");
     const QString suffix =
@@ -88,8 +79,12 @@ std::string make_run_id() {
 }  // namespace
 
 ServerController::ServerController(std::unique_ptr<lm::transport::IServerTransport> transport,
-                                    QString config_dir, QObject* parent)
-    : QObject(parent), transport_(std::move(transport)), config_dir_(std::move(config_dir)) {}
+                                    QString config_dir, QObject* parent,
+                                    std::chrono::milliseconds deadline_margin)
+    : QObject(parent),
+      transport_(std::move(transport)),
+      config_dir_(std::move(config_dir)),
+      deadline_margin_(deadline_margin) {}
 
 bool ServerController::can_publish() const {
     return lm::core::content_hash(draft_) != lm::core::content_hash(published_);
@@ -361,27 +356,42 @@ QString ServerController::start_script_run(const std::string& script_name,
                                             const std::string& script_body,
                                             const std::vector<std::string>& hosts,
                                             std::uint32_t timeout_seconds) {
-    ScriptRun run;
-    run.run_id = make_run_id();
-    run.script_name = script_name;
-    run.script_body = script_body;
-    run.issued_at = lm::core::Clock::now();
-    run.timeout_seconds = timeout_seconds;
+    ScriptRun draft;
+    draft.run_id = make_run_id();
+    // find_run() resolves an id to its *first* match, so a duplicate would
+    // route every result of this run into the older one and strand this one at
+    // Dispatched until its deadline. Astronomically unlikely; two lines to
+    // make impossible within a process.
+    while (find_run(draft.run_id) != nullptr) {
+        draft.run_id = make_run_id();
+    }
+    draft.script_name = script_name;
+    draft.script_body = script_body;
+    draft.issued_at = lm::core::Clock::now();
+    draft.timeout_seconds = timeout_seconds;
 
     for (const lm::core::HostId& host_id : hosts) {
         const bool already_targeted =
-            std::ranges::any_of(run.targets, [&](const RunTarget& target) {
+            std::ranges::any_of(draft.targets, [&](const RunTarget& target) {
                 return target.host_id == host_id;
             });
         if (!already_targeted) {
-            run.targets.push_back(RunTarget{host_id, TargetState::Pending, {}, {}});
+            draft.targets.push_back(RunTarget{host_id, TargetState::Pending, {}, {}});
         }
     }
 
-    // By index, because refuse_at_dispatch()/mark_dispatched() write into this
-    // same vector as we walk it.
-    for (std::size_t i = 0; i < run.targets.size(); ++i) {
-        const lm::core::HostId host_id = run.targets[i].host_id;
+    // Stored before a single command goes out, so a result can never arrive
+    // for a run this controller cannot yet find. Today the queued hop from the
+    // transport thread would prevent that anyway -- but that is an invariant
+    // living in another function, and this ordering needs no such argument.
+    // Nothing below adds a run, so the reference stays valid: publishing is
+    // one-way, and every path back into this object goes through the event
+    // loop.
+    script_runs_.push_back(std::move(draft));
+    ScriptRun& run = script_runs_.back();
+
+    for (RunTarget& target : run.targets) {
+        const lm::core::HostId& host_id = target.host_id;
         const auto entry =
             std::ranges::find(fleet_.entries, host_id, &lm::core::FleetEntry::host_id);
 
@@ -390,7 +400,16 @@ QString ServerController::start_script_run(const std::string& script_name,
             // queue to hold this until the machine comes back -- publishing it
             // would promise a delivery that cannot happen, and leave the run
             // waiting out its deadline for a host we already know is not there.
-            run.refuse_at_dispatch(host_id, "host is not online");
+            //
+            // The state is named rather than summarised as "not online",
+            // because a Paused host *is* online and reachable and has merely
+            // stopped reporting -- and Offline, Missing and Unexpected each
+            // send the reader somewhere different.
+            run.refuse_at_dispatch(host_id,
+                                   entry == fleet_.entries.end()
+                                       ? std::string{"host is not in the fleet"}
+                                       : "host is " + lm::core::to_string(entry->state) +
+                                             ", not Online");
             continue;
         }
         if (!entry->caps.has(lm::core::Capability::Scripts)) {
@@ -420,15 +439,17 @@ QString ServerController::start_script_run(const std::string& script_name,
                  run.run_id, run.script_name, run.targets.size(), tally.dispatched, tally.refused);
 
     const QString run_id = QString::fromStdString(run.run_id);
-    script_runs_.push_back(std::move(run));
 
     if (tally.dispatched > 0) {
         // `this` as the context object, so the timer dies with the controller
         // and can never fire into a destroyed run. It carries the id rather
         // than a pointer for the same reason: script_runs_ reallocates as runs
         // are added, and find_run() simply returns null if the run is gone.
-        const std::string deadline_run_id = script_runs_.back().run_id;
-        QTimer::singleShot(std::chrono::seconds{timeout_seconds} + kDeadlineMargin, this,
+        //
+        // Not armed at all when nothing was dispatched: every target is
+        // already terminal, so there is nothing a deadline could move.
+        const std::string deadline_run_id = run.run_id;
+        QTimer::singleShot(std::chrono::seconds{timeout_seconds} + deadline_margin_, this,
                            [this, deadline_run_id] { on_run_deadline(deadline_run_id); });
     }
 
@@ -443,11 +464,26 @@ void ServerController::on_script_result(const lm::transport::ScriptResultMessage
         // one meant for another server on the same domain. Not ours to record.
         return;
     }
-    const bool is_targeted = std::ranges::any_of(run->targets, [&](const RunTarget& target) {
-        return target.host_id == result.host_id;
-    });
-    if (!is_targeted) {
-        return;  // nothing moved, so nothing to tell the view about
+    const auto target = std::ranges::find(run->targets, result.host_id, &RunTarget::host_id);
+    if (target == run->targets.end()) {
+        return;  // a host this run never targeted; nothing moved
+    }
+    // Only a host we actually sent to may be moved by a result. A target
+    // Refused at dispatch was never sent the script, so a result carrying this
+    // run's id from that host cannot be an answer to it -- and letting it
+    // through would overwrite "not enrolled for script execution" with
+    // Completed, leaving an audit record saying an un-enrolled machine ran the
+    // script. NoResponse stays acceptable: that host *was* sent the script,
+    // and a late answer is exactly what the operator wants to see.
+    switch (target->state) {
+        case TargetState::Dispatched:
+        case TargetState::NoResponse:
+            break;
+        case TargetState::Pending:
+        case TargetState::Completed:
+        case TargetState::Failed:
+        case TargetState::Refused:
+            return;
     }
 
     run->apply_result(result);
