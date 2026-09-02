@@ -25,7 +25,15 @@
 #include <fastdds/rtps/common/InstanceHandle.hpp>
 #include <fastdds/rtps/common/SerializedPayload.hpp>
 
+#include <QCoreApplication>
+#include <QMetaObject>
+#include <QThread>
+
+#include "lm/core/types.hpp"
+#include "lm/platform/fakes.hpp"
+#include "lm/platform/probes.hpp"
 #include "lm/transport/fast_dds_transport.hpp"
+#include "monitor_worker.hpp"
 
 using namespace lm::core;
 using namespace lm::transport;
@@ -374,4 +382,82 @@ TEST(FastDdsLoopback, AScriptCommandReachesTheClientAndItsResultComesBack) {
     const std::lock_guard<std::mutex> lock(mutex);
     ASSERT_FALSE(results.empty()) << "no result came back";
     EXPECT_EQ(results.front().run_id, "run-1");
+}
+
+// --- the whole stack, end to end ------------------------------------------
+
+TEST(FastDdsScripts, ARealCommandRunsARealScriptAndTheResultComesBack) {
+    // Everything except the two GUIs: a real DDS domain, the real worker, the
+    // real PowerShell runner, a real script. Every other test in this feature
+    // substitutes at least one of those, so this is the only one that would
+    // notice them disagreeing.
+    int argc = 1;
+    char program[] = "lm_transport_dds_tests";
+    std::array<char*, 2> argv{program, nullptr};
+    // The worker's thread runs a Qt event loop, and every hop into it is a
+    // queued invocation -- neither works without an application object.
+    QCoreApplication app(argc, argv.data());
+
+    DdsConfig config;
+    // Its own domain, so a fleet running on 42 while this test does cannot
+    // answer for the machine under test.
+    config.domain_id = 72;
+    const auto server = make_dds_server(config);
+
+    // Fast DDS delivers results on its own listener thread, so the vector the
+    // test thread reads is guarded rather than merely hoped about.
+    std::mutex results_mutex;
+    std::vector<ScriptResultMessage> results;
+    server->on_script_result([&](const ScriptResultMessage& result) {
+        const std::lock_guard<std::mutex> lock(results_mutex);
+        results.push_back(result);
+    });
+    const auto result_count = [&] {
+        const std::lock_guard<std::mutex> lock(results_mutex);
+        return results.size();
+    };
+
+    lm::platform::ProbeSet probes;
+    probes.resources = std::make_unique<lm::platform::FakeResourceProbe>();
+    auto host_probes = std::make_unique<lm::platform::HostProbes>(
+        "PC-integration", std::move(probes), lm::core::platform_capabilities());
+
+    auto* worker = new MonitorWorker(std::move(host_probes), make_dds_client(config),
+                                     lm::platform::make_script_runner(),
+                                     /*allow_scripts=*/true);
+    auto* thread = new QThread();
+    worker->moveToThread(thread);
+    thread->start();
+    QMetaObject::invokeMethod(worker, "start", Qt::QueuedConnection);
+
+    ScriptCommand command;
+    command.host_id = "PC-integration";
+    command.run_id = "run-e2e";
+    command.script_name = "(custom script)";
+    command.script_body = "Write-Output 'ran end to end'\nexit 0\n";
+    command.timeout_seconds = 30;
+
+    // Published in a loop because discovery races a single publish. Republishing
+    // is safe: the client remembers the run ids it has executed, so the script
+    // runs exactly once however many samples arrive.
+    for (int attempt = 0; attempt < 60 && result_count() == 0; ++attempt) {
+        server->publish_script_command(command);
+        QCoreApplication::processEvents();
+        std::this_thread::sleep_for(250ms);
+    }
+
+    thread->quit();
+    thread->wait();
+    delete worker;
+    delete thread;
+
+    std::vector<ScriptResultMessage> received;
+    {
+        const std::lock_guard<std::mutex> lock(results_mutex);
+        received = results;
+    }
+    ASSERT_FALSE(received.empty()) << "no result came back";
+    EXPECT_EQ(received.front().status, lm::core::ScriptStatus::Completed);
+    EXPECT_NE(received.front().stdout_text.find("ran end to end"), std::string::npos)
+        << received.front().stdout_text;
 }

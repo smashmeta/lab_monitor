@@ -5,6 +5,8 @@
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QStringList>
+#include <QTableWidget>
 #include <QTemporaryDir>
 
 #include <algorithm>
@@ -57,6 +59,23 @@ struct Harness {
         client->publish_announce(message);
         controller->add_expected_host(host, "");
         QApplication::processEvents();
+    }
+
+    /// Plays the part of a client answering a run. Takes the whole message so
+    /// a case about *output* can set stdout_text, where a case about state
+    /// only cares which ScriptStatus came back.
+    void publish_result_message(const ScriptResultMessage& message) {
+        const auto client = make_in_memory_client(bus);
+        client->publish_script_result(message);
+        QApplication::processEvents();
+    }
+
+    void publish_result(const std::string& host, const std::string& run_id, ScriptStatus status) {
+        ScriptResultMessage message;
+        message.host_id = host;
+        message.run_id = run_id;
+        message.status = status;
+        publish_result_message(message);
     }
 };
 
@@ -130,6 +149,29 @@ void check_hosts(const Harness& harness, const std::vector<std::string>& wanted)
             item->setCheckState(Qt::Checked);
         }
     }
+}
+
+/// Clicks Run and hands back the id of the run it created. Taken from the
+/// controller rather than read off the view, so a test that then asserts about
+/// the view is not checking the view against itself.
+QString press_run(const Harness& harness) {
+    button(harness, QStringLiteral("RunButton"))->click();
+    QApplication::processEvents();
+    EXPECT_FALSE(harness.controller->script_runs().empty());
+    return QString::fromStdString(harness.controller->script_runs().back().run_id);
+}
+
+QTableWidget* run_targets(const Harness& harness) {
+    return harness.window->findChild<QTableWidget*>(QStringLiteral("RunTargets"));
+}
+
+QStringList outcome_column(const Harness& harness) {
+    QStringList outcomes;
+    QTableWidget* table = run_targets(harness);
+    for (int row = 0; row < table->rowCount(); ++row) {
+        outcomes << table->item(row, 1)->text();
+    }
+    return outcomes;
 }
 
 QListWidgetItem* row_for(const Harness& harness, const QString& host_id) {
@@ -325,4 +367,97 @@ TEST(ScriptsTab, SaysHowManyHostsRunWillReach) {
 
     button(harness, QStringLiteral("SelectAllButton"))->click();
     EXPECT_EQ(count->text(), QStringLiteral("Run on 2 hosts"));
+}
+
+TEST(ScriptRunView, ShowsEveryTargetAsPendingTheMomentRunIsPressed) {
+    // Somebody who just dispatched to ninety machines needs to see that it
+    // started -- not a blank pane until the first result lands.
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    harness.announce("PC-002", enrolled());
+    check_hosts(harness, {"PC-001", "PC-002"});
+
+    press_run(harness);
+
+    ASSERT_NE(run_targets(harness), nullptr);
+    ASSERT_EQ(run_targets(harness)->rowCount(), 2);
+    for (const QString& outcome : outcome_column(harness)) {
+        EXPECT_EQ(outcome.toStdString(), "Dispatched");
+    }
+}
+
+TEST(ScriptRunView, MovesATargetInPlaceWhenItsResultArrives) {
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    harness.announce("PC-002", enrolled());
+    check_hosts(harness, {"PC-001", "PC-002"});
+    const QString run_id = press_run(harness);
+
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+
+    const QStringList outcomes = outcome_column(harness);
+    ASSERT_EQ(outcomes.size(), 2);
+    EXPECT_TRUE(outcomes.contains(QStringLiteral("Completed")));
+    EXPECT_TRUE(outcomes.contains(QStringLiteral("Dispatched")))
+        << "the host that has not answered must not move";
+}
+
+TEST(ScriptRunView, SummarisesTheRunWithACountPerOutcome) {
+    // On a large run the tally is what is read; the rows are what is drilled
+    // into afterwards.
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    harness.announce("PC-002", enrolled());
+    check_hosts(harness, {"PC-001", "PC-002"});
+    const QString run_id = press_run(harness);
+
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+    harness.publish_result("PC-002", run_id.toStdString(), ScriptStatus::Failed);
+
+    auto* summary = harness.window->findChild<QLabel*>(QStringLiteral("RunSummary"));
+    ASSERT_NE(summary, nullptr);
+    const std::string text = summary->text().toStdString();
+    EXPECT_NE(text.find("1 completed"), std::string::npos) << text;
+    EXPECT_NE(text.find("1 failed"), std::string::npos) << text;
+}
+
+TEST(ScriptRunView, ShowsTheOutputOfTheSelectedTarget) {
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    check_hosts(harness, {"PC-001"});
+    const QString run_id = press_run(harness);
+
+    ScriptResultMessage result;
+    result.host_id = "PC-001";
+    result.run_id = run_id.toStdString();
+    result.status = ScriptStatus::Completed;
+    result.stdout_text = "cleaned 3 files";
+    harness.publish_result_message(result);
+
+    run_targets(harness)->selectRow(0);
+    QApplication::processEvents();
+
+    auto* output = harness.window->findChild<QPlainTextEdit*>(QStringLiteral("RunOutput"));
+    ASSERT_NE(output, nullptr);
+    EXPECT_NE(output->toPlainText().indexOf(QStringLiteral("cleaned 3 files")), -1)
+        << output->toPlainText().toStdString();
+}
+
+TEST(ScriptRunView, ShowsARefusalsReasonRatherThanItsOutput) {
+    // A refused host has no output; the reason is the whole of what happened,
+    // and an empty pane would read as "ran and printed nothing".
+    Harness harness;
+    Capabilities bare;
+    bare.add(Capability::Resources);
+    harness.announce("PC-001", bare);
+    check_hosts(harness, {"PC-001"});
+    press_run(harness);
+
+    run_targets(harness)->selectRow(0);
+    QApplication::processEvents();
+
+    auto* output = harness.window->findChild<QPlainTextEdit*>(QStringLiteral("RunOutput"));
+    ASSERT_NE(output, nullptr);
+    EXPECT_NE(output->toPlainText().indexOf(QStringLiteral("enrol")), -1)
+        << output->toPlainText().toStdString();
 }
