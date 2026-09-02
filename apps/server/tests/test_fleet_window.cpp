@@ -71,10 +71,11 @@ struct Harness {
         return nullptr;
     }
 
-    /// The Templates tab's template list — the only QListWidget in the window.
+    /// The Templates tab's template list. Found by name rather than by being
+    /// the only QListWidget in the window, which it stopped being when the
+    /// Scripts tab arrived with a host list of its own.
     [[nodiscard]] QListWidget* template_list() const {
-        const QList<QListWidget*> lists = window->findChildren<QListWidget*>();
-        return lists.isEmpty() ? nullptr : lists.first();
+        return window->findChild<QListWidget*>(QStringLiteral("TemplateList"));
     }
 
     [[nodiscard]] QPushButton* button(const QString& text) const {

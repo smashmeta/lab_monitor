@@ -53,6 +53,7 @@
 #include "lm/ui/theme.hpp"
 #include "lm/ui/token_edit.hpp"
 #include "add_rule_dialog.hpp"
+#include "scripts_tab.hpp"
 #include "server_controller.hpp"
 #include "status_ribbon.hpp"
 
@@ -202,7 +203,8 @@ FleetWindow::FleetWindow(ServerController* controller, QWidget* parent)
 
     build_fleet_tab();
     build_templates_tab();
-    // Last, so the Log tab sits to the right of the two tabs somebody opens
+    build_scripts_tab();
+    // Last, so the Log tab sits to the right of the three tabs somebody opens
     // this window to use.
     build_log_tab();
 
@@ -395,6 +397,11 @@ void FleetWindow::build_fleet_tab() {
 
 void FleetWindow::set_log_file_path(const QString& path) { log_view_->set_log_file_path(path); }
 
+void FleetWindow::build_scripts_tab() {
+    scripts_tab_ = new ScriptsTab(controller_);
+    tabs_->addTab(scripts_tab_, QStringLiteral("Scripts"));
+}
+
 void FleetWindow::build_log_tab() {
     log_view_ = new lm::ui::LogView();
     // Attached here rather than in main(): the view replays the ring buffer as
@@ -415,6 +422,10 @@ void FleetWindow::build_templates_tab() {
     auto* left = new QWidget(splitter);
     auto* left_layout = new QVBoxLayout(left);
     template_list_ = new QListWidget(left);
+    // Named because the window now holds more than one QListWidget: the
+    // Scripts tab has the host list, so "the only list in the window" stopped
+    // being a way to find this one.
+    template_list_->setObjectName(QStringLiteral("TemplateList"));
     left_layout->addWidget(template_list_, 1);
     auto* template_buttons = new QHBoxLayout();
     auto* add_template_button = new QPushButton(QStringLiteral("Add Template"), left);
