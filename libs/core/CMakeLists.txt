@@ -9,7 +9,8 @@ add_library(lm_core SHARED
   src/json_path.cpp
   src/compliance.cpp
   src/fleet.cpp
-  src/client_registry.cpp)
+  src/client_registry.cpp
+  src/script.cpp)
 add_library(lm::core ALIAS lm_core)
 
 target_include_directories(lm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -28,4 +29,5 @@ lm_add_test(lm_core_tests
     tests/test_evaluate_dds.cpp
     tests/test_fleet.cpp
     tests/test_client_registry.cpp
+    tests/test_script_result.cpp
   LINK lm_core)
