@@ -271,3 +271,88 @@ TEST(Codec, ClientAnnounceWithoutAPauseFieldStillDecodes) {
     EXPECT_EQ(decoded.agent_version, "1.2.3");
     EXPECT_EQ(decoded.capabilities, 7u);
 }
+
+TEST(Codec, ScriptCommandRoundTrips) {
+    ScriptCommand original;
+    original.host_id = "PC-001";
+    original.run_id = "run-7f3a";
+    original.script_name = "Maintenance/Clear-TempFiles.ps1";
+    original.script_body = "Write-Output \"hello\"\nexit 0\n";
+    original.timeout_seconds = 120;
+
+    ScriptCommand decoded;
+    ASSERT_TRUE(decode(encode(original), decoded));
+    EXPECT_EQ(decoded, original);
+}
+
+TEST(Codec, ScriptCommandSurvivesABodyWithEveryAwkwardCharacter) {
+    // A PowerShell script is not a tidy identifier: quotes, backslashes,
+    // newlines and UTF-8 all appear routinely, and a codec that mangles any of
+    // them corrupts the script silently on its way to a hundred machines.
+    ScriptCommand original;
+    original.host_id = "PC-001";
+    original.run_id = "run-1";
+    original.script_name = "(custom script)";
+    original.script_body = "$p = \"C:\\Program Files\\Acme\"\r\n# \xc3\xa5\xc3\xa4\xc3\xb6\nexit 0";
+
+    ScriptCommand decoded;
+    ASSERT_TRUE(decode(encode(original), decoded));
+    EXPECT_EQ(decoded.script_body, original.script_body);
+}
+
+TEST(Codec, ScriptResultRoundTrips) {
+    ScriptResultMessage original;
+    original.host_id = "PC-001";
+    original.run_id = "run-7f3a";
+    original.status = lm::core::ScriptStatus::Failed;
+    original.exit_code = 3;
+    original.has_reported = true;
+    original.reported_ok = false;
+    original.reported_message = "3 of 5 packages failed";
+    original.stdout_text = "line one\nline two";
+    original.stderr_text = "something went wrong";
+    original.duration_ms = 4200;
+
+    ScriptResultMessage decoded;
+    ASSERT_TRUE(decode(encode(original), decoded));
+    EXPECT_EQ(decoded, original);
+}
+
+TEST(Codec, ScriptResultCarriesARefusalWithItsReason) {
+    ScriptResultMessage original;
+    original.host_id = "PC-001";
+    original.run_id = "run-7f3a";
+    original.status = lm::core::ScriptStatus::Refused;
+    original.refusal_reason = "not enrolled for scripts";
+
+    ScriptResultMessage decoded;
+    ASSERT_TRUE(decode(encode(original), decoded));
+    EXPECT_EQ(decoded.status, lm::core::ScriptStatus::Refused);
+    EXPECT_EQ(decoded.refusal_reason, "not enrolled for scripts");
+}
+
+TEST(Codec, ATruncatedScriptCommandIsRejected) {
+    // Unlike ClientAnnounce, there is no tolerance here. A half-read command is
+    // a half-read script body, and running that would be worse than running
+    // nothing at all.
+    ScriptCommand original;
+    original.host_id = "PC-001";
+    original.run_id = "run-1";
+    original.script_body = "exit 0";
+
+    std::vector<std::uint8_t> bytes = encode(original);
+    bytes.resize(bytes.size() / 2);
+
+    ScriptCommand decoded;
+    EXPECT_FALSE(decode(bytes, decoded));
+}
+
+TEST(Codec, ScriptMessagesAreKeyedByHost) {
+    ScriptCommand command;
+    command.host_id = "PC-001";
+    EXPECT_EQ(key_of(command), "PC-001");
+
+    ScriptResultMessage result;
+    result.host_id = "PC-002";
+    EXPECT_EQ(key_of(result), "PC-002");
+}

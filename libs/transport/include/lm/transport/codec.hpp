@@ -13,6 +13,8 @@ namespace lm::transport {
 [[nodiscard]] std::vector<std::uint8_t> encode(const ResourceSampleMessage& message);
 [[nodiscard]] std::vector<std::uint8_t> encode(const TemplateBundleMessage& message);
 [[nodiscard]] std::vector<std::uint8_t> encode(const ComplianceReportMessage& message);
+[[nodiscard]] std::vector<std::uint8_t> encode(const ScriptCommand& message);
+[[nodiscard]] std::vector<std::uint8_t> encode(const ScriptResultMessage& message);
 
 /// Returns false on truncated or malformed input; never throws and never leaves
 /// the output partially populated in a way the caller could mistake for success.
@@ -20,9 +22,13 @@ namespace lm::transport {
 [[nodiscard]] bool decode(std::span<const std::uint8_t> bytes, ResourceSampleMessage& out);
 [[nodiscard]] bool decode(std::span<const std::uint8_t> bytes, TemplateBundleMessage& out);
 [[nodiscard]] bool decode(std::span<const std::uint8_t> bytes, ComplianceReportMessage& out);
+[[nodiscard]] bool decode(std::span<const std::uint8_t> bytes, ScriptCommand& out);
+[[nodiscard]] bool decode(std::span<const std::uint8_t> bytes, ScriptResultMessage& out);
 
 [[nodiscard]] std::string key_of(const ClientAnnounce& message);
 [[nodiscard]] std::string key_of(const ResourceSampleMessage& message);
 [[nodiscard]] std::string key_of(const ComplianceReportMessage& message);
+[[nodiscard]] std::string key_of(const ScriptCommand& message);
+[[nodiscard]] std::string key_of(const ScriptResultMessage& message);
 
 }  // namespace lm::transport
