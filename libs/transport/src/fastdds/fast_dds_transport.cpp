@@ -358,6 +358,11 @@ public:
     }
     void publish_report(const ComplianceReportMessage& message) override { (void)report_writer_->write(&message); }
 
+    /// Stub: the ScriptResult writer is wired up in the next task. For now
+    /// this deliberately does nothing rather than half-wire a topic with no
+    /// reader on the other end.
+    void publish_script_result(const ScriptResultMessage&) override {}
+
     /// Mirrors TransientLocal durability at the application level: a bundle
     /// already received (from before this handler was registered, which can
     /// race with discovery) is replayed synchronously.
@@ -371,6 +376,13 @@ public:
         if (handler && retained) {
             handler(*retained);
         }
+    }
+
+    /// Stub: no ScriptCommand reader exists yet, so the handler is stored but
+    /// never invoked. Real wiring is the next task.
+    void on_script_command(std::function<void(const ScriptCommand&)> handler) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        on_script_command_ = std::move(handler);
     }
 
     /// Fast DDS enables entities (and can start delivering callbacks) as soon
@@ -450,6 +462,7 @@ private:
     std::mutex mutex_;
     std::optional<TemplateBundleMessage> retained_bundle_;
     std::function<void(const TemplateBundleMessage&)> on_bundle_;
+    std::function<void(const ScriptCommand&)> on_script_command_;
     std::function<void(ConnectionState)> on_connection_changed_;
 };
 
@@ -523,6 +536,9 @@ public:
         (void)bundle_writer_->write(&message);
     }
 
+    /// Stub: the ScriptCommand writer is wired up in the next task.
+    void publish_script_command(const ScriptCommand&) override {}
+
     void on_announce(std::function<void(const ClientAnnounce&)> handler) override {
         std::lock_guard<std::mutex> lock(handlers_mutex_);
         on_announce_ = std::move(handler);
@@ -534,6 +550,12 @@ public:
     void on_report(std::function<void(const ComplianceReportMessage&)> handler) override {
         std::lock_guard<std::mutex> lock(handlers_mutex_);
         on_report_ = std::move(handler);
+    }
+    /// Stub: no ScriptResult reader exists yet, so the handler is stored but
+    /// never invoked. Real wiring is the next task.
+    void on_script_result(std::function<void(const ScriptResultMessage&)> handler) override {
+        std::lock_guard<std::mutex> lock(handlers_mutex_);
+        on_script_result_ = std::move(handler);
     }
     void on_client_lost(std::function<void(const core::HostId&)> handler) override {
         std::lock_guard<std::mutex> lock(handlers_mutex_);
@@ -657,6 +679,7 @@ private:
     std::function<void(const ClientAnnounce&)> on_announce_;
     std::function<void(const ResourceSampleMessage&)> on_resources_;
     std::function<void(const ComplianceReportMessage&)> on_report_;
+    std::function<void(const ScriptResultMessage&)> on_script_result_;
     std::function<void(const core::HostId&)> on_client_lost_;
 };
 
