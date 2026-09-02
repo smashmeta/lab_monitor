@@ -1,5 +1,7 @@
 #include "autostart.hpp"
 
+#include <spdlog/spdlog.h>
+
 // The Scheduled Task mechanism (schtasks.exe, /RL HIGHEST) is Windows-only --
 // see autostart.hpp and autostart_windows.cpp for the real implementation and
 // why it exists at all. This build has never had a Linux script runner
@@ -8,6 +10,14 @@
 // non-Windows leg carrying its own copy of --install-autostart handling that
 // nobody has exercised.
 
-std::string install_autostart_task() { return "autostart is not supported on this platform"; }
+std::string install_autostart_task() {
+    const std::string message = "autostart is not supported on this platform";
+    spdlog::error("install-autostart: {}", message);
+    return message;
+}
 
-std::string uninstall_autostart_task() { return "autostart is not supported on this platform"; }
+std::string uninstall_autostart_task() {
+    const std::string message = "autostart is not supported on this platform";
+    spdlog::error("uninstall-autostart: {}", message);
+    return message;
+}

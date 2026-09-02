@@ -7,14 +7,23 @@
 #endif
 #include <windows.h>
 
+#include <spdlog/spdlog.h>
+
 #include <array>
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <thread>
 #include <utility>
 
 namespace {
 
-constexpr wchar_t kTaskName[] = L"LabMonitorClient";
+/// Folder-scoped rather than a bare name: an unqualified "LabMonitorClient"
+/// sits at the task-store root, where /Create /F would silently replace any
+/// third-party task that happened to have chosen the same name, and /Delete
+/// would remove whatever holds that name without checking it points at this
+/// executable. schtasks creates the folder on demand.
+constexpr wchar_t kTaskPath[] = L"\\LabMonitor\\Client";
 
 /// Closes exactly once, on every path out -- mirrors
 /// libs/platform/src/windows/script_runner_windows.cpp's Handle, which this
@@ -54,6 +63,49 @@ private:
     HANDLE handle_ = nullptr;
 };
 
+/// Names the exact handles the child may inherit, rather than letting
+/// bInheritHandles hand it every inheritable handle already open in this
+/// process. Copied from script_runner_windows.cpp's InheritList of the same
+/// name: that file solved this exact problem for the same reason (a
+/// CreateProcessW call that needs to redirect a pipe but not become a
+/// dumping ground for whatever else this process happens to have open), and
+/// there is nothing about schtasks.exe that calls for a different answer.
+class InheritList {
+public:
+    InheritList() = default;
+    ~InheritList() {
+        if (list_ != nullptr) {
+            DeleteProcThreadAttributeList(list_);
+        }
+    }
+
+    InheritList(const InheritList&) = delete;
+    InheritList& operator=(const InheritList&) = delete;
+
+    bool build(HANDLE* handles, std::size_t count) {
+        SIZE_T size = 0;
+        // Documented to fail while reporting the size it needs.
+        InitializeProcThreadAttributeList(nullptr, 1, 0, &size);
+        if (size == 0) {
+            return false;
+        }
+        buffer_ = std::make_unique<std::byte[]>(size);
+        auto* list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(buffer_.get());
+        if (InitializeProcThreadAttributeList(list, 1, 0, &size) == 0) {
+            return false;
+        }
+        list_ = list;
+        return UpdateProcThreadAttribute(list_, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles,
+                                         count * sizeof(HANDLE), nullptr, nullptr) != 0;
+    }
+
+    [[nodiscard]] LPPROC_THREAD_ATTRIBUTE_LIST get() const { return list_; }
+
+private:
+    std::unique_ptr<std::byte[]> buffer_;
+    LPPROC_THREAD_ATTRIBUTE_LIST list_ = nullptr;
+};
+
 /// The absolute path under System32, never a bare name. Passed as the first
 /// (quoted) token of the command line with no lpApplicationName, the same
 /// convention script_runner_windows.cpp's powershell_path() uses: a bare
@@ -91,8 +143,33 @@ private:
     }
 }
 
+/// For log lines only -- everything that actually runs the command stays in
+/// wide strings throughout. Windows paths are practically always ASCII, so
+/// this is not on any correctness-critical path; it exists purely so
+/// spdlog (narrow-string only) can say what this file just did.
+[[nodiscard]] std::string narrow(const std::wstring& wide) {
+    if (wide.empty()) {
+        return {};
+    }
+    const int needed =
+        WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0,
+                            nullptr, nullptr);
+    if (needed <= 0) {
+        return {};
+    }
+    std::string narrowed(static_cast<std::size_t>(needed), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), narrowed.data(),
+                        needed, nullptr, nullptr);
+    return narrowed;
+}
+
 struct ProcessResult {
     bool started = false;
+    /// Set only when started is false: what GetLastError() said about
+    /// whichever step failed (CreatePipe, SetHandleInformation, the handle
+    /// allowlist, or CreateProcessW itself), so "could not start schtasks.exe"
+    /// is not the whole story.
+    DWORD start_error = 0;
     DWORD exit_code = 0;
     /// stdout and stderr combined -- schtasks does not put anything on one
     /// that is not worth showing alongside the other, and a single pipe means
@@ -117,31 +194,69 @@ struct ProcessResult {
     Handle read_end;
     Handle write_end;
     if (CreatePipe(read_end.out(), write_end.out(), &inheritable, 0) == 0) {
+        result.start_error = GetLastError();
         return result;
     }
     // Only the child's end is inheritable; ours must not be, or our own copy
     // keeps the pipe open after the child exits and the read below never sees
-    // EOF.
-    SetHandleInformation(read_end.get(), HANDLE_FLAG_INHERIT, 0);
+    // EOF. The return value is checked, not fired-and-forgotten: if this call
+    // failed, the child would inherit our read end too, and the drain thread
+    // below would never see EOF -- drain.join() would hang forever rather
+    // than this function simply failing.
+    if (SetHandleInformation(read_end.get(), HANDLE_FLAG_INHERIT, 0) == 0) {
+        result.start_error = GetLastError();
+        return result;
+    }
 
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    startup.dwFlags = STARTF_USESTDHANDLES;
-    startup.hStdOutput = write_end.get();
-    startup.hStdError = write_end.get();
-    startup.hStdInput = nullptr;
+    // NUL as stdin, matching script_runner_windows.cpp: with
+    // STARTF_USESTDHANDLES set, an unset hStdInput hands the child an invalid
+    // handle rather than nothing in particular. Harmless for `schtasks /F`,
+    // which never reads stdin, but there is no reason to leave it unset when
+    // the fix already exists in this codebase.
+    Handle nul(CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inheritable,
+                           OPEN_EXISTING, 0, nullptr));
+
+    // Names exactly the two handles schtasks.exe is meant to receive --
+    // its stdout/stderr pipe and NUL for stdin -- rather than letting
+    // bInheritHandles=TRUE hand it every inheritable handle open in this
+    // process, which today is only QApplication's but is unbounded by
+    // construction rather than by design.
+    std::array<HANDLE, 2> inherited{write_end.get(), nul.get()};
+    const std::size_t inherited_count = nul ? inherited.size() : inherited.size() - 1;
+    InheritList inherit_list;
+    if (!inherit_list.build(inherited.data(), inherited_count)) {
+        result.start_error = GetLastError();
+        return result;
+    }
+
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = nul.get();
+    startup.StartupInfo.hStdOutput = write_end.get();
+    startup.StartupInfo.hStdError = write_end.get();
+    startup.lpAttributeList = inherit_list.get();
 
     PROCESS_INFORMATION process_info{};
     // lpApplicationName left null: command_line's first token is already the
     // full quoted path built by the caller, so there is nothing here for a
     // hijack to redirect.
     const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr,
-                                        /*bInheritHandles=*/TRUE, CREATE_NO_WINDOW, nullptr,
-                                        nullptr, &startup, &process_info);
-    write_end.reset();  // our copy, whether or not the create succeeded
+                                        /*bInheritHandles=*/TRUE,
+                                        CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr,
+                                        nullptr, &startup.StartupInfo, &process_info);
     if (created == 0) {
+        result.start_error = GetLastError();
+        // read_end, write_end, nul and inherit_list all clean up via their
+        // own destructors on this return -- nothing further to release here.
         return result;
     }
+
+    // Our copies of the child's ends go now: while either stays open, the
+    // drain thread below never sees the pipe close, however long ago
+    // schtasks exited.
+    write_end.reset();
+    nul.reset();
 
     const Handle process(process_info.hProcess);
     const Handle main_thread(process_info.hThread);
@@ -186,7 +301,8 @@ struct ProcessResult {
 /// to register a /RL HIGHEST task.
 [[nodiscard]] std::string failure_message(const ProcessResult& result) {
     if (!result.started) {
-        return "could not start schtasks.exe";
+        return "could not start schtasks.exe (Windows error " +
+              std::to_string(result.start_error) + ")";
     }
     const std::string output = trimmed(result.output);
     return "schtasks failed (exit " + std::to_string(result.exit_code) +
@@ -199,40 +315,61 @@ struct ProcessResult {
 std::string install_autostart_task() {
     const std::wstring schtasks = schtasks_path();
     if (schtasks.empty()) {
-        return "schtasks.exe is not present under System32";
+        const std::string message = "schtasks.exe is not present under System32";
+        spdlog::error("install-autostart: {}", message);
+        return message;
     }
     const std::wstring exe = this_executable_path();
     if (exe.empty()) {
-        return "could not determine this executable's own path";
+        const std::string message = "could not determine this executable's own path";
+        spdlog::error("install-autostart: {}", message);
+        return message;
     }
+
+    // Logged before the attempt, not just the outcome: the resolved exe path
+    // is the one thing an operator cannot see any other way, and it is what
+    // will run elevated at every logon from here on.
+    spdlog::info(
+        "install-autostart: registering \"{}\" to run \"{}\" --allow-scripts at logon, elevated",
+        narrow(kTaskPath), narrow(exe));
 
     // /RL HIGHEST is what starts this task elevated at logon with no UAC
     // prompt -- see autostart.hpp. Registering a task at that run level is
     // itself an elevated operation, so a non-elevated caller fails here with
     // schtasks's own "Access is denied" rather than silently registering an
     // unelevated task.
-    const std::wstring command = L"\"" + schtasks + L"\" /Create /F /TN \"" + kTaskName +
+    const std::wstring command = L"\"" + schtasks + L"\" /Create /F /TN \"" + kTaskPath +
                                  L"\" /TR \"\\\"" + exe +
                                  L"\\\" --allow-scripts\" /SC ONLOGON /RL HIGHEST";
 
     const ProcessResult result = run_capturing_output(command);
     if (!result.started || result.exit_code != 0) {
-        return failure_message(result);
+        const std::string message = failure_message(result);
+        spdlog::error("install-autostart: {}", message);
+        return message;
     }
+    spdlog::info("install-autostart: succeeded");
     return {};
 }
 
 std::string uninstall_autostart_task() {
     const std::wstring schtasks = schtasks_path();
     if (schtasks.empty()) {
-        return "schtasks.exe is not present under System32";
+        const std::string message = "schtasks.exe is not present under System32";
+        spdlog::error("uninstall-autostart: {}", message);
+        return message;
     }
 
-    const std::wstring command = L"\"" + schtasks + L"\" /Delete /F /TN \"" + kTaskName + L"\"";
+    spdlog::info("uninstall-autostart: removing \"{}\"", narrow(kTaskPath));
+
+    const std::wstring command = L"\"" + schtasks + L"\" /Delete /F /TN \"" + kTaskPath + L"\"";
 
     const ProcessResult result = run_capturing_output(command);
     if (!result.started || result.exit_code != 0) {
-        return failure_message(result);
+        const std::string message = failure_message(result);
+        spdlog::error("uninstall-autostart: {}", message);
+        return message;
     }
+    spdlog::info("uninstall-autostart: succeeded");
     return {};
 }

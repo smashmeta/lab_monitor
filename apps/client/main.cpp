@@ -206,39 +206,55 @@ int main(int argc, char** argv) {
     }
     const Options& options = *parsed;
 
-    // Handled before anything else builds: no logging, no probes, no window.
-    // Both are one-shot administrative actions -- see autostart.hpp -- run
-    // once from a prompt and not part of a normal launch, and installing the
-    // task is itself what needs the administrator prompt, not this process's
-    // own steady-state elevation.
-    if (options.install_autostart || options.uninstall_autostart) {
-        const std::string message =
-            options.install_autostart ? install_autostart_task() : uninstall_autostart_task();
-        if (!message.empty()) {
-            QMessageBox::critical(nullptr, QStringLiteral("lab_monitor_client"),
-                                  QString::fromStdString(message));
-            return EXIT_FAILURE;
-        }
-        QMessageBox::information(
-            nullptr, QStringLiteral("lab_monitor_client"),
-            options.install_autostart
-                ? QStringLiteral("Logon task registered. Sign out and back in for it to "
-                                 "take effect.")
-                : QStringLiteral("Logon task removed."));
-        return EXIT_SUCCESS;
-    }
-
     // Everything from here on can throw: make_dds_client (four
     // std::runtime_error sites, reachable with e.g. a bad --domain-id or no
-    // usable network interface) most notably. Uncaught, that would abort
-    // this WIN32-subsystem process with a bare crash dialog and nothing
-    // else, despite spdlog being fully configured by the time any of this
-    // runs -- log the failure there instead, so it is at least diagnosable
-    // from lab_monitor_client.log.
+    // usable network interface) most notably, and now also
+    // install_autostart_task()/uninstall_autostart_task() below, which build
+    // std::wstrings and start a std::thread of their own. Uncaught, that
+    // would abort this WIN32-subsystem process with a bare crash dialog and
+    // nothing else, despite spdlog being fully configured by the time any of
+    // this runs -- log the failure there instead, so it is at least
+    // diagnosable from lab_monitor_client.log.
     try {
         const LogTarget log_target = configure_logging("lab_monitor_client", options.log_level);
         log_startup_banner("lab_monitor_client", log_target, options.offline, options.domain_id,
                            options.log_level);
+
+        // Handled here, right after logging is up and before anything else
+        // (probes, transport, window) is built: both are one-shot
+        // administrative actions -- see autostart.hpp -- run once from a
+        // prompt rather than part of a normal launch. Deliberately *after*
+        // configure_logging(): registering a task that runs this binary
+        // elevated at every logon is exactly the kind of operator action
+        // CLAUDE.md's logging policy already calls out for pause/resume and
+        // template edits, and a modal dialog that gets dismissed is not a
+        // record. install_autostart_task()/uninstall_autostart_task() log
+        // their own attempt and outcome, including the resolved exe path
+        // being registered.
+        if (options.install_autostart && options.uninstall_autostart) {
+            spdlog::error(
+                "--install-autostart and --uninstall-autostart given together; doing neither");
+            QMessageBox::critical(nullptr, QStringLiteral("lab_monitor_client"),
+                                  QStringLiteral("--install-autostart and "
+                                                 "--uninstall-autostart cannot both be given."));
+            return EXIT_FAILURE;
+        }
+        if (options.install_autostart || options.uninstall_autostart) {
+            const std::string message =
+                options.install_autostart ? install_autostart_task() : uninstall_autostart_task();
+            if (!message.empty()) {
+                QMessageBox::critical(nullptr, QStringLiteral("lab_monitor_client"),
+                                      QString::fromStdString(message));
+                return EXIT_FAILURE;
+            }
+            QMessageBox::information(
+                nullptr, QStringLiteral("lab_monitor_client"),
+                options.install_autostart
+                    ? QStringLiteral("Logon task registered. Sign out and back in for it to "
+                                     "take effect.")
+                    : QStringLiteral("Logon task removed."));
+            return EXIT_SUCCESS;
+        }
 
         lm::ui::Theme::apply(app);
 
