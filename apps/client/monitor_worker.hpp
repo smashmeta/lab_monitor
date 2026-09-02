@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 
+#include "lm/core/script.hpp"
 #include "lm/platform/probes.hpp"
 #include "lm/transport/transport.hpp"
 #include "lm/ui/rule_detail.hpp"

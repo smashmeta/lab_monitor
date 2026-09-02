@@ -293,6 +293,26 @@ TEST(HostProbes, SkipsTheBusEntirelyWithoutTheCapability) {
     EXPECT_FALSE(facts.dds.contains(dds_key(42, "Basket")));
 }
 
+TEST(HostProbes, KeepsScriptsAndElevatedWhichNoProbeServes) {
+    // The counterpart to every Drops* case above, and the reason this one has
+    // to exist: intersect() rebuilds the set out of the ProbeSet, so a
+    // capability with no member there is dropped by omission rather than by
+    // decision. Neither of these is served by a probe -- the script runner
+    // belongs to the client's worker, elevation is a property of the process
+    // token -- and the announce is the only carrier the client has for them,
+    // so dropping them silently ships a feature that advertises nothing.
+    ProbeSet set;
+    set.resources = std::make_unique<FakeResourceProbe>();
+    HostProbes probes("PC-001", std::move(set),
+                      Capabilities{}
+                          .add(Capability::Resources)
+                          .add(Capability::Scripts)
+                          .add(Capability::Elevated));
+
+    EXPECT_TRUE(probes.capabilities().has(Capability::Scripts));
+    EXPECT_TRUE(probes.capabilities().has(Capability::Elevated));
+}
+
 TEST(HostProbes, DropsTheDdsCapabilityWhenNoProbeIsSupplied) {
     // What --offline relies on: no probe means the client never claims it can
     // inspect a bus, and every DDS rule reports NotApplicable instead.

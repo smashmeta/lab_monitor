@@ -280,7 +280,7 @@ int main(int argc, char** argv) {
         // this worker thread; the GUI thread never touches probes_ or
         // transport_ directly, only through the queued connections below.
         auto* worker = new MonitorWorker(std::move(probes), std::move(transport),
-                                          std::move(script_runner), scripts_enabled);
+                                         std::move(script_runner), scripts_enabled);
         auto* worker_thread = new QThread();
         worker->moveToThread(worker_thread);
 

@@ -266,13 +266,20 @@ void MonitorWorker::on_script_command(const lm::transport::ScriptCommand& comman
         return;  // addressed to somebody else
     }
 
-    if (!allow_scripts_ || runner_ == nullptr) {
+    // Two branches, not one condition, because they answer different questions
+    // and only the first is something an operator can act on. Telling somebody
+    // on a platform with no runner to pass --allow-scripts sends them to try a
+    // flag they have already passed.
+    if (!allow_scripts_) {
         // Visibly, not silently. The opt-in is what stops an agent upgrade
         // turning a monitoring box into one that runs remote code, but an
-        // operator watching a run that never reports needs to be told which
-        // of the two happened.
+        // operator watching a run that never reports needs to be told why.
         refuse_script(command,
                       "this machine is not enrolled for script execution (--allow-scripts)");
+        return;
+    }
+    if (runner_ == nullptr) {
+        refuse_script(command, "this platform has no script runner");
         return;
     }
     if (!executed_.insert(command.run_id).second) {
@@ -303,7 +310,22 @@ void MonitorWorker::on_script_command(const lm::transport::ScriptCommand& comman
     const std::string run_id = command.run_id;
     const std::string name = command.script_name;
     script_thread_ = std::thread([this, body, timeout, run_id, name] {
-        const lm::core::ScriptOutcome outcome = runner_->run(body, timeout);
+        lm::core::ScriptOutcome outcome;
+        try {
+            outcome = runner_->run(body, timeout);
+        } catch (...) {
+            // IScriptRunner promises nothing about throwing, and an escaping
+            // exception on a bare std::thread is std::terminate -- a
+            // monitoring agent killed with no log line and no result at all.
+            // started = false is the outcome's own word for "never ran as a
+            // run", so status() reports Error rather than a fabricated exit
+            // code. Same reasoning as codec.cpp's decode(): catch the class of
+            // risk at the boundary and report it, rather than trusting a
+            // dependency to be non-throwing.
+            outcome = lm::core::ScriptOutcome{};
+            outcome.started = false;
+            outcome.stderr_text = "the script runner threw while starting the script";
+        }
         // Back onto the worker thread to publish: the transport is this
         // object's, and one thread publishing is one fewer thing the DDS
         // writer has to be safe against.
