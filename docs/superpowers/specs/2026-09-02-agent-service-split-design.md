@@ -1,7 +1,37 @@
 # Agent / Tray Split — Design
 
 **Date:** 2026-09-02
-**Status:** Draft, for review
+**Status:** **Superseded, not implemented** — see
+`2026-09-02-remote-scripts-design.md`
+
+> ## Why this was dropped
+>
+> Two facts settled after this was written, and between them they removed the
+> whole justification:
+>
+> 1. **The interactive users on the lab machines are local administrators.** A
+>    Scheduled Task with "Run with highest privileges" at logon therefore starts
+>    the existing tray application elevated, with no UAC prompt. Elevation does
+>    not need a service.
+> 2. **Reporting only while somebody is logged in is acceptable.** The other
+>    motivation below — that a locked or logged-out machine leaves the fleet
+>    entirely — is a real limitation, and a deliberately accepted one.
+>
+> With both gone, the service bought nothing that a Scheduled Task and twenty
+> lines of `GetTokenInformation` do not, at the cost of an installer, session-0
+> isolation, `CreateProcessAsUser`, a status file, supervision, and two
+> processes to keep version-matched.
+>
+> **Kept rather than deleted for one section.** "The arrangement deliberately
+> not chosen" below explains why a tray application must never relay execution
+> to a SYSTEM helper over a local endpoint. That reasoning outlives this design:
+> the shortcut stays attractive, and the answer to it is not obvious. If a
+> service is ever revisited — most likely because monitoring while logged out
+> starts to matter — start here.
+>
+> Section 8 (pause) is also still live: pause reporting was going to be removed
+> because the split broke it. Without the split it is not broken, so **pause
+> stays as it is**.
 
 ## 1. Why
 
