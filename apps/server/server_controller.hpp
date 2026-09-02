@@ -6,6 +6,7 @@
 #include <QTimer>
 #include <QVector>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -19,6 +20,7 @@
 #include "lm/transport/transport.hpp"
 #include "lm/ui/fleet_model.hpp"
 #include "lm/ui/sample_coalescer.hpp"
+#include "script_run.hpp"
 
 /// Owns the IServerTransport, the ClientRegistry, the expected-host list, and
 /// both the published and draft template bundles.
@@ -89,6 +91,23 @@ public:
     /// host is silent rather than leave it out — wants the entries themselves.
     [[nodiscard]] const lm::core::FleetView& fleet() const { return fleet_; }
 
+    /// Sends `script_body` to each of `hosts` and returns the id of the run
+    /// created for it. Never fails: a host that cannot be asked is recorded as
+    /// Refused on the run rather than dropped, so the operator sees every
+    /// machine they chose and why each one did or did not get the script.
+    ///
+    /// Duplicates in `hosts` are collapsed. ScriptRun::find_target resolves a
+    /// host id to its *first* target, so a second target for the same host
+    /// could never be dispatched to, answered, or timed out -- it would sit at
+    /// Pending forever and keep the run from ever reading as finished. The
+    /// model leaves that to the caller, and this is the caller.
+    QString start_script_run(const std::string& script_name, const std::string& script_body,
+                             const std::vector<std::string>& hosts,
+                             std::uint32_t timeout_seconds);
+
+    /// Every run this server has issued, oldest first.
+    [[nodiscard]] const std::vector<ScriptRun>& script_runs() const { return script_runs_; }
+
 public slots:
     /// Recomputes can_publish() and emits draft_publishable_changed(). Call
     /// after mutating draft() from the outside.
@@ -116,6 +135,10 @@ signals:
     void compliance_report_received(QString host_id, lm::core::ComplianceReport report);
     void draft_publishable_changed(bool can_publish);
     void published_changed();
+    /// A run was created, or one of its targets moved. Carries only the id:
+    /// the run itself is reachable through script_runs(), and passing the
+    /// whole ScriptRun would copy every host's captured output on each result.
+    void script_run_changed(QString run_id);
     /// A config file existed but failed to parse. The message is meant for
     /// direct display (e.g. a status bar or message box); the last good
     /// in-memory bundle/expected-host list is left untouched.
@@ -125,6 +148,13 @@ private:
     void on_announce(const lm::transport::ClientAnnounce& announce);
     void on_report(const lm::transport::ComplianceReportMessage& report);
     void on_client_lost(const lm::core::HostId& host_id);
+    void on_script_result(const lm::transport::ScriptResultMessage& result);
+    /// Turns every target still waiting into NoResponse. Reached only from the
+    /// per-run single-shot timer armed by start_script_run().
+    void on_run_deadline(const std::string& run_id);
+    /// Null for a run this server never issued -- a stray result, or one for a
+    /// run from a previous process.
+    [[nodiscard]] ScriptRun* find_run(const std::string& run_id);
     void apply_coalesced(QVector<lm::transport::ResourceSampleMessage> batch);
     void reconcile_now();
 
@@ -167,6 +197,11 @@ private:
     lm::core::TemplateBundle draft_;
     lm::core::TemplateBundle published_;
     lm::core::ReconcileOptions options_;
+
+    /// Written only on this object's thread: start_script_run() is called from
+    /// the GUI, and both the result callback and the deadline timer land here
+    /// through the event loop.
+    std::vector<ScriptRun> script_runs_;
 
     QMap<QString, lm::core::ResourceSample> resource_cache_;
     QMap<QString, lm::core::ComplianceReport> report_cache_;

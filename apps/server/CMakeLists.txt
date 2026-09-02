@@ -32,6 +32,7 @@ lm_add_test(lab_monitor_server_tests
           tests/test_fleet_window.cpp
           tests/test_add_rule_dialog.cpp
           tests/test_script_run.cpp
+          tests/test_script_dispatch.cpp
           server_controller.cpp
           status_ribbon.cpp
           add_rule_dialog.cpp

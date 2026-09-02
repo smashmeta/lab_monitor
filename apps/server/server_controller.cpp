@@ -4,10 +4,14 @@
 #include <QHash>
 
 #include <map>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QIODevice>
 #include <QMetaObject>
+#include <QRandomGenerator>
+
+#include <chrono>
 
 #include <algorithm>
 #include <exception>
@@ -54,6 +58,31 @@ void log_state_transitions(const std::vector<lm::core::FleetEntry>& before,
     for (const auto& [host_id, state] : previous) {
         spdlog::info("fleet: {} no longer listed (was {})", host_id, lm::core::to_string(state));
     }
+}
+
+/// How long past the client's own timeout a run waits before calling a silent
+/// host non-responsive.
+///
+/// The client kills its script at timeout_seconds and only then serialises,
+/// publishes and lets the sample cross the wire. Deadlining at exactly
+/// timeout_seconds would therefore race that result and report NoResponse for
+/// a machine that answered -- the one reading an operator must be able to
+/// trust, since it is what sends somebody to a desk.
+constexpr std::chrono::seconds kDeadlineMargin{15};
+
+/// A sortable UTC timestamp plus 32 random bits.
+///
+/// The timestamp is what makes a run id readable in a log next to the lines it
+/// explains; the suffix is what makes it unique. Two runs would have to be
+/// issued in the same millisecond *and* draw the same 32-bit value to collide,
+/// and the operator issuing them is one person at one keyboard. A counter
+/// would repeat across a server restart, where these ids meet results from
+/// clients that outlived it.
+std::string make_run_id() {
+    const QString stamp = QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss-zzz");
+    const QString suffix =
+        QString::number(QRandomGenerator::global()->generate(), 16).rightJustified(8, '0');
+    return (stamp + '-' + suffix).toStdString();
 }
 
 }  // namespace
@@ -107,6 +136,12 @@ void ServerController::start() {
     transport_->on_report([this](const lm::transport::ComplianceReportMessage& report) {
         QMetaObject::invokeMethod(
             this, [this, report] { on_report(report); }, Qt::QueuedConnection);
+    });
+    transport_->on_script_result([this](const lm::transport::ScriptResultMessage& result) {
+        // script_runs_ is a plain vector read by the GUI while it is written
+        // here; the hop is what keeps that single-threaded.
+        QMetaObject::invokeMethod(
+            this, [this, result] { on_script_result(result); }, Qt::QueuedConnection);
     });
     transport_->on_client_lost([this](const lm::core::HostId& host_id) {
         QMetaObject::invokeMethod(
@@ -315,6 +350,126 @@ void ServerController::on_client_lost(const lm::core::HostId& host_id) {
         registry_.mark_lost(host_id);
     }
     reconcile_now();
+}
+
+ScriptRun* ServerController::find_run(const std::string& run_id) {
+    const auto found = std::ranges::find(script_runs_, run_id, &ScriptRun::run_id);
+    return found == script_runs_.end() ? nullptr : &*found;
+}
+
+QString ServerController::start_script_run(const std::string& script_name,
+                                            const std::string& script_body,
+                                            const std::vector<std::string>& hosts,
+                                            std::uint32_t timeout_seconds) {
+    ScriptRun run;
+    run.run_id = make_run_id();
+    run.script_name = script_name;
+    run.script_body = script_body;
+    run.issued_at = lm::core::Clock::now();
+    run.timeout_seconds = timeout_seconds;
+
+    for (const lm::core::HostId& host_id : hosts) {
+        const bool already_targeted =
+            std::ranges::any_of(run.targets, [&](const RunTarget& target) {
+                return target.host_id == host_id;
+            });
+        if (!already_targeted) {
+            run.targets.push_back(RunTarget{host_id, TargetState::Pending, {}, {}});
+        }
+    }
+
+    // By index, because refuse_at_dispatch()/mark_dispatched() write into this
+    // same vector as we walk it.
+    for (std::size_t i = 0; i < run.targets.size(); ++i) {
+        const lm::core::HostId host_id = run.targets[i].host_id;
+        const auto entry =
+            std::ranges::find(fleet_.entries, host_id, &lm::core::FleetEntry::host_id);
+
+        if (entry == fleet_.entries.end() || entry->state != lm::core::HostState::Online) {
+            // Nothing is sent. The command topic is Volatile, so there is no
+            // queue to hold this until the machine comes back -- publishing it
+            // would promise a delivery that cannot happen, and leave the run
+            // waiting out its deadline for a host we already know is not there.
+            run.refuse_at_dispatch(host_id, "host is not online");
+            continue;
+        }
+        if (!entry->caps.has(lm::core::Capability::Scripts)) {
+            // The enrolment opt-in is the whole bound on this feature, so the
+            // server enforces it as well rather than sending and letting the
+            // client decline: an un-enrolled machine never receives a script
+            // body at all.
+            run.refuse_at_dispatch(host_id, "not enrolled for script execution");
+            continue;
+        }
+
+        lm::transport::ScriptCommand command;
+        command.host_id = host_id;
+        command.run_id = run.run_id;
+        command.script_name = run.script_name;
+        command.script_body = run.script_body;
+        command.timeout_seconds = run.timeout_seconds;
+        transport_->publish_script_command(command);
+        run.mark_dispatched(host_id);
+    }
+
+    const RunTally tally = run.tally();
+    // Remote execution is audited, not sampled: this is somebody running code
+    // on other people's machines, and none of it is periodic, so the "nothing
+    // periodic is logged" rule does not reach it.
+    spdlog::info("script run {} started: \"{}\" to {} host(s) ({} dispatched, {} refused)",
+                 run.run_id, run.script_name, run.targets.size(), tally.dispatched, tally.refused);
+
+    const QString run_id = QString::fromStdString(run.run_id);
+    script_runs_.push_back(std::move(run));
+
+    if (tally.dispatched > 0) {
+        // `this` as the context object, so the timer dies with the controller
+        // and can never fire into a destroyed run. It carries the id rather
+        // than a pointer for the same reason: script_runs_ reallocates as runs
+        // are added, and find_run() simply returns null if the run is gone.
+        const std::string deadline_run_id = script_runs_.back().run_id;
+        QTimer::singleShot(std::chrono::seconds{timeout_seconds} + kDeadlineMargin, this,
+                           [this, deadline_run_id] { on_run_deadline(deadline_run_id); });
+    }
+
+    emit script_run_changed(run_id);
+    return run_id;
+}
+
+void ServerController::on_script_result(const lm::transport::ScriptResultMessage& result) {
+    ScriptRun* run = find_run(result.run_id);
+    if (run == nullptr) {
+        // A run this server never issued: a result from before a restart, or
+        // one meant for another server on the same domain. Not ours to record.
+        return;
+    }
+    const bool is_targeted = std::ranges::any_of(run->targets, [&](const RunTarget& target) {
+        return target.host_id == result.host_id;
+    });
+    if (!is_targeted) {
+        return;  // nothing moved, so nothing to tell the view about
+    }
+
+    run->apply_result(result);
+    spdlog::info("script run {}: {} reported {} (exit {}, {} ms)", result.run_id, result.host_id,
+                 lm::core::to_string(result.status), result.exit_code, result.duration_ms);
+    emit script_run_changed(QString::fromStdString(result.run_id));
+}
+
+void ServerController::on_run_deadline(const std::string& run_id) {
+    ScriptRun* run = find_run(run_id);
+    if (run == nullptr) {
+        return;
+    }
+    const std::size_t waiting = run->tally().dispatched;
+    if (waiting == 0) {
+        return;  // every host answered in time; the deadline has nothing to say
+    }
+
+    run->apply_deadline();
+    spdlog::info("script run {}: {} host(s) did not respond within {} s", run_id, waiting,
+                 run->timeout_seconds);
+    emit script_run_changed(QString::fromStdString(run_id));
 }
 
 void ServerController::apply_coalesced(QVector<lm::transport::ResourceSampleMessage> batch) {
