@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #include <fastdds/dds/core/Types.hpp>
@@ -119,6 +120,34 @@ DataReaderQos best_effort_volatile_reader_qos() {
     return qos;
 }
 
+// Reliable, so a command is not dropped in transit -- but VOLATILE, so a
+// client that joins later never receives one. See ScriptCommand in
+// messages.hpp: changing this to TRANSIENT_LOCAL would make a rebooted
+// machine silently re-run whatever it missed while it was down. Both script
+// topics (ScriptCommand and ScriptResult) use this same pair -- a result is
+// an event about one run, exactly as much as the command that triggered it,
+// and a late-joining server has no more business replaying an old result
+// than a late-joining client has replaying an old command.
+DataWriterQos reliable_volatile_writer_qos() {
+    DataWriterQos qos = DATAWRITER_QOS_DEFAULT;
+    qos.reliability().kind = RELIABLE_RELIABILITY_QOS;
+    qos.durability().kind = VOLATILE_DURABILITY_QOS;
+    qos.history().kind = KEEP_LAST_HISTORY_QOS;
+    qos.history().depth = 1;
+    use_dynamic_history_memory(qos.endpoint());
+    return qos;
+}
+
+DataReaderQos reliable_volatile_reader_qos() {
+    DataReaderQos qos = DATAREADER_QOS_DEFAULT;
+    qos.reliability().kind = RELIABLE_RELIABILITY_QOS;
+    qos.durability().kind = VOLATILE_DURABILITY_QOS;
+    qos.history().kind = KEEP_LAST_HISTORY_QOS;
+    qos.history().depth = 1;
+    use_dynamic_history_memory(qos.endpoint());
+    return qos;
+}
+
 /// ClientAnnounce carries Liveliness AUTOMATIC with a lease taken from
 /// DdsConfig. The reader's requested lease is set to the same value as the
 /// writer's offered lease so the two remain RxO-compatible (requested must
@@ -150,11 +179,15 @@ constexpr const char* kAnnounceTopicName = "lm.transport.ClientAnnounce";
 constexpr const char* kResourceTopicName = "lm.transport.ResourceSample";
 constexpr const char* kBundleTopicName = "lm.transport.TemplateBundle";
 constexpr const char* kReportTopicName = "lm.transport.ComplianceReport";
+constexpr const char* kScriptCommandTopicName = "lm.transport.ScriptCommand";
+constexpr const char* kScriptResultTopicName = "lm.transport.ScriptResult";
 
 constexpr const char* kAnnounceTypeName = "lm::transport::ClientAnnounce";
 constexpr const char* kResourceTypeName = "lm::transport::ResourceSampleMessage";
 constexpr const char* kBundleTypeName = "lm::transport::TemplateBundleMessage";
 constexpr const char* kReportTypeName = "lm::transport::ComplianceReportMessage";
+constexpr const char* kScriptCommandTypeName = "lm::transport::ScriptCommand";
+constexpr const char* kScriptResultTypeName = "lm::transport::ScriptResultMessage";
 
 // --- participant / topic construction ------------------------------------
 
@@ -209,6 +242,26 @@ public:
     explicit MatchWriterListener(Owner& owner) : owner_(owner) {}
 
     void on_publication_matched(DataWriter* /*writer*/, const PublicationMatchedStatus& info) override {
+        owner_.handle_match_change(info.current_count_change);
+    }
+
+private:
+    Owner& owner_;
+};
+
+/// Forwards on_subscription_matched into Owner::handle_match_change, with no
+/// on_data_available handling at all. Used for the two script-topic readers,
+/// which are polled from a dedicated thread instead (see
+/// DdsClientTransport::poll_script_commands / DdsServerTransport::
+/// poll_script_results) -- this listener exists solely so those readers still
+/// contribute to the owner's connection-state match count the same way every
+/// other endpoint in this file does.
+template <typename Owner>
+class MatchReaderListener final : public DataReaderListener {
+public:
+    explicit MatchReaderListener(Owner& owner) : owner_(owner) {}
+
+    void on_subscription_matched(DataReader* /*reader*/, const SubscriptionMatchedStatus& info) override {
         owner_.handle_match_change(info.current_count_change);
     }
 
@@ -296,7 +349,9 @@ public:
         : announce_writer_listener_(*this),
           resource_writer_listener_(*this),
           report_writer_listener_(*this),
-          bundle_reader_listener_(*this, &DdsClientTransport::handle_bundle) {
+          bundle_reader_listener_(*this, &DdsClientTransport::handle_bundle),
+          script_result_writer_listener_(*this),
+          script_command_reader_listener_(*this) {
         factory_ = DomainParticipantFactory::get_shared_instance();
         participant_ = create_participant(*factory_, config);
         if (participant_ == nullptr) {
@@ -312,9 +367,14 @@ public:
             make_topic<ComplianceReportMessage, true>(*participant_, kReportTopicName, kReportTypeName);
         bundle_topic_ =
             make_topic<TemplateBundleMessage, false>(*participant_, kBundleTopicName, kBundleTypeName);
+        script_command_topic_ =
+            make_topic<ScriptCommand, true>(*participant_, kScriptCommandTopicName, kScriptCommandTypeName);
+        script_result_topic_ =
+            make_topic<ScriptResultMessage, true>(*participant_, kScriptResultTopicName, kScriptResultTypeName);
 
         if (publisher_ == nullptr || subscriber_ == nullptr || announce_topic_ == nullptr ||
-            resource_topic_ == nullptr || report_topic_ == nullptr || bundle_topic_ == nullptr) {
+            resource_topic_ == nullptr || report_topic_ == nullptr || bundle_topic_ == nullptr ||
+            script_command_topic_ == nullptr || script_result_topic_ == nullptr) {
             (void)participant_->delete_contained_entities();
             (void)factory_->delete_participant(participant_);
             throw std::runtime_error("lm::transport: failed to set up Fast DDS client entities");
@@ -328,13 +388,22 @@ public:
             publisher_->create_datawriter(report_topic_, reliable_transient_local_writer_qos(), &report_writer_listener_);
         bundle_reader_ = subscriber_->create_datareader(bundle_topic_, reliable_transient_local_reader_qos(),
                                                           &bundle_reader_listener_);
+        script_result_writer_ = publisher_->create_datawriter(script_result_topic_, reliable_volatile_writer_qos(),
+                                                                &script_result_writer_listener_);
+        script_command_reader_ = subscriber_->create_datareader(script_command_topic_, reliable_volatile_reader_qos(),
+                                                                  &script_command_reader_listener_);
 
         if (announce_writer_ == nullptr || resource_writer_ == nullptr || report_writer_ == nullptr ||
-            bundle_reader_ == nullptr) {
+            bundle_reader_ == nullptr || script_result_writer_ == nullptr || script_command_reader_ == nullptr) {
             (void)participant_->delete_contained_entities();
             (void)factory_->delete_participant(participant_);
             throw std::runtime_error("lm::transport: failed to create Fast DDS client writers/readers");
         }
+
+        // Started only once every entity above is known-good: the loop below
+        // dereferences script_command_reader_ unconditionally, so it must
+        // never run against a reader that failed to construct.
+        script_command_poll_thread_ = std::thread(&DdsClientTransport::poll_script_commands, this);
     }
 
     DdsClientTransport(const DdsClientTransport&) = delete;
@@ -343,6 +412,13 @@ public:
     DdsClientTransport& operator=(DdsClientTransport&&) = delete;
 
     ~DdsClientTransport() override {
+        // Stop and join the poll thread first: it dereferences
+        // script_command_reader_ on every iteration, so it must not still be
+        // running when delete_contained_entities() below frees that reader.
+        stop_script_poll_.store(true, std::memory_order_release);
+        if (script_command_poll_thread_.joinable()) {
+            script_command_poll_thread_.join();
+        }
         if (participant_ != nullptr) {
             // Deletes the writers/readers/publisher/subscriber/topics first,
             // so none of our listeners (destroyed right after, as members)
@@ -358,10 +434,9 @@ public:
     }
     void publish_report(const ComplianceReportMessage& message) override { (void)report_writer_->write(&message); }
 
-    /// Stub: the ScriptResult writer is wired up in the next task. For now
-    /// this deliberately does nothing rather than half-wire a topic with no
-    /// reader on the other end.
-    void publish_script_result(const ScriptResultMessage&) override {}
+    void publish_script_result(const ScriptResultMessage& message) override {
+        (void)script_result_writer_->write(&message);
+    }
 
     /// Mirrors TransientLocal durability at the application level: a bundle
     /// already received (from before this handler was registered, which can
@@ -378,8 +453,9 @@ public:
         }
     }
 
-    /// Stub: no ScriptCommand reader exists yet, so the handler is stored but
-    /// never invoked. Real wiring is the next task.
+    /// Commands are delivered from poll_script_commands() below, on its own
+    /// thread -- never replayed on registration, unlike on_bundle() above:
+    /// ScriptCommand is Volatile, so there is nothing retained to replay.
     void on_script_command(std::function<void(const ScriptCommand&)> handler) override {
         std::lock_guard<std::mutex> lock(mutex_);
         on_script_command_ = std::move(handler);
@@ -431,6 +507,54 @@ public:
         }
     }
 
+    /// Runs for the lifetime of this transport, on its own thread. Polling
+    /// take_next_sample() directly -- rather than reading inside
+    /// on_data_available, as SimpleReaderListener does for the other three
+    /// subscribed topics -- is deliberate here: a Fast DDS reader listener
+    /// can report a match and then simply never fire, which cost this
+    /// project a day once already (see dds_probe.cpp's Look::run(), which
+    /// hit exactly that). Asking the reader directly sidesteps it.
+    void poll_script_commands() {
+        constexpr auto kPollInterval = std::chrono::milliseconds(20);
+        // Same reasoning as SimpleReaderListener's drain loop: a malformed
+        // sample from a hostile or buggy host must not wedge this thread,
+        // but a run of failures that are not tied to any one sample (a
+        // resource/precondition error) must not spin it at 100% CPU forever
+        // either.
+        constexpr int kMaxConsecutiveFailures = 64;
+        int consecutive_failures = 0;
+        while (!stop_script_poll_.load(std::memory_order_acquire)) {
+            ScriptCommand sample;
+            SampleInfo info;
+            const ReturnCode_t rc = script_command_reader_->take_next_sample(&sample, &info);
+            if (rc == RETCODE_NO_DATA) {
+                consecutive_failures = 0;
+                std::this_thread::sleep_for(kPollInterval);
+                continue;
+            }
+            if (rc != RETCODE_OK) {
+                if (++consecutive_failures >= kMaxConsecutiveFailures) {
+                    log_error("ScriptCommand reader", "too many consecutive failures; pausing briefly");
+                    std::this_thread::sleep_for(kPollInterval);
+                    consecutive_failures = 0;
+                }
+                continue;
+            }
+            consecutive_failures = 0;
+            if (!info.valid_data) {
+                continue;
+            }
+            std::function<void(const ScriptCommand&)> handler;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                handler = on_script_command_;
+            }
+            if (handler) {
+                handler(sample);
+            }
+        }
+    }
+
 private:
     std::shared_ptr<DomainParticipantFactory> factory_;
     DomainParticipant* participant_ = nullptr;
@@ -440,15 +564,27 @@ private:
     Topic* resource_topic_ = nullptr;
     Topic* report_topic_ = nullptr;
     Topic* bundle_topic_ = nullptr;
+    Topic* script_command_topic_ = nullptr;
+    Topic* script_result_topic_ = nullptr;
     DataWriter* announce_writer_ = nullptr;
     DataWriter* resource_writer_ = nullptr;
     DataWriter* report_writer_ = nullptr;
     DataReader* bundle_reader_ = nullptr;
+    DataWriter* script_result_writer_ = nullptr;
+    DataReader* script_command_reader_ = nullptr;
 
     MatchWriterListener<DdsClientTransport> announce_writer_listener_;
     MatchWriterListener<DdsClientTransport> resource_writer_listener_;
     MatchWriterListener<DdsClientTransport> report_writer_listener_;
     SimpleReaderListener<DdsClientTransport, TemplateBundleMessage> bundle_reader_listener_;
+    MatchWriterListener<DdsClientTransport> script_result_writer_listener_;
+    MatchReaderListener<DdsClientTransport> script_command_reader_listener_;
+
+    // Set once the poll thread must stop and joined in the destructor --
+    // see ~DdsClientTransport for why that has to happen before entities are
+    // torn down.
+    std::atomic<bool> stop_script_poll_{false};
+    std::thread script_command_poll_thread_;
 
     std::atomic<int> matched_entities_{0};
     std::atomic<ConnectionState> state_{ConnectionState::Disconnected};
@@ -476,7 +612,9 @@ public:
         : bundle_writer_listener_(*this),
           announce_reader_listener_(*this),
           resource_reader_listener_(*this, &DdsServerTransport::handle_resources),
-          report_reader_listener_(*this, &DdsServerTransport::handle_report) {
+          report_reader_listener_(*this, &DdsServerTransport::handle_report),
+          script_command_writer_listener_(*this),
+          script_result_reader_listener_(*this) {
         factory_ = DomainParticipantFactory::get_shared_instance();
         participant_ = create_participant(*factory_, config);
         if (participant_ == nullptr) {
@@ -492,9 +630,14 @@ public:
             make_topic<ComplianceReportMessage, true>(*participant_, kReportTopicName, kReportTypeName);
         bundle_topic_ =
             make_topic<TemplateBundleMessage, false>(*participant_, kBundleTopicName, kBundleTypeName);
+        script_command_topic_ =
+            make_topic<ScriptCommand, true>(*participant_, kScriptCommandTopicName, kScriptCommandTypeName);
+        script_result_topic_ =
+            make_topic<ScriptResultMessage, true>(*participant_, kScriptResultTopicName, kScriptResultTypeName);
 
         if (publisher_ == nullptr || subscriber_ == nullptr || announce_topic_ == nullptr ||
-            resource_topic_ == nullptr || report_topic_ == nullptr || bundle_topic_ == nullptr) {
+            resource_topic_ == nullptr || report_topic_ == nullptr || bundle_topic_ == nullptr ||
+            script_command_topic_ == nullptr || script_result_topic_ == nullptr) {
             (void)participant_->delete_contained_entities();
             (void)factory_->delete_participant(participant_);
             throw std::runtime_error("lm::transport: failed to set up Fast DDS server entities");
@@ -508,13 +651,22 @@ public:
                                                             &resource_reader_listener_);
         report_reader_ = subscriber_->create_datareader(report_topic_, reliable_transient_local_reader_qos(),
                                                           &report_reader_listener_);
+        script_command_writer_ = publisher_->create_datawriter(script_command_topic_, reliable_volatile_writer_qos(),
+                                                                 &script_command_writer_listener_);
+        script_result_reader_ = subscriber_->create_datareader(script_result_topic_, reliable_volatile_reader_qos(),
+                                                                 &script_result_reader_listener_);
 
         if (bundle_writer_ == nullptr || announce_reader_ == nullptr || resource_reader_ == nullptr ||
-            report_reader_ == nullptr) {
+            report_reader_ == nullptr || script_command_writer_ == nullptr || script_result_reader_ == nullptr) {
             (void)participant_->delete_contained_entities();
             (void)factory_->delete_participant(participant_);
             throw std::runtime_error("lm::transport: failed to create Fast DDS server writers/readers");
         }
+
+        // Started only once every entity above is known-good: the loop below
+        // dereferences script_result_reader_ unconditionally, so it must
+        // never run against a reader that failed to construct.
+        script_result_poll_thread_ = std::thread(&DdsServerTransport::poll_script_results, this);
     }
 
     DdsServerTransport(const DdsServerTransport&) = delete;
@@ -523,6 +675,13 @@ public:
     DdsServerTransport& operator=(DdsServerTransport&&) = delete;
 
     ~DdsServerTransport() override {
+        // Stop and join the poll thread first: it dereferences
+        // script_result_reader_ on every iteration, so it must not still be
+        // running when delete_contained_entities() below frees that reader.
+        stop_script_poll_.store(true, std::memory_order_release);
+        if (script_result_poll_thread_.joinable()) {
+            script_result_poll_thread_.join();
+        }
         if (participant_ != nullptr) {
             (void)participant_->delete_contained_entities();
             (void)factory_->delete_participant(participant_);
@@ -536,8 +695,9 @@ public:
         (void)bundle_writer_->write(&message);
     }
 
-    /// Stub: the ScriptCommand writer is wired up in the next task.
-    void publish_script_command(const ScriptCommand&) override {}
+    void publish_script_command(const ScriptCommand& message) override {
+        (void)script_command_writer_->write(&message);
+    }
 
     void on_announce(std::function<void(const ClientAnnounce&)> handler) override {
         std::lock_guard<std::mutex> lock(handlers_mutex_);
@@ -551,8 +711,8 @@ public:
         std::lock_guard<std::mutex> lock(handlers_mutex_);
         on_report_ = std::move(handler);
     }
-    /// Stub: no ScriptResult reader exists yet, so the handler is stored but
-    /// never invoked. Real wiring is the next task.
+    /// Results are delivered from poll_script_results() below, on its own
+    /// thread.
     void on_script_result(std::function<void(const ScriptResultMessage&)> handler) override {
         std::lock_guard<std::mutex> lock(handlers_mutex_);
         on_script_result_ = std::move(handler);
@@ -646,6 +806,46 @@ public:
         }
     }
 
+    /// Mirrors DdsClientTransport::poll_script_commands -- same reasoning
+    /// (a Fast DDS reader listener can match and still never fire, so this
+    /// is polled from a dedicated thread rather than driven by
+    /// on_data_available), same drain-and-bound-failures shape.
+    void poll_script_results() {
+        constexpr auto kPollInterval = std::chrono::milliseconds(20);
+        constexpr int kMaxConsecutiveFailures = 64;
+        int consecutive_failures = 0;
+        while (!stop_script_poll_.load(std::memory_order_acquire)) {
+            ScriptResultMessage sample;
+            SampleInfo info;
+            const ReturnCode_t rc = script_result_reader_->take_next_sample(&sample, &info);
+            if (rc == RETCODE_NO_DATA) {
+                consecutive_failures = 0;
+                std::this_thread::sleep_for(kPollInterval);
+                continue;
+            }
+            if (rc != RETCODE_OK) {
+                if (++consecutive_failures >= kMaxConsecutiveFailures) {
+                    log_error("ScriptResult reader", "too many consecutive failures; pausing briefly");
+                    std::this_thread::sleep_for(kPollInterval);
+                    consecutive_failures = 0;
+                }
+                continue;
+            }
+            consecutive_failures = 0;
+            if (!info.valid_data) {
+                continue;
+            }
+            std::function<void(const ScriptResultMessage&)> handler;
+            {
+                std::lock_guard<std::mutex> lock(handlers_mutex_);
+                handler = on_script_result_;
+            }
+            if (handler) {
+                handler(sample);
+            }
+        }
+    }
+
 private:
     std::shared_ptr<DomainParticipantFactory> factory_;
     DomainParticipant* participant_ = nullptr;
@@ -655,15 +855,27 @@ private:
     Topic* resource_topic_ = nullptr;
     Topic* report_topic_ = nullptr;
     Topic* bundle_topic_ = nullptr;
+    Topic* script_command_topic_ = nullptr;
+    Topic* script_result_topic_ = nullptr;
     DataWriter* bundle_writer_ = nullptr;
     DataReader* announce_reader_ = nullptr;
     DataReader* resource_reader_ = nullptr;
     DataReader* report_reader_ = nullptr;
+    DataWriter* script_command_writer_ = nullptr;
+    DataReader* script_result_reader_ = nullptr;
 
     MatchWriterListener<DdsServerTransport> bundle_writer_listener_;
     AnnounceReaderListener announce_reader_listener_;
     SimpleReaderListener<DdsServerTransport, ResourceSampleMessage> resource_reader_listener_;
     SimpleReaderListener<DdsServerTransport, ComplianceReportMessage> report_reader_listener_;
+    MatchWriterListener<DdsServerTransport> script_command_writer_listener_;
+    MatchReaderListener<DdsServerTransport> script_result_reader_listener_;
+
+    // Set once the poll thread must stop and joined in the destructor --
+    // see ~DdsServerTransport for why that has to happen before entities are
+    // torn down.
+    std::atomic<bool> stop_script_poll_{false};
+    std::thread script_result_poll_thread_;
 
     std::atomic<int> matched_entities_{0};
     std::atomic<ConnectionState> state_{ConnectionState::Disconnected};

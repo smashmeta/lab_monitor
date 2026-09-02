@@ -7,6 +7,7 @@
 #include <cstring>
 #include <memory>
 #include <thread>
+#include <vector>
 
 #include <fastdds/dds/core/status/PublicationMatchedStatus.hpp>
 #include <fastdds/dds/domain/DomainParticipant.hpp>
@@ -307,4 +308,41 @@ TEST(FastDdsLoopback, MalformedSampleDoesNotWedgeLaterValidSamples) {
     EXPECT_TRUE(wait_for([&] { return received.load() > 0; }))
         << "valid sample never arrived after a malformed one on the same topic -- "
            "the reader appears to wedge on an undecodable payload";
+}
+
+TEST(FastDdsLoopback, AScriptCommandReachesTheClientAndItsResultComesBack) {
+    DdsConfig config;
+    config.domain_id = 71;  // a domain of its own, away from the other tests
+    const auto server = make_dds_server(config);
+    const auto client = make_dds_client(config);
+
+    std::vector<ScriptCommand> commands;
+    client->on_script_command([&](const ScriptCommand& c) { commands.push_back(c); });
+    std::vector<ScriptResultMessage> results;
+    server->on_script_result([&](const ScriptResultMessage& r) { results.push_back(r); });
+
+    ScriptCommand command;
+    command.host_id = "PC-001";
+    command.run_id = "run-1";
+    command.script_body = "exit 0";
+
+    // Published in a loop: these topics are Reliable but discovery still races
+    // a single publish, which is how FastDdsLoopback.ResourceSamplesReachThe
+    // Server was de-flaked.
+    for (int i = 0; i < 20 && commands.empty(); ++i) {
+        server->publish_script_command(command);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ASSERT_FALSE(commands.empty()) << "no command arrived";
+
+    ScriptResultMessage result;
+    result.host_id = "PC-001";
+    result.run_id = "run-1";
+    result.status = lm::core::ScriptStatus::Completed;
+    for (int i = 0; i < 20 && results.empty(); ++i) {
+        client->publish_script_result(result);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ASSERT_FALSE(results.empty()) << "no result came back";
+    EXPECT_EQ(results.front().run_id, "run-1");
 }
