@@ -155,6 +155,9 @@ private:
 [[nodiscard]] core::ScriptOutcome could_not_start(const std::string& reason, DWORD error,
                                                   std::chrono::steady_clock::time_point started) {
     core::ScriptOutcome outcome;
+    // The one field that says a script never ran, as opposed to running and
+    // failing: core::ScriptOutcome::status() reads it ahead of the exit code.
+    outcome.started = false;
     outcome.exit_code = -1;
     outcome.stderr_text =
         "lab_monitor: " + reason + " (Windows error " + std::to_string(error) + ")";
@@ -242,18 +245,25 @@ private:
     return {};
 }
 
-/// The absolute path, not a bare name: this runs scripts, sometimes elevated,
-/// and resolving the shell through PATH is exactly the search a hijack needs.
+/// The absolute path under System32, or empty when it is not there.
+///
+/// Deliberately no fallback to the bare name. Passed as a command line with no
+/// lpApplicationName, a bare name is searched for in the executable's
+/// directory, then the *current directory*, then PATH -- exactly the lookup a
+/// hijack needs, and the one this function exists to prevent. A control with a
+/// silent bypass is weaker than none, because the reader believes it holds. A
+/// machine without powershell.exe genuinely cannot run scripts, and the fleet
+/// should hear that rather than watch the runner quietly start something else.
 [[nodiscard]] std::wstring powershell_path() {
     std::array<wchar_t, MAX_PATH> buffer{};
     const UINT written = GetSystemDirectoryW(buffer.data(), static_cast<UINT>(buffer.size()));
     if (written == 0 || written >= buffer.size()) {
-        return L"powershell.exe";
+        return {};
     }
     std::wstring path(buffer.data(), written);
     path += L"\\WindowsPowerShell\\v1.0\\powershell.exe";
     if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        return L"powershell.exe";
+        return {};
     }
     return path;
 }
@@ -274,6 +284,28 @@ void drain_pipe(HANDLE pipe, std::string& into) {
     }
 }
 
+/// Ends a drain thread that has nothing else left to end it.
+///
+/// Only for a run that could not be put in a job: there, a grandchild holding
+/// the inherited write end keeps the pipe open and TerminateProcess on the
+/// shell does not touch it, so an unbounded join would park the caller's
+/// script thread for as long as that process lived. CancelIoEx cancels only
+/// I/O already pending, so it is repeated against a timed wait rather than
+/// fired once at a reader that might be between two ReadFile calls.
+///
+/// Never on the job path: cancelling there could abort a read that still had
+/// buffered output to hand over, and closing the job already guarantees EOF.
+void cancel_and_join(std::thread& drain, HANDLE pipe) {
+    auto thread_handle = static_cast<HANDLE>(drain.native_handle());
+    for (int attempt = 0; attempt < 50; ++attempt) {
+        CancelIoEx(pipe, nullptr);
+        if (WaitForSingleObject(thread_handle, 100) == WAIT_OBJECT_0) {
+            break;
+        }
+    }
+    drain.join();
+}
+
 class WindowsScriptRunner : public IScriptRunner {
 public:
     core::ScriptOutcome run(const std::string& body, std::chrono::seconds timeout) override;
@@ -282,6 +314,14 @@ public:
 core::ScriptOutcome WindowsScriptRunner::run(const std::string& body,
                                              std::chrono::seconds timeout) {
     const auto started = std::chrono::steady_clock::now();
+
+    // First, because there is no point writing a script for a shell that is
+    // not on this machine.
+    const std::wstring shell = powershell_path();
+    if (shell.empty()) {
+        const DWORD error = GetLastError();
+        return could_not_start("powershell.exe is not present under System32", error, started);
+    }
 
     const TempScriptFile script(write_temp_script(body));
     if (!script.valid()) {
@@ -346,7 +386,7 @@ core::ScriptOutcome WindowsScriptRunner::run(const std::string& body,
     // -NonInteractive is load-bearing: without it a script that prompts sits
     // there until the timeout with nothing in its output to say why, which is
     // the least diagnosable failure this feature can produce.
-    std::wstring command = L"\"" + powershell_path() +
+    std::wstring command = L"\"" + shell +
                            L"\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" +
                            script.path() + L"\"";
 
@@ -410,6 +450,12 @@ core::ScriptOutcome WindowsScriptRunner::run(const std::string& body,
         DWORD code = 0;
         if (GetExitCodeProcess(process.get(), &code) != 0) {
             outcome.exit_code = static_cast<std::int32_t>(code);
+        } else {
+            // The default 0 would read as a clean success for a run whose
+            // result was never actually read. It did start and it did finish,
+            // so this is a failure rather than an Error.
+            outcome.exit_code = -1;
+            note += "lab_monitor: the script's exit code could not be read\n";
         }
     } else {
         outcome.exit_code = -1;
@@ -425,8 +471,18 @@ core::ScriptOutcome WindowsScriptRunner::run(const std::string& body,
     // for as long as that process lived. Nothing outlives its own script.
     job.reset();
 
-    out_drain.join();
-    err_drain.join();
+    if (tree_kill) {
+        out_drain.join();
+        err_drain.join();
+    } else {
+        // Nothing above guarantees these pipes ever close, so the joins have
+        // to be bounded rather than hopeful. This is the one path with no
+        // watchdog behind it, and a hang here parks the client's script thread
+        // permanently -- on the very path whose note says the guarantees are
+        // weaker, which an unbounded join would stop ever being delivered.
+        cancel_and_join(out_drain, out_read.get());
+        cancel_and_join(err_drain, err_read.get());
+    }
 
     outcome.stderr_text.insert(0, note);
     outcome.reported = core::parse_reported_result(outcome.stdout_text);

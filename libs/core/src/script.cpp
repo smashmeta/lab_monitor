@@ -66,6 +66,12 @@ std::optional<ReportedResult> parse_reported_result(std::string_view output) {
 }
 
 ScriptStatus ScriptOutcome::status() const {
+    // Ahead of the exit code, deliberately: a killed run carries a code the
+    // runner picked, and a run that never started carries none at all, so
+    // either would otherwise be reported as a verdict the script reached.
+    if (!started || timed_out) {
+        return ScriptStatus::Error;
+    }
     if (exit_code != 0) {
         return ScriptStatus::Failed;
     }

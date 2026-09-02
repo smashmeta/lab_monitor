@@ -1,6 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <windows.h>
+
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -17,6 +21,42 @@ lm::core::ScriptOutcome run(const std::string& body,
     const auto runner = lm::platform::make_script_runner();
     EXPECT_NE(runner, nullptr);
     return runner->run(body, timeout);
+}
+
+/// Everything this process writes carries its own pid, so a second copy of
+/// this binary running at the same time cannot contaminate what is counted or
+/// which marker file is read.
+std::string pid_suffix() { return std::to_string(GetCurrentProcessId()); }
+
+std::filesystem::path executable_directory() {
+    std::array<wchar_t, MAX_PATH> buffer{};
+    const DWORD written =
+        GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (written == 0) {
+        return {};
+    }
+    return std::filesystem::path(std::wstring(buffer.data(), written)).parent_path();
+}
+
+/// The two places the runner will write its temporary .ps1, counting only the
+/// files this process could have left.
+std::size_t temporary_scripts_left_behind() {
+    const std::string prefix = "lm-script-" + pid_suffix() + "-";
+    std::size_t found = 0;
+    for (const std::filesystem::path& directory :
+         {executable_directory(), std::filesystem::temp_directory_path()}) {
+        if (directory.empty() || !std::filesystem::exists(directory)) {
+            continue;
+        }
+        std::error_code ignored;
+        for (const auto& entry : std::filesystem::directory_iterator(directory, ignored)) {
+            const std::string name = entry.path().filename().string();
+            if (name.starts_with(prefix) && entry.path().extension() == ".ps1") {
+                ++found;
+            }
+        }
+    }
+    return found;
 }
 
 }  // namespace
@@ -65,6 +105,8 @@ TEST(ScriptRunnerWindows, KillsAScriptThatOverrunsItsTimeout) {
 
     EXPECT_TRUE(outcome.timed_out);
     EXPECT_LT(elapsed, 15s) << "the timeout did not actually stop it";
+    EXPECT_EQ(outcome.status(), lm::core::ScriptStatus::Error)
+        << "a killed run reached no verdict of its own";
 }
 
 TEST(ScriptRunnerWindows, DoesNotHangOnAScriptThatAsksForInput) {
@@ -77,8 +119,12 @@ TEST(ScriptRunnerWindows, DoesNotHangOnAScriptThatAsksForInput) {
 }
 
 TEST(ScriptRunnerWindows, CapsRunawayOutput) {
+    // 20,000 lines of 30 characters is ~600 KB against a 64 KB cap, which
+    // overruns it nearly ten times over and fills the pipe many times before
+    // that -- proving the same thing as ten times the lines did, in a second
+    // rather than twenty.
     const lm::core::ScriptOutcome outcome =
-        run("1..200000 | ForEach-Object { Write-Output 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' }\nexit 0\n",
+        run("1..20000 | ForEach-Object { Write-Output 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' }\nexit 0\n",
             60s);
 
     EXPECT_LE(outcome.stdout_text.size(), 70u * 1024u)
@@ -87,14 +133,31 @@ TEST(ScriptRunnerWindows, CapsRunawayOutput) {
         << "truncation must be visible, not silent";
 }
 
+TEST(ScriptRunnerWindows, LeavesNoTemporaryScriptBehind) {
+    // The body has to reach disk because powershell.exe -File takes a path,
+    // so every route out has to take the file with it -- otherwise a machine
+    // accumulates one .ps1 for every script it was ever sent. Checked on the
+    // path that returns normally and on the one that kills the process, since
+    // the second unwinds through a different part of the function.
+    const std::size_t before = temporary_scripts_left_behind();
+
+    run("Write-Output 'done'\nexit 0\n");
+    EXPECT_EQ(temporary_scripts_left_behind(), before) << "after a run that finished";
+
+    run("Start-Sleep -Seconds 30\n", 2s);
+    EXPECT_EQ(temporary_scripts_left_behind(), before) << "after a run that was killed";
+}
+
 TEST(ScriptRunnerWindows, KillsWhatTheScriptStartedToo) {
     // The whole reason for the job object: a script that launched an installer
     // must not leave the installer running once the timeout has "killed" it.
     // Two markers rather than one, so a Start-Process that never ran at all
     // fails this test instead of passing it vacuously.
     const std::filesystem::path directory = std::filesystem::temp_directory_path();
-    const std::filesystem::path started_marker = directory / "lm-script-grandchild-started.txt";
-    const std::filesystem::path survived_marker = directory / "lm-script-grandchild-survived.txt";
+    const std::filesystem::path started_marker =
+        directory / ("lm-script-grandchild-started-" + pid_suffix() + ".txt");
+    const std::filesystem::path survived_marker =
+        directory / ("lm-script-grandchild-survived-" + pid_suffix() + ".txt");
     std::filesystem::remove(started_marker);
     std::filesystem::remove(survived_marker);
 

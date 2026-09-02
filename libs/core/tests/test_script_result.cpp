@@ -85,3 +85,33 @@ TEST(ScriptOutcome, DoesNotLetAReportedSuccessOverrideAFailingExitCode) {
     outcome.reported = ReportedResult{true, "all good"};
     EXPECT_EQ(outcome.status(), ScriptStatus::Failed);
 }
+
+TEST(ScriptOutcome, IsErrorWhenTheRunOverranItsTimeout) {
+    // The runner has to put something in exit_code for a process it killed,
+    // and whatever it picks is its own number rather than the script's. Error
+    // is read first so that number can never be mistaken for a verdict.
+    ScriptOutcome outcome;
+    outcome.timed_out = true;
+    outcome.exit_code = 1;
+    EXPECT_EQ(outcome.status(), ScriptStatus::Error);
+}
+
+TEST(ScriptOutcome, IsErrorWhenTheShellNeverStarted) {
+    // Nothing ran, so there is no exit code to judge. Without this the state
+    // is indistinguishable from a script that ran and exited non-zero, which
+    // sends an operator looking at a script rather than at the machine.
+    ScriptOutcome outcome;
+    outcome.started = false;
+    outcome.exit_code = -1;
+    outcome.stderr_text = "lab_monitor: could not start powershell.exe";
+    EXPECT_EQ(outcome.status(), ScriptStatus::Error);
+}
+
+TEST(ScriptOutcome, StillReadsAReportedFailureOnARunThatStartedAndFinished) {
+    // The Error arm must not swallow the ordinary path: started and not timed
+    // out is every real run there is.
+    ScriptOutcome outcome;
+    outcome.exit_code = 0;
+    outcome.reported = ReportedResult{false, "one of four failed"};
+    EXPECT_EQ(outcome.status(), ScriptStatus::Failed);
+}

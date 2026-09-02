@@ -46,7 +46,19 @@ struct ScriptOutcome {
     /// Set when the process had to be killed rather than exiting on its own.
     bool timed_out = false;
 
-    /// Completed only when the process exited 0 *and* did not report a failure.
+    /// Cleared when the shell never launched at all -- no temporary script,
+    /// no pipes, no process. There is then no exit code to judge and nothing
+    /// the script itself could have said, which is why status() has to know.
+    bool started = true;
+
+    /// Error when the run never happened as a run: the shell would not start,
+    /// or it was killed for overrunning its timeout. Both are read ahead of the
+    /// exit code, because the code in those cases was chosen by the runner
+    /// rather than reached by the script -- reporting it as Failed would state
+    /// a verdict nothing ever gave.
+    ///
+    /// Otherwise Completed only when the process exited 0 *and* did not report
+    /// a failure.
     ///
     /// The asymmetry is deliberate. A reported failure overrides a zero exit
     /// code, because PowerShell readily exits 0 after catching its own error.
