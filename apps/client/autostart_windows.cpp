@@ -15,6 +15,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -161,6 +162,66 @@ private:
     WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), narrowed.data(),
                         needed, nullptr, nullptr);
     return narrowed;
+}
+
+/// The inverse of narrow(), for the option strings main() parsed out of a
+/// narrow argv and this file has to put back on a wide command line.
+[[nodiscard]] std::wstring widen(const std::string& narrowed) {
+    if (narrowed.empty()) {
+        return {};
+    }
+    const int needed = MultiByteToWideChar(CP_UTF8, 0, narrowed.data(),
+                                           static_cast<int>(narrowed.size()), nullptr, 0);
+    if (needed <= 0) {
+        return {};
+    }
+    std::wstring wide(static_cast<std::size_t>(needed), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, narrowed.data(), static_cast<int>(narrowed.size()), wide.data(),
+                        needed);
+    return wide;
+}
+
+/// The command line the registered task will run: this executable's own path
+/// followed by the arguments it should be started with.
+///
+/// Returned in its plain form -- ordinary quotes -- because this is both what
+/// schtasks will store as the task action and what gets logged. Escaping it
+/// for schtasks's own command line is escaped_for_schtasks()'s job, kept
+/// separate so the two are never confused for one another.
+///
+/// An argument containing a space (a --config path under Program Files, say)
+/// is quoted; one without is left bare, so the registered line reads the way
+/// the operator typed it.
+[[nodiscard]] std::wstring task_command_line(const std::wstring& exe,
+                                             const std::vector<std::string>& arguments) {
+    std::wstring line = L"\"" + exe + L"\"";
+    for (const std::string& argument : arguments) {
+        const std::wstring wide = widen(argument);
+        line += L' ';
+        if (wide.find(L' ') == std::wstring::npos) {
+            line += wide;
+        } else {
+            line += L"\"" + wide + L"\"";
+        }
+    }
+    return line;
+}
+
+/// The /TR value sits inside a quoted argument on schtasks.exe's own command
+/// line, so every quote that has to reach the stored task action must arrive
+/// there as \" -- which is how the original single-argument form was written
+/// by hand. Doing it here means task_command_line() never has to think about
+/// it.
+[[nodiscard]] std::wstring escaped_for_schtasks(const std::wstring& line) {
+    std::wstring escaped;
+    escaped.reserve(line.size() + 8);
+    for (const wchar_t character : line) {
+        if (character == L'"') {
+            escaped += L'\\';
+        }
+        escaped += character;
+    }
+    return escaped;
 }
 
 struct ProcessResult {
@@ -312,7 +373,7 @@ struct ProcessResult {
 
 }  // namespace
 
-std::string install_autostart_task() {
+std::string install_autostart_task(const std::vector<std::string>& arguments) {
     const std::wstring schtasks = schtasks_path();
     if (schtasks.empty()) {
         const std::string message = "schtasks.exe is not present under System32";
@@ -326,12 +387,16 @@ std::string install_autostart_task() {
         return message;
     }
 
-    // Logged before the attempt, not just the outcome: the resolved exe path
-    // is the one thing an operator cannot see any other way, and it is what
-    // will run elevated at every logon from here on.
-    spdlog::info(
-        "install-autostart: registering \"{}\" to run \"{}\" --allow-scripts at logon, elevated",
-        narrow(kTaskPath), narrow(exe));
+    // Built from the options this invocation was given, never hard-coded --
+    // see autostart.hpp for why elevation must not smuggle in enrolment, and
+    // why dropping --domain-id makes a machine vanish from the fleet.
+    const std::wstring task_line = task_command_line(exe, arguments);
+
+    // Logged before the attempt, not just the outcome: the exact command
+    // being registered is the one thing an operator cannot see any other way,
+    // and it is what will run elevated at every logon from here on.
+    spdlog::info("install-autostart: registering \"{}\" to run {} at logon, elevated",
+                 narrow(kTaskPath), narrow(task_line));
 
     // /RL HIGHEST is what starts this task elevated at logon with no UAC
     // prompt -- see autostart.hpp. Registering a task at that run level is
@@ -339,8 +404,8 @@ std::string install_autostart_task() {
     // schtasks's own "Access is denied" rather than silently registering an
     // unelevated task.
     const std::wstring command = L"\"" + schtasks + L"\" /Create /F /TN \"" + kTaskPath +
-                                 L"\" /TR \"\\\"" + exe +
-                                 L"\\\" --allow-scripts\" /SC ONLOGON /RL HIGHEST";
+                                 L"\" /TR \"" + escaped_for_schtasks(task_line) +
+                                 L"\" /SC ONLOGON /RL HIGHEST";
 
     const ProcessResult result = run_capturing_output(command);
     if (!result.started || result.exit_code != 0) {

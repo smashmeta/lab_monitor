@@ -45,6 +45,10 @@ struct Options {
     std::string log_level = "info";
     bool install_autostart = false;
     bool uninstall_autostart = false;
+    /// What --install-autostart's logon task should pass this executable.
+    /// Derived from everything above rather than hard-coded -- see
+    /// arguments_for_autostart_task().
+    std::vector<std::string> autostart_arguments;
 };
 
 /// Binds description's option values to `options` without parsing anything,
@@ -67,10 +71,83 @@ boost::program_options::options_description describe_options(Options& options) {
         "trace|debug|info|warn|err|critical|off")(
         "install-autostart", po::bool_switch(&options.install_autostart),
         "register a logon task that starts this executable elevated, with no UAC "
-        "prompt (run from an administrator prompt; see autostart.hpp)")(
+        "prompt. The task runs this executable with the options given here -- "
+        "--domain-id, and --config/--log-level/--offline/--allow-scripts when "
+        "asked for -- so it enrols this machine for remote script execution "
+        "only if --allow-scripts is given on this command line too. Run from an "
+        "administrator prompt; see autostart.hpp")(
         "uninstall-autostart", po::bool_switch(&options.uninstall_autostart),
         "remove the logon task registered by --install-autostart");
     return description;
+}
+
+/// The arguments --install-autostart's logon task should pass this
+/// executable: everything from this invocation that decides how the installed
+/// agent behaves, and nothing else.
+///
+/// The task line used to be hard-coded to the exe path plus --allow-scripts,
+/// which was wrong twice over. It dropped --domain-id, so an operator setting
+/// up a fleet on domain 42 registered a task that joins domain 0 -- and since
+/// the client starts hidden, the only symptom is a machine that never appears
+/// in the fleet, behind a dialog saying it worked. And it enrolled the machine
+/// for remote script execution as a side effect of asking for elevation, which
+/// the design spec keeps deliberately apart (§2: enrolling a machine is a
+/// deliberate, per-machine act; §7: the task is the elevation mechanism).
+///
+/// What is carried, and why:
+///
+///  - `--domain-id` always, and explicitly even at its default. It decides
+///    which bus the agent joins; stating it means a later change of default
+///    cannot silently move a task that is already registered.
+///  - `--config` and `--log-level` when actually given. Both describe the
+///    machine being set up rather than one launch of it, and --config has the
+///    same property as --domain-id: it decides where the agent reads from.
+///  - `--offline` when given. It makes the installed agent report to nobody,
+///    which is almost never what someone installing a logon task wants -- but
+///    the rule here is that the task runs what the command line asked for, and
+///    the success dialog names the registered line so a mistake is visible
+///    rather than silent.
+///  - `--allow-scripts` when given, and only then.
+///
+/// Not carried: --install-autostart and --uninstall-autostart themselves, one
+/// shot administrative actions rather than a way to run the agent.
+std::vector<std::string> arguments_for_autostart_task(
+    const Options& options, const boost::program_options::variables_map& vm) {
+    std::vector<std::string> arguments;
+    arguments.emplace_back("--domain-id");
+    arguments.push_back(std::to_string(options.domain_id));
+    if (!vm["config"].defaulted() && !options.config.empty()) {
+        arguments.emplace_back("--config");
+        arguments.push_back(options.config);
+    }
+    if (!vm["log-level"].defaulted()) {
+        arguments.emplace_back("--log-level");
+        arguments.push_back(options.log_level);
+    }
+    if (options.offline) {
+        arguments.emplace_back("--offline");
+    }
+    if (options.allow_scripts) {
+        arguments.emplace_back("--allow-scripts");
+    }
+    return arguments;
+}
+
+/// The same line, rendered for a human: what the registered task will run.
+/// Shown in the success dialog, because the two things this command silently
+/// got wrong before -- the domain and the enrolment -- are both invisible
+/// otherwise until somebody notices a machine missing from the fleet.
+QString autostart_task_display_line(const std::vector<std::string>& arguments) {
+    QString line = QCoreApplication::applicationFilePath();
+    if (line.contains(QLatin1Char(' '))) {
+        line = QStringLiteral("\"%1\"").arg(line);
+    }
+    for (const std::string& argument : arguments) {
+        const QString wide = QString::fromStdString(argument);
+        line += QLatin1Char(' ');
+        line += wide.contains(QLatin1Char(' ')) ? QStringLiteral("\"%1\"").arg(wide) : wide;
+    }
+    return line;
 }
 
 /// Returns nullopt only for --help, which has already shown its own message
@@ -87,6 +164,8 @@ std::optional<Options> parse_options(int argc, char** argv) {
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, description), vm);
     po::notify(vm);
+
+    options.autostart_arguments = arguments_for_autostart_task(options, vm);
 
     if (vm.count("help") != 0u) {
         std::ostringstream usage;
@@ -241,17 +320,33 @@ int main(int argc, char** argv) {
         }
         if (options.install_autostart || options.uninstall_autostart) {
             const std::string message =
-                options.install_autostart ? install_autostart_task() : uninstall_autostart_task();
+                options.install_autostart
+                    ? install_autostart_task(options.autostart_arguments)
+                    : uninstall_autostart_task();
             if (!message.empty()) {
                 QMessageBox::critical(nullptr, QStringLiteral("lab_monitor_client"),
                                       QString::fromStdString(message));
                 return EXIT_FAILURE;
             }
+            // The registered command line is named here, not just logged.
+            // Elevation and enrolment are separate decisions (see
+            // arguments_for_autostart_task), and which one this invocation
+            // just made is the thing an operator most needs to be able to
+            // read back off the screen.
             QMessageBox::information(
                 nullptr, QStringLiteral("lab_monitor_client"),
                 options.install_autostart
                     ? QStringLiteral("Logon task registered. Sign out and back in for it to "
-                                     "take effect.")
+                                     "take effect.\n\nIt will run:\n%1\n\n%2")
+                          .arg(autostart_task_display_line(options.autostart_arguments),
+                               options.allow_scripts
+                                   ? QStringLiteral(
+                                         "This machine IS enrolled for remote script "
+                                         "execution (--allow-scripts).")
+                                   : QStringLiteral(
+                                         "This machine is NOT enrolled for remote script "
+                                         "execution. Re-run with --allow-scripts as well to "
+                                         "enrol it."))
                     : QStringLiteral("Logon task removed."));
             return EXIT_SUCCESS;
         }

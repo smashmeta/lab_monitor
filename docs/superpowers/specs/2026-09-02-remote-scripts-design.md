@@ -191,6 +191,18 @@ That launches the existing executable elevated and silently. `--install-autostar
 `--uninstall-autostart` create and remove it via `schtasks`, and require elevation
 themselves — a one-time setup step per machine.
 
+**The task runs whatever the installing command line asked for, and nothing more.**
+`--install-autostart` builds the task's command line from the options it was itself
+given — always `--domain-id`, plus `--config`, `--log-level`, `--offline` and
+`--allow-scripts` when they were actually passed — and the success dialog names the line
+it registered. Two things follow, and both are deliberate. A task installed from
+`--domain-id 42` joins domain 42, rather than the domain 0 a bare exe path would join;
+since the client starts hidden, getting that wrong has no symptom other than a machine
+that never appears in the fleet. And **elevation does not enrol**: a machine is enrolled
+for remote script execution only if `--allow-scripts` appears on the command line that
+installs the task, which keeps §2's "enrolling a machine is a deliberate, per-machine
+act" true of the elevation step too.
+
 **The manifest is deliberately *not* changed to `requireAdministrator`.** That would
 prompt on every launch, including the logon launch, which is precisely what this avoids.
 
@@ -211,6 +223,45 @@ changes that; it is the security model.
 The last is what makes the failure legible rather than mysterious: the Scripts tab can
 mark un-elevated hosts in the target list, and warn before running rather than producing
 a column of access-denied afterwards.
+
+### Manual acceptance, on a real machine
+
+Nothing below can be checked from the test suite. The scheduled task is registered by
+`schtasks.exe`, fires at a real logon, under a principal this project has never exercised,
+and every way it can be wrong is silent — the setup command shows a success dialog either
+way, and a client that starts hidden and joins the wrong bus looks exactly like a client
+that was never started. So one person must do this once, per lab image, and write down
+what they saw.
+
+After running `lab_monitor_client.exe --domain-id <n> [--allow-scripts] --install-autostart`
+from an administrator prompt:
+
+1. **The task exists, with the command line you meant.** `schtasks /Query /TN
+   "\LabMonitor\Client" /V /FO LIST`, and read the *Task To Run* line. It must name this
+   executable and carry the same `--domain-id` you just typed. Confirm `--allow-scripts`
+   is present if and only if you intended to enrol this machine — the success dialog says
+   which of the two you just did, and this is where you check it against what you meant.
+2. **It fires, for the user who actually logs in.** Sign out and back in as an ordinary
+   lab user — not the administrator account the setup was run from. Then confirm the agent
+   is running *in that user's session*: the tray icon is there, and Task Manager's Details
+   tab shows `lab_monitor_client.exe` with that user name against it. The task's `/RU`
+   principal is not set explicitly, so this is the step that decides whether the logon
+   trigger fires for the machine's real user or only for the account that registered it.
+   If nothing starts, this is why.
+3. **It is elevated.** In that session, open the client's window: the un-elevated warning
+   banner must be absent. If it is present, the lab user is not a local administrator and
+   the precondition above does not hold on this image — scripts needing administrator will
+   fail, and no configuration changes that.
+4. **It joined the intended bus.** The machine appears in the server's fleet within one
+   liveliness lease (30 s). If it does not, read the domain out of the client's own log
+   (`lab_monitor_client.log`, beside the executable) — the startup banner states it — and
+   compare with the server's.
+5. **Its enrolment is what you decided.** On the server, the machine's row is or is not
+   eligible for a script run, matching step 1. A machine that is enrolled when nobody meant
+   it to be is the failure this whole section exists to catch.
+
+`--uninstall-autostart` followed by step 1 returning "cannot find the file specified"
+closes the loop.
 
 ## 8. Server side
 
