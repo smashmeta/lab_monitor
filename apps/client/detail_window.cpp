@@ -36,7 +36,7 @@ QWidget* make_gauge_row(QWidget* parent, const QString& label_text, QWidget* gau
 
 }  // namespace
 
-DetailWindow::DetailWindow(QString host_id, QWidget* parent)
+DetailWindow::DetailWindow(QString host_id, QWidget* parent, std::optional<bool> elevated)
     : QWidget(parent),
       hostname_label_(new QLabel(host_id, this)),
       connection_pill_(new lm::ui::StatusPill(this)),
@@ -94,7 +94,7 @@ DetailWindow::DetailWindow(QString host_id, QWidget* parent)
                        "prompt to fix this."));
     elevation_banner_->setWordWrap(true);
     elevation_banner_->setStyleSheet(QStringLiteral("color: %1;").arg(lm::ui::Theme::kOffline));
-    elevation_banner_->setVisible(!lm::platform::is_elevated());
+    elevation_banner_->setVisible(!elevated.value_or(lm::platform::is_elevated()));
     details_layout->addWidget(elevation_banner_);
 
     // Resource strip: CPU sparkline, memory bar, one bar per disk volume.

@@ -1,5 +1,6 @@
 #include "lm/core/script.hpp"
 
+#include <cstddef>
 #include <string>
 
 #include <nlohmann/json.hpp>
