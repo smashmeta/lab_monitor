@@ -25,6 +25,7 @@ lm_add_test(lab_monitor_client_tests
   SOURCES ${CMAKE_SOURCE_DIR}/libs/ui/tests/widget_main.cpp
           tests/test_monitor_worker.cpp
           tests/test_detail_window.cpp
+          tests/test_script_execution.cpp
           monitor_worker.cpp
           detail_window.cpp
   # spdlog::spdlog is required here, beyond the brief's original LINK list:

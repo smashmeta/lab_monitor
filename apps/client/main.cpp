@@ -40,6 +40,7 @@ struct Options {
     int domain_id = 0;
     std::string config;
     bool offline = false;
+    bool allow_scripts = false;
     std::string log_level = "info";
 };
 
@@ -57,6 +58,8 @@ boost::program_options::options_description describe_options(Options& options) {
         "path to a client config file (reserved for future use)")(
         "offline", po::bool_switch(&options.offline),
         "use an in-process transport instead of a real DDS domain")(
+        "allow-scripts", po::bool_switch(&options.allow_scripts),
+        "enrol this machine for remote script execution (off unless asked for)")(
         "log-level", po::value(&options.log_level)->default_value("info"),
         "trace|debug|info|warn|err|critical|off");
     return description;
@@ -232,6 +235,30 @@ int main(int argc, char** argv) {
         } else {
             spdlog::info("  dds probe   : skipped (--offline); DDS rules report NotApplicable");
         }
+        // Built before the capabilities are settled, because a platform with no
+        // runner (Linux, today) must not advertise Scripts and then refuse
+        // every command one host at a time -- see make_script_runner().
+        std::unique_ptr<lm::platform::IScriptRunner> script_runner =
+            lm::platform::make_script_runner();
+        const bool scripts_enabled = options.allow_scripts && script_runner != nullptr;
+        if (scripts_enabled) {
+            capabilities.add(lm::core::Capability::Scripts);
+        }
+        // Reported whether or not scripts are enabled: it describes this
+        // process's token, and the server needs it to say in advance which
+        // machines an install would fail on.
+        if (lm::platform::is_elevated()) {
+            capabilities.add(lm::core::Capability::Elevated);
+        }
+        spdlog::info("  scripts     : {}",
+                     !options.allow_scripts
+                         ? "disabled (start with --allow-scripts to enrol)"
+                         : (script_runner == nullptr
+                                ? "requested, but this platform has no script runner"
+                                : (lm::platform::is_elevated()
+                                       ? "enabled, elevated"
+                                       : "enabled, NOT elevated -- installs "
+                                         "and uninstalls will fail")));
         spdlog::info("  capabilities: 0x{:04x}", capabilities.raw());
 
         auto probes = std::make_unique<lm::platform::HostProbes>(host_id, std::move(probe_set),
@@ -252,7 +279,8 @@ int main(int argc, char** argv) {
         // MonitorWorker owns all probing and messaging and lives entirely on
         // this worker thread; the GUI thread never touches probes_ or
         // transport_ directly, only through the queued connections below.
-        auto* worker = new MonitorWorker(std::move(probes), std::move(transport));
+        auto* worker = new MonitorWorker(std::move(probes), std::move(transport),
+                                          std::move(script_runner), scripts_enabled);
         auto* worker_thread = new QThread();
         worker->moveToThread(worker_thread);
 
