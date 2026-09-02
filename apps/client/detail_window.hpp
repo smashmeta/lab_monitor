@@ -76,6 +76,11 @@ private:
     QLabel* hostname_label_;
     lm::ui::StatusPill* connection_pill_;
     QLabel* template_label_;
+    /// Shown only while lm::platform::is_elevated() is false -- see
+    /// apps/client/autostart.hpp. Constant for the process lifetime, same as
+    /// the token it reads, so this is set once in the constructor rather than
+    /// re-checked anywhere.
+    QLabel* elevation_banner_;
 
     lm::ui::Sparkline* cpu_sparkline_;
     lm::ui::MeterBar* memory_bar_;

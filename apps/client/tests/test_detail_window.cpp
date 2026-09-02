@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalSpy>
@@ -8,6 +9,7 @@
 #include <QTimer>
 
 #include "detail_window.hpp"
+#include "lm/platform/probes.hpp"
 
 namespace {
 
@@ -142,4 +144,14 @@ TEST(DetailWindow, AltF4OnlyHidesWhileThereIsATray) {
 
     EXPECT_FALSE(window.isVisible());
     EXPECT_EQ(spy.count(), 0);
+}
+
+TEST(DetailWindowElevation, ShowsTheBannerOnlyWhenNotElevated) {
+    DetailWindow window(QStringLiteral("PC-001"));
+    auto* banner = window.findChild<QLabel*>(QStringLiteral("ElevationBanner"));
+    ASSERT_NE(banner, nullptr) << "no elevation banner";
+
+    // The test process's own elevation decides which way this goes, so assert
+    // the relationship rather than a fixed value.
+    EXPECT_EQ(banner->isVisibleTo(&window), !lm::platform::is_elevated());
 }

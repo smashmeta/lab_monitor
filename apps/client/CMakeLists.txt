@@ -10,6 +10,16 @@ add_executable(lab_monitor_client WIN32
   tray_controller.cpp
   detail_window.cpp)
 
+# autostart is the Scheduled Task mechanism that obtains elevation without a
+# UAC prompt -- see autostart.hpp. It is genuinely Windows-only (schtasks.exe,
+# /RL HIGHEST); the stub keeps the target linking on the Linux leg, which has
+# never been compiled (see CLAUDE.md, Known gaps) but is still configured.
+if(WIN32)
+  target_sources(lab_monitor_client PRIVATE autostart_windows.cpp)
+else()
+  target_sources(lab_monitor_client PRIVATE autostart_stub.cpp)
+endif()
+
 target_include_directories(lab_monitor_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lab_monitor_client PRIVATE
   lm_core lm_platform lm_transport lm_ui

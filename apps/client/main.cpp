@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "autostart.hpp"
 #include "detail_window.hpp"
 #include "lm/core/types.hpp"
 #include "lm/platform/probes.hpp"
@@ -42,6 +43,8 @@ struct Options {
     bool offline = false;
     bool allow_scripts = false;
     std::string log_level = "info";
+    bool install_autostart = false;
+    bool uninstall_autostart = false;
 };
 
 /// Binds description's option values to `options` without parsing anything,
@@ -61,7 +64,12 @@ boost::program_options::options_description describe_options(Options& options) {
         "allow-scripts", po::bool_switch(&options.allow_scripts),
         "enrol this machine for remote script execution (off unless asked for)")(
         "log-level", po::value(&options.log_level)->default_value("info"),
-        "trace|debug|info|warn|err|critical|off");
+        "trace|debug|info|warn|err|critical|off")(
+        "install-autostart", po::bool_switch(&options.install_autostart),
+        "register a logon task that starts this executable elevated, with no UAC "
+        "prompt (run from an administrator prompt; see autostart.hpp)")(
+        "uninstall-autostart", po::bool_switch(&options.uninstall_autostart),
+        "remove the logon task registered by --install-autostart");
     return description;
 }
 
@@ -197,6 +205,28 @@ int main(int argc, char** argv) {
         return EXIT_SUCCESS;
     }
     const Options& options = *parsed;
+
+    // Handled before anything else builds: no logging, no probes, no window.
+    // Both are one-shot administrative actions -- see autostart.hpp -- run
+    // once from a prompt and not part of a normal launch, and installing the
+    // task is itself what needs the administrator prompt, not this process's
+    // own steady-state elevation.
+    if (options.install_autostart || options.uninstall_autostart) {
+        const std::string message =
+            options.install_autostart ? install_autostart_task() : uninstall_autostart_task();
+        if (!message.empty()) {
+            QMessageBox::critical(nullptr, QStringLiteral("lab_monitor_client"),
+                                  QString::fromStdString(message));
+            return EXIT_FAILURE;
+        }
+        QMessageBox::information(
+            nullptr, QStringLiteral("lab_monitor_client"),
+            options.install_autostart
+                ? QStringLiteral("Logon task registered. Sign out and back in for it to "
+                                 "take effect.")
+                : QStringLiteral("Logon task removed."));
+        return EXIT_SUCCESS;
+    }
 
     // Everything from here on can throw: make_dds_client (four
     // std::runtime_error sites, reachable with e.g. a bad --domain-id or no
