@@ -41,9 +41,9 @@ act.
 2. Two DDS topics: `ScriptCommand` (server → client) and `ScriptResult` (client → server).
 3. `IScriptRunner` in `lm_platform`, with a Windows PowerShell implementation and a
    Linux stub.
-4. Server Scripts tab: script picker over a shared folder tree, host selection, run
-   dispatch, live per-host results, output viewing.
-5. Ad-hoc script entry as a second mode of the same tab.
+4. Server Scripts tab, opening on the script list: a picker over a shared folder tree,
+   host selection, run dispatch, live per-host results, output viewing.
+5. Custom script entry, behind a button, with a pre-filled working template.
 6. Persisted run history with operator-driven cleanup.
 7. Elevation detection, a warning when absent, and a Scheduled Task to obtain it.
 
@@ -65,7 +65,7 @@ A **run** is the unit the operator thinks in:
 ```
 Run
   run_id          unique, generated server-side
-  script_name     "Maintenance/Clear-TempFiles.ps1", or "(ad-hoc)"
+  script_name     "Maintenance/Clear-TempFiles.ps1", or "(custom script)"
   script_body     what was actually sent, verbatim
   issued_at, issued_by
   timeout_seconds
@@ -224,14 +224,54 @@ unavailable, and that must never stall the console.
 Selecting a script shows its content read-only, so the operator sees what they are about
 to run on a hundred machines.
 
-If the share is unreachable the tab says so and stays usable for ad-hoc, rather than
+If the share is unreachable the tab says so and stays usable for custom scripts, rather than
 presenting an empty tree that looks like an empty share.
 
-### Ad-hoc mode
+### Custom script mode
 
-A text area, as a second mode of the same tab. Dispatch is identical — the share path is
-simply where a body came from. Runs record `(ad-hoc)` as the script name and keep the
-body verbatim, so history is complete either way.
+**The list is the default view.** A **Custom script…** button switches to a plain editor;
+a **Back to script list** control returns. The list is what an operator wants almost
+every time, and the escape hatch should look like an escape hatch rather than an equal
+half of the tab.
+
+Dispatch is identical — the share is simply where a body came from. Runs record
+`(custom script)` as the name and keep the body verbatim, so history is complete either
+way and a custom run is as auditable as a named one.
+
+**The editor opens pre-filled with a working template**, not an empty box:
+
+```powershell
+# Runs on each selected host as the lab_monitor agent.
+# The exit code decides the outcome: 0 = Completed, anything else = Failed.
+# The LM-RESULT line is optional — it lets you say *why*, in the run view.
+
+function Report($ok, $message) {
+    $payload = @{ ok = $ok; message = $message } | ConvertTo-Json -Compress
+    Write-Output "LM-RESULT: $payload"
+}
+
+try {
+    # --- your work here ---
+    Write-Output "Nothing to do yet."
+
+    Report $true "completed"
+    exit 0
+}
+catch {
+    Report $false $_.Exception.Message
+    exit 1
+}
+```
+
+It runs as-is and does nothing, so pressing Run on an untouched template is safe and
+demonstrates the whole path. This is the only place the result convention is *taught*:
+documentation describing `LM-RESULT` would be read by nobody, whereas a boilerplate that
+already does it correctly gets edited rather than replaced. It uses `ConvertTo-Json`
+rather than a hand-built string because hand-quoting JSON inside PowerShell is a reliable
+source of malformed markers.
+
+A **Reset to template** control restores it, and the editor uses a fixed-width font for
+the same reason the shopping cart's path pane does.
 
 ### Host selection
 
@@ -301,10 +341,13 @@ environment, not logic. Both are kept to a few lines behind an interface.
 
 The tab is the deliverable, but it lands in two pieces that each work:
 
-1. **Dispatch and results** — capabilities, both topics, the runner, ad-hoc mode, the
-   host list, the live run view. Ad-hoc first because it needs no share, so the whole
-   path is exercised end to end before any file browsing exists.
+1. **Dispatch and results** — capabilities, both topics, the runner, custom script mode,
+   the host list, the live run view. The custom editor comes first *as an internal
+   ordering only*: it needs no share, so the whole dispatch path is exercised end to end
+   before any file browsing exists. During this phase the tab opens on the editor.
 2. **The share and history** — the folder tree, script preview, persistence and cleanup.
+   This is where the list becomes the default view and the editor moves behind the
+   **Custom script…** button, which is the shipped arrangement.
 
 Elevation (§7) rides with the first piece, since without it the feature does not do what
 it is for.
