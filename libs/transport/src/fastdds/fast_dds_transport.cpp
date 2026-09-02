@@ -128,8 +128,8 @@ DataReaderQos best_effort_volatile_reader_qos() {
 // pair -- a result is an event about one run, exactly as much as the command
 // that triggered it, and a late-joining server has no more business
 // replaying an old result than a late-joining client has replaying an old
-// command. They do NOT share history depth -- see script_command_writer_qos/
-// script_command_reader_qos below, which override it for ScriptCommand only.
+// command. They do NOT take this history depth -- see the script_command_*
+// and script_result_* overrides below, which both widen it.
 DataWriterQos reliable_volatile_writer_qos() {
     DataWriterQos qos = DATAWRITER_QOS_DEFAULT;
     qos.reliability().kind = RELIABLE_RELIABILITY_QOS;
@@ -150,19 +150,33 @@ DataReaderQos reliable_volatile_reader_qos() {
     return qos;
 }
 
-// ScriptCommand only, at a wider depth than the shared default above.
-// RELIABLE + KEEP_LAST(1) on a topic keyed by host_id keeps only the latest
-// unacknowledged sample *per instance*, so a second command to the same host
-// can evict an earlier one still in flight before a slow/reconnecting reader
-// has taken it. That is reachable in ordinary use -- an operator runs a
-// script, sees it fail, immediately runs a fix -- and it would surface as a
-// run that silently never returns a result: the most confusing symptom this
-// feature can produce, since nothing errors, a result just never comes back.
-// 16 is generous headroom without going to KEEP_ALL, which has no bound and
-// can stall the writer on one slow reader. Do not "tidy" this back to 1 to
-// match reliable_volatile_writer_qos's depth -- it is deliberately different.
-// ScriptResult stays at depth 1: a result is not superseded by a later one
-// the way a command can be.
+// The two script topics only, at a wider depth than the shared default above.
+//
+// KEEP_LAST(n) is a bound on *instance history*, not on how many messages are
+// interesting. Both script topics are keyed by host_id -- not by run_id -- so
+// every sample about one machine is the same instance, and at depth 1 the
+// second one written or received inside a single window evicts the first.
+// Depth is therefore about how many samples one host can be the subject of at
+// once, and the answer on both topics is "more than one".
+//
+// On ScriptCommand that is a second command to a host whose first is still in
+// flight to a slow or reconnecting reader -- an operator runs a script, sees
+// it fail, immediately runs a fix.
+//
+// On ScriptResult it is the mirror image, and just as reachable: a client that
+// is busy refuses each further command immediately
+// (MonitorWorker::on_script_command), so two operator clicks during one long
+// run produce two results microseconds apart, and the server polls
+// take_next_sample every 20 ms. At depth 1 the reader keeps only the second.
+// The dropped run then sits at Dispatched until its deadline and reports "No
+// response" -- which is the one outcome that sends somebody to check whether a
+// machine is alive, about a machine that answered instantly.
+//
+// Both directions produce the same worst symptom: nothing errors, a result
+// just never comes back. 16 is generous headroom without going to KEEP_ALL,
+// which has no bound and can stall the writer on one slow reader. Do not
+// "tidy" either back to reliable_volatile_writer_qos's depth of 1 -- they are
+// deliberately different.
 DataWriterQos script_command_writer_qos() {
     DataWriterQos qos = reliable_volatile_writer_qos();
     qos.history().depth = 16;
@@ -170,6 +184,18 @@ DataWriterQos script_command_writer_qos() {
 }
 
 DataReaderQos script_command_reader_qos() {
+    DataReaderQos qos = reliable_volatile_reader_qos();
+    qos.history().depth = 16;
+    return qos;
+}
+
+DataWriterQos script_result_writer_qos() {
+    DataWriterQos qos = reliable_volatile_writer_qos();
+    qos.history().depth = 16;
+    return qos;
+}
+
+DataReaderQos script_result_reader_qos() {
     DataReaderQos qos = reliable_volatile_reader_qos();
     qos.history().depth = 16;
     return qos;
@@ -415,7 +441,7 @@ public:
             publisher_->create_datawriter(report_topic_, reliable_transient_local_writer_qos(), &report_writer_listener_);
         bundle_reader_ = subscriber_->create_datareader(bundle_topic_, reliable_transient_local_reader_qos(),
                                                           &bundle_reader_listener_);
-        script_result_writer_ = publisher_->create_datawriter(script_result_topic_, reliable_volatile_writer_qos(),
+        script_result_writer_ = publisher_->create_datawriter(script_result_topic_, script_result_writer_qos(),
                                                                 &script_result_writer_listener_);
         script_command_reader_ = subscriber_->create_datareader(script_command_topic_, script_command_reader_qos(),
                                                                   &script_command_reader_listener_);
@@ -696,7 +722,7 @@ public:
                                                           &report_reader_listener_);
         script_command_writer_ = publisher_->create_datawriter(script_command_topic_, script_command_writer_qos(),
                                                                  &script_command_writer_listener_);
-        script_result_reader_ = subscriber_->create_datareader(script_result_topic_, reliable_volatile_reader_qos(),
+        script_result_reader_ = subscriber_->create_datareader(script_result_topic_, script_result_reader_qos(),
                                                                  &script_result_reader_listener_);
 
         if (bundle_writer_ == nullptr || announce_reader_ == nullptr || resource_reader_ == nullptr ||
