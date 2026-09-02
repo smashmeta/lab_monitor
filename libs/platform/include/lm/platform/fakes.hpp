@@ -1,6 +1,8 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -83,6 +85,23 @@ public:
         looks.push_back(key);
         const auto found = topics.find(key);
         return found == topics.end() ? core::DdsTopicSample{} : found->second;
+    }
+};
+
+class FakeScriptRunner : public IScriptRunner {
+public:
+    core::ScriptOutcome next;
+    std::vector<std::string> bodies;
+    /// Blocks until released, for testing that execution does not sit on the
+    /// monitoring thread.
+    std::function<void()> before_returning;
+
+    core::ScriptOutcome run(const std::string& body, std::chrono::seconds) override {
+        bodies.push_back(body);
+        if (before_returning) {
+            before_returning();
+        }
+        return next;
     }
 };
 
