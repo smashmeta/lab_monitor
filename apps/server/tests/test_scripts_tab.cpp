@@ -15,6 +15,7 @@
 #include "fleet_window.hpp"
 #include "lm/transport/in_memory_transport.hpp"
 #include "script_run.hpp"
+#include "scripts_tab.hpp"
 #include "server_controller.hpp"
 
 using namespace lm::core;
@@ -59,8 +60,19 @@ struct Harness {
     }
 };
 
-/// What a machine enrolled for remote execution advertises.
+/// A machine that can run anything asked of it: enrolled, and running as an
+/// account that can elevate. The default for cases that are not about a
+/// capability, so their rows carry no suffix at all.
 Capabilities enrolled() {
+    Capabilities caps;
+    caps.add(Capability::Resources).add(Capability::Scripts).add(Capability::Elevated);
+    return caps;
+}
+
+/// Enrolled, but the agent cannot elevate. Still perfectly able to run a
+/// script that needs no admin, which is why this is a marker and not a
+/// refusal.
+Capabilities enrolled_unelevated() {
     Capabilities caps;
     caps.add(Capability::Resources).add(Capability::Scripts);
     return caps;
@@ -91,9 +103,11 @@ QLabel* label(const Harness& harness, const QString& name) {
     return harness.window->findChild<QLabel*>(name);
 }
 
-/// The host id a row stands for, with any "— why not" suffix stripped.
+/// The host id a row stands for, read from the role the widget stores it in.
+/// Not parsed back out of the text: the text carries a suffix, and the whole
+/// point of the role is that nothing has to know what suffixes exist.
 QString host_id_of(const QListWidgetItem* item) {
-    return item->text().section(QStringLiteral(" — "), 0, 0);
+    return item->data(ScriptsTab::kHostIdRole).toString();
 }
 
 std::vector<QString> checked_hosts(const Harness& harness) {
@@ -230,6 +244,70 @@ TEST(ScriptsTab, ListsAHostThatCannotComplyExplainedAndUnchecked) {
 
     refused->setCheckState(Qt::Checked);
     EXPECT_EQ(checked_hosts(harness).size(), 2) << "the operator may still override";
+}
+
+TEST(ScriptsTab, MarksAHostThatCannotElevateWithoutExcludingIt) {
+    // Marked, not refused. Phase 1 cannot ask for elevation and plenty of
+    // scripts need no admin, so this machine runs them -- the flag is here so
+    // an access-denied is read before the run rather than as a column of
+    // failures afterwards.
+    Harness harness;
+    harness.announce("PC-004", enrolled_unelevated());
+
+    QListWidgetItem* row = row_for(harness, QStringLiteral("PC-004"));
+    ASSERT_NE(row, nullptr);
+    EXPECT_NE(row->text().indexOf(QStringLiteral("not elevated")), -1)
+        << row->text().toStdString();
+
+    button(harness, QStringLiteral("SelectAllButton"))->click();
+    EXPECT_EQ(row_for(harness, QStringLiteral("PC-004"))->checkState(), Qt::Checked)
+        << "a marker is not a refusal: the sweep still takes this host";
+
+    button(harness, QStringLiteral("RunButton"))->click();
+    QApplication::processEvents();
+    ASSERT_EQ(harness.controller->script_runs().size(), 1u);
+    const ScriptRun& run = harness.controller->script_runs().back();
+    ASSERT_EQ(run.targets.size(), 1u);
+    EXPECT_EQ(run.targets.front().state, TargetState::Dispatched)
+        << "and the script really goes out to it";
+}
+
+TEST(ScriptsTab, NamesTheStateOfAHostThatIsNotReporting) {
+    // Expected, never heard from. The row says which of the four ways it is
+    // absent, because Offline, Missing and Unexpected send the reader
+    // somewhere different.
+    Harness harness;
+    harness.controller->add_expected_host("PC-009", "");
+    QApplication::processEvents();
+
+    QListWidgetItem* row = row_for(harness, QStringLiteral("PC-009"));
+    ASSERT_NE(row, nullptr);
+    EXPECT_NE(row->text().indexOf(QStringLiteral("Missing")), -1) << row->text().toStdString();
+    EXPECT_EQ(row->checkState(), Qt::Unchecked);
+
+    button(harness, QStringLiteral("SelectAllButton"))->click();
+    EXPECT_EQ(row_for(harness, QStringLiteral("PC-009"))->checkState(), Qt::Unchecked)
+        << "nothing can be dispatched to it, so the sweep leaves it alone";
+}
+
+TEST(ScriptsTab, RefreshesARowWhenOnlyItsCapabilitiesChange) {
+    // A liveliness drop erases the registry entry; the resource samples still
+    // arriving recreate it with no capabilities, so the host reads Online and
+    // un-enrolled. The next announce restores them at the same Online state --
+    // and until ServerController::reconcile_now() compared capabilities as
+    // well as state, that emitted nothing and this row went on saying "not
+    // enrolled" until some unrelated machine happened to change state.
+    Harness harness;
+    harness.announce("PC-001", not_enrolled());
+    ASSERT_NE(row_for(harness, QStringLiteral("PC-001")), nullptr);
+    ASSERT_NE(row_for(harness, QStringLiteral("PC-001"))->text().indexOf(
+                  QStringLiteral("not enrolled")),
+              -1);
+
+    harness.announce("PC-001", enrolled());
+
+    EXPECT_EQ(row_for(harness, QStringLiteral("PC-001"))->text(), QStringLiteral("PC-001"))
+        << "the row has to follow the capability, not wait for a state change";
 }
 
 TEST(ScriptsTab, SaysHowManyHostsRunWillReach) {

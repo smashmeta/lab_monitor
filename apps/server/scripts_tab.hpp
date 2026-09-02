@@ -29,6 +29,12 @@ class ScriptsTab : public QWidget {
 public:
     explicit ScriptsTab(ServerController* controller, QWidget* parent = nullptr);
 
+    /// The host id a row stands for. Public because the row's *text* also
+    /// carries a suffix saying what to know about that machine, and anything
+    /// reading the list back -- the tests included -- must take the id from
+    /// here rather than parse the suffix off again.
+    static constexpr int kHostIdRole = Qt::UserRole + 1;
+
     /// The starter template, so a test can assert what the editor opens with
     /// without duplicating it.
     [[nodiscard]] static QString starter_template();

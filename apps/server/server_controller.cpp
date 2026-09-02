@@ -526,13 +526,26 @@ void ServerController::reconcile_now() {
         effective_expected_hosts(), registry_.snapshot(), lm::core::Clock::now(), options_);
     model_.apply(view);
 
-    // Only the host -> state mapping, not the whole view: last_seen moves on
-    // every sample, so comparing entries outright would report a change on
-    // every tick of the 1 s timer. reconcile() returns them in a deterministic
-    // order, so equal states really do mean an unchanged fleet.
+    // The host -> state mapping and the capabilities, not the whole view:
+    // last_seen moves on every sample, so comparing entries outright would
+    // report a change on every tick of the 1 s timer. reconcile() returns them
+    // in a deterministic order, so equal entries really do mean an unchanged
+    // fleet.
+    //
+    // Capabilities are in the comparison because they can move while the state
+    // does not, and a view that missed that would show the wrong thing
+    // indefinitely rather than briefly. mark_lost() erases a client outright on
+    // a liveliness drop, and the resource samples still arriving recreate it
+    // through touch(), which knows nothing about capabilities -- so the host
+    // reads Online with none. The next announce restores them at the same
+    // Online state, and without this term nothing is emitted: the Scripts tab
+    // would go on saying "not enrolled", and the fleet's adapter column "-",
+    // until some unrelated machine happened to change state. Capabilities do
+    // not churn, so this cannot reintroduce per-tick signalling.
     const bool states_changed = !std::ranges::equal(
         fleet_.entries, view.entries, [](const lm::core::FleetEntry& lhs, const lm::core::FleetEntry& rhs) {
-            return lhs.host_id == rhs.host_id && lhs.state == rhs.state;
+            return lhs.host_id == rhs.host_id && lhs.state == rhs.state &&
+                   lhs.caps.raw() == rhs.caps.raw();
         });
 
     if (states_changed) {

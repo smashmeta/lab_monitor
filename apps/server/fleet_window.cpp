@@ -430,6 +430,11 @@ void FleetWindow::build_templates_tab() {
     auto* template_buttons = new QHBoxLayout();
     auto* add_template_button = new QPushButton(QStringLiteral("Add Template"), left);
     remove_template_button_ = new QPushButton(QStringLiteral("Remove Template"), left);
+    add_template_button->setObjectName(QStringLiteral("AddTemplateButton"));
+    // Named for the same reason TemplateList is: the window now holds a dozen
+    // buttons across four tabs, and finding one by its label is a lookup that
+    // silently returns the wrong widget the day two labels rhyme.
+    remove_template_button_->setObjectName(QStringLiteral("RemoveTemplateButton"));
     template_buttons->addWidget(add_template_button);
     template_buttons->addWidget(remove_template_button_);
     left_layout->addLayout(template_buttons);

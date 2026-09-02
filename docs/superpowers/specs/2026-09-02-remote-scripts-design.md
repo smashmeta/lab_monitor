@@ -275,10 +275,12 @@ the same reason the shopping cart's path pane does.
 
 ### Host selection
 
-A checkable list of the fleet with **Select all** and **Clear**, defaulting to whatever
-the Fleet tab has selected. Hosts that cannot comply are shown as such — not enrolled,
-not elevated, not `Online` — and are unchecked by default, though the operator may
-override.
+A checkable list of the fleet with **Select all** and **Clear**. **The list starts
+empty**: targets for this tab are always chosen in the tab that runs them, because a
+target list inherited from a selection made elsewhere, for some other purpose, is a blast
+radius nobody consciously agreed to. Hosts that cannot comply are shown as such — not
+enrolled, not elevated, not `Online` — and are unchecked by default, though the operator
+may override.
 
 The number of selected hosts is displayed next to Run. The blast radius should be
 readable without counting checkboxes.
