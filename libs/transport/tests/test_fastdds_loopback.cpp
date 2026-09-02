@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -311,15 +312,31 @@ TEST(FastDdsLoopback, MalformedSampleDoesNotWedgeLaterValidSamples) {
 }
 
 TEST(FastDdsLoopback, AScriptCommandReachesTheClientAndItsResultComesBack) {
+    // Declared before server/client (and so, by reverse-declaration-order
+    // destruction, outlive them): both are captured by reference in handlers
+    // that run on the transports' own poll threads. Either publish loop below
+    // stops at the *first* arrival while duplicates already in flight can
+    // still be delivered afterwards -- including during server/client's own
+    // destruction -- so the vectors (and the mutex guarding them, alongside
+    // every other test in this file's use of std::atomic for the same
+    // cross-thread-read reason) must not be destroyed first.
+    std::mutex mutex;
+    std::vector<ScriptCommand> commands;
+    std::vector<ScriptResultMessage> results;
+
     DdsConfig config;
     config.domain_id = 71;  // a domain of its own, away from the other tests
     const auto server = make_dds_server(config);
     const auto client = make_dds_client(config);
 
-    std::vector<ScriptCommand> commands;
-    client->on_script_command([&](const ScriptCommand& c) { commands.push_back(c); });
-    std::vector<ScriptResultMessage> results;
-    server->on_script_result([&](const ScriptResultMessage& r) { results.push_back(r); });
+    client->on_script_command([&](const ScriptCommand& c) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        commands.push_back(c);
+    });
+    server->on_script_result([&](const ScriptResultMessage& r) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        results.push_back(r);
+    });
 
     ScriptCommand command;
     command.host_id = "PC-001";
@@ -329,20 +346,32 @@ TEST(FastDdsLoopback, AScriptCommandReachesTheClientAndItsResultComesBack) {
     // Published in a loop: these topics are Reliable but discovery still races
     // a single publish, which is how FastDdsLoopback.ResourceSamplesReachThe
     // Server was de-flaked.
-    for (int i = 0; i < 20 && commands.empty(); ++i) {
+    for (int i = 0; i < 20; ++i) {
         server->publish_script_command(command);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!commands.empty()) {
+            break;
+        }
     }
-    ASSERT_FALSE(commands.empty()) << "no command arrived";
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        ASSERT_FALSE(commands.empty()) << "no command arrived";
+    }
 
     ScriptResultMessage result;
     result.host_id = "PC-001";
     result.run_id = "run-1";
     result.status = lm::core::ScriptStatus::Completed;
-    for (int i = 0; i < 20 && results.empty(); ++i) {
+    for (int i = 0; i < 20; ++i) {
         client->publish_script_result(result);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!results.empty()) {
+            break;
+        }
     }
+    const std::lock_guard<std::mutex> lock(mutex);
     ASSERT_FALSE(results.empty()) << "no result came back";
     EXPECT_EQ(results.front().run_id, "run-1");
 }

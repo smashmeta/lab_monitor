@@ -124,10 +124,12 @@ DataReaderQos best_effort_volatile_reader_qos() {
 // client that joins later never receives one. See ScriptCommand in
 // messages.hpp: changing this to TRANSIENT_LOCAL would make a rebooted
 // machine silently re-run whatever it missed while it was down. Both script
-// topics (ScriptCommand and ScriptResult) use this same pair -- a result is
-// an event about one run, exactly as much as the command that triggered it,
-// and a late-joining server has no more business replaying an old result
-// than a late-joining client has replaying an old command.
+// topics (ScriptCommand and ScriptResult) share this reliability/durability
+// pair -- a result is an event about one run, exactly as much as the command
+// that triggered it, and a late-joining server has no more business
+// replaying an old result than a late-joining client has replaying an old
+// command. They do NOT share history depth -- see script_command_writer_qos/
+// script_command_reader_qos below, which override it for ScriptCommand only.
 DataWriterQos reliable_volatile_writer_qos() {
     DataWriterQos qos = DATAWRITER_QOS_DEFAULT;
     qos.reliability().kind = RELIABLE_RELIABILITY_QOS;
@@ -145,6 +147,31 @@ DataReaderQos reliable_volatile_reader_qos() {
     qos.history().kind = KEEP_LAST_HISTORY_QOS;
     qos.history().depth = 1;
     use_dynamic_history_memory(qos.endpoint());
+    return qos;
+}
+
+// ScriptCommand only, at a wider depth than the shared default above.
+// RELIABLE + KEEP_LAST(1) on a topic keyed by host_id keeps only the latest
+// unacknowledged sample *per instance*, so a second command to the same host
+// can evict an earlier one still in flight before a slow/reconnecting reader
+// has taken it. That is reachable in ordinary use -- an operator runs a
+// script, sees it fail, immediately runs a fix -- and it would surface as a
+// run that silently never returns a result: the most confusing symptom this
+// feature can produce, since nothing errors, a result just never comes back.
+// 16 is generous headroom without going to KEEP_ALL, which has no bound and
+// can stall the writer on one slow reader. Do not "tidy" this back to 1 to
+// match reliable_volatile_writer_qos's depth -- it is deliberately different.
+// ScriptResult stays at depth 1: a result is not superseded by a later one
+// the way a command can be.
+DataWriterQos script_command_writer_qos() {
+    DataWriterQos qos = reliable_volatile_writer_qos();
+    qos.history().depth = 16;
+    return qos;
+}
+
+DataReaderQos script_command_reader_qos() {
+    DataReaderQos qos = reliable_volatile_reader_qos();
+    qos.history().depth = 16;
     return qos;
 }
 
@@ -390,7 +417,7 @@ public:
                                                           &bundle_reader_listener_);
         script_result_writer_ = publisher_->create_datawriter(script_result_topic_, reliable_volatile_writer_qos(),
                                                                 &script_result_writer_listener_);
-        script_command_reader_ = subscriber_->create_datareader(script_command_topic_, reliable_volatile_reader_qos(),
+        script_command_reader_ = subscriber_->create_datareader(script_command_topic_, script_command_reader_qos(),
                                                                   &script_command_reader_listener_);
 
         if (announce_writer_ == nullptr || resource_writer_ == nullptr || report_writer_ == nullptr ||
@@ -402,8 +429,19 @@ public:
 
         // Started only once every entity above is known-good: the loop below
         // dereferences script_command_reader_ unconditionally, so it must
-        // never run against a reader that failed to construct.
-        script_command_poll_thread_ = std::thread(&DdsClientTransport::poll_script_commands, this);
+        // never run against a reader that failed to construct. std::thread's
+        // constructor can itself throw (e.g. std::system_error on thread
+        // exhaustion) -- unlike every failure above, that throw would not run
+        // this destructor (a constructor exception never does), so it needs
+        // the same manual cleanup the nullptr checks above already do, or the
+        // participant and everything it owns leaks.
+        try {
+            script_command_poll_thread_ = std::thread(&DdsClientTransport::poll_script_commands, this);
+        } catch (...) {
+            (void)participant_->delete_contained_entities();
+            (void)factory_->delete_participant(participant_);
+            throw;
+        }
     }
 
     DdsClientTransport(const DdsClientTransport&) = delete;
@@ -535,9 +573,14 @@ public:
             if (rc != RETCODE_OK) {
                 if (++consecutive_failures >= kMaxConsecutiveFailures) {
                     log_error("ScriptCommand reader", "too many consecutive failures; pausing briefly");
-                    std::this_thread::sleep_for(kPollInterval);
                     consecutive_failures = 0;
                 }
+                // Slept on every failure, not only once the cap is hit --
+                // otherwise a persistent (non-sample-specific) reader error
+                // free-spins take_next_sample() up to kMaxConsecutiveFailures
+                // times back to back before the first pause, the same 100%-
+                // CPU risk the cap exists to prevent.
+                std::this_thread::sleep_for(kPollInterval);
                 continue;
             }
             consecutive_failures = 0;
@@ -651,7 +694,7 @@ public:
                                                             &resource_reader_listener_);
         report_reader_ = subscriber_->create_datareader(report_topic_, reliable_transient_local_reader_qos(),
                                                           &report_reader_listener_);
-        script_command_writer_ = publisher_->create_datawriter(script_command_topic_, reliable_volatile_writer_qos(),
+        script_command_writer_ = publisher_->create_datawriter(script_command_topic_, script_command_writer_qos(),
                                                                  &script_command_writer_listener_);
         script_result_reader_ = subscriber_->create_datareader(script_result_topic_, reliable_volatile_reader_qos(),
                                                                  &script_result_reader_listener_);
@@ -665,8 +708,16 @@ public:
 
         // Started only once every entity above is known-good: the loop below
         // dereferences script_result_reader_ unconditionally, so it must
-        // never run against a reader that failed to construct.
-        script_result_poll_thread_ = std::thread(&DdsServerTransport::poll_script_results, this);
+        // never run against a reader that failed to construct. See the
+        // matching try/catch in DdsClientTransport's constructor for why
+        // std::thread's own possible throw needs this manual cleanup too.
+        try {
+            script_result_poll_thread_ = std::thread(&DdsServerTransport::poll_script_results, this);
+        } catch (...) {
+            (void)participant_->delete_contained_entities();
+            (void)factory_->delete_participant(participant_);
+            throw;
+        }
     }
 
     DdsServerTransport(const DdsServerTransport&) = delete;
@@ -826,9 +877,12 @@ public:
             if (rc != RETCODE_OK) {
                 if (++consecutive_failures >= kMaxConsecutiveFailures) {
                     log_error("ScriptResult reader", "too many consecutive failures; pausing briefly");
-                    std::this_thread::sleep_for(kPollInterval);
                     consecutive_failures = 0;
                 }
+                // See the identical comment in DdsClientTransport::
+                // poll_script_commands: sleep on every failure, not only at
+                // the cap.
+                std::this_thread::sleep_for(kPollInterval);
                 continue;
             }
             consecutive_failures = 0;
