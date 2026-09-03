@@ -352,6 +352,15 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
     script_tree_->setHeaderHidden(true);
     library_page_layout_->addWidget(script_tree_, 1);
 
+    preview_ = new QPlainTextEdit(library_page);
+    preview_->setObjectName(QStringLiteral("ScriptPreview"));
+    preview_->setReadOnly(true);  // this is the share's content, not ours
+    preview_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    library_page_layout_->addWidget(preview_, 1);
+
+    connect(script_tree_, &QTreeWidget::currentItemChanged, this,
+            &ScriptsTab::on_script_selection_changed);
+
     auto* to_custom = new QPushButton(QStringLiteral("Custom script…"), library_page);
     to_custom->setObjectName(QStringLiteral("CustomScriptButton"));
     library_page_layout_->addWidget(to_custom);
@@ -387,6 +396,10 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
 
     connect(to_custom, &QPushButton::clicked, this, [this] { mode_stack_->setCurrentIndex(1); });
     connect(back, &QPushButton::clicked, this, [this] { mode_stack_->setCurrentIndex(0); });
+    // Run needs a body, and which page supplies one depends on which page is
+    // showing -- so switching pages must re-evaluate Run's enabled state.
+    connect(mode_stack_, &QStackedWidget::currentChanged, this,
+            [this](int) { update_target_count(); });
 
     // editingFinished rather than textChanged: re-reading a share on every
     // keystroke would hit the network for each character of a UNC path.
@@ -602,9 +615,13 @@ std::vector<std::string> ScriptsTab::checked_hosts() const {
 
 void ScriptsTab::update_target_count() {
     const auto count = checked_hosts().size();
-    // Run with nothing targeted is a no-op that reads as a failure. The button
-    // says so by being unavailable rather than by doing nothing.
-    run_button_->setEnabled(count > 0);
+    // Run with nothing targeted, or nothing to run, is a no-op that reads as a
+    // failure. The button says so by being unavailable rather than by doing
+    // nothing. The editor page always has a body (the starter template, or
+    // whatever replaced it); the library page has one only once a script row
+    // is selected.
+    const bool has_body = mode_stack_->currentIndex() == 1 || selected_script_.has_value();
+    run_button_->setEnabled(count > 0 && has_body);
     if (count == 0) {
         target_count_label_->setText(QStringLiteral("No hosts selected"));
     } else if (count == 1) {
@@ -717,6 +734,35 @@ void ScriptsTab::update_run_output() {
     if (run_output_->toPlainText() != text) {
         run_output_->setPlainText(text);
     }
+}
+
+void ScriptsTab::on_script_selection_changed() {
+    selected_script_.reset();
+    previewed_body_.clear();
+    preview_->clear();
+
+    QTreeWidgetItem* row = script_tree_->currentItem();
+    // A folder row carries no index: it is a category, and has nothing to
+    // show or run.
+    if (row != nullptr && row->data(0, kScriptIndexRole).isValid()) {
+        const int index = row->data(0, kScriptIndexRole).toInt();
+        if (index >= 0 && index < static_cast<int>(scripts_.size())) {
+            selected_script_ = scripts_[static_cast<std::size_t>(index)];
+            const auto body = read_script_body(selected_script_->absolute_path);
+            if (body.has_value()) {
+                previewed_body_ = *body;
+                preview_->setPlainText(previewed_body_);
+            } else {
+                // Named, not silent: a script that cannot be read is a thing
+                // to fix on the share, and an empty pane would look like an
+                // empty script that would happily "run".
+                selected_script_.reset();
+                preview_->setPlainText(
+                    QStringLiteral("This script could not be read from the share."));
+            }
+        }
+    }
+    update_target_count();  // Run's enabled state depends on having a script too
 }
 
 void ScriptsTab::reload_library() {

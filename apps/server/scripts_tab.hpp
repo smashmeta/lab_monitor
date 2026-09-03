@@ -3,6 +3,7 @@
 #include <QString>
 #include <QWidget>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -68,6 +69,11 @@ private slots:
     /// server has issued, and a run nobody is looking at must not repaint.
     void on_script_run_changed(QString run_id);
 
+    /// Repaints the preview from whatever the tree now has selected, or clears
+    /// it -- a folder row and no row both mean "nothing to show". Also
+    /// re-evaluates Run's enabled state, since library mode requires a script.
+    void on_script_selection_changed();
+
 private:
     /// Re-reads the share root from the controller and repaints the tree.
     /// Called on construction, on Refresh, and whenever the controller's root
@@ -108,6 +114,15 @@ private:
     /// scratch by every reload_library(), in the same depth-first order the
     /// tree is built in, which is what makes the index and the row agree.
     std::vector<LibraryScript> scripts_;
+    /// Read-only preview of whatever script is selected in script_tree_.
+    QPlainTextEdit* preview_;
+    /// The script backing the preview, or nullopt when nothing selected (or
+    /// unreadable) leaves nothing to run. Task 6 re-reads the file at Run and
+    /// compares it against previewed_body_ below.
+    std::optional<LibraryScript> selected_script_;
+    /// The body currently shown in preview_. Empty whenever selected_script_
+    /// is empty.
+    QString previewed_body_;
 
     QPlainTextEdit* editor_;
     QListWidget* host_list_;

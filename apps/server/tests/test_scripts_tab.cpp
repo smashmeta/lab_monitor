@@ -167,8 +167,25 @@ void check_hosts(const Harness& harness, const std::vector<std::string>& wanted)
 /// Clicks Run and hands back the id of the run it created. Taken from the
 /// controller rather than read off the view, so a test that then asserts about
 /// the view is not checking the view against itself.
+///
+/// Switches to the editor first: Run now requires a script as well as a
+/// target, and every case here that reaches this helper is about dispatch or
+/// the run view, not about where the body came from -- so it starts a run
+/// from the editor, same as it always ran one.
 QString press_run(const Harness& harness) {
-    button(harness, QStringLiteral("RunButton"))->click();
+    button(harness, QStringLiteral("CustomScriptButton"))->click();
+    QPushButton* run_button = button(harness, QStringLiteral("RunButton"));
+    // Once Run can be disabled, a click that does nothing makes the
+    // script_runs().back() below read past the end of an empty vector --
+    // undefined behaviour, and a crash instead of a readable failure. Wrapped
+    // in an immediately-invoked lambda because ASSERT_TRUE expands to a bare
+    // `return`, which needs a void-returning scope and press_run() returns
+    // QString.
+    [&] { ASSERT_TRUE(run_button->isEnabled()); }();
+    if (::testing::Test::HasFatalFailure()) {
+        return {};
+    }
+    run_button->click();
     QApplication::processEvents();
     EXPECT_FALSE(harness.controller->script_runs().empty());
     return QString::fromStdString(harness.controller->script_runs().back().run_id);
@@ -269,8 +286,14 @@ TEST(ScriptsTab, SelectAllAndClearMoveEveryCheckbox) {
 TEST(ScriptsTab, DisablesRunUntilAHostIsSelected) {
     // Run with nothing targeted is a no-op that looks like a failure. The
     // button says so by being unavailable rather than by doing nothing.
+    //
+    // Switches to the editor first, which always has a body: Run can now also
+    // be disabled for having no script selected in library mode, and without
+    // this the test would still pass on a build that regressed *this* rule --
+    // green for the wrong reason, which is worse than not testing it.
     Harness harness;
     harness.announce("PC-001", enrolled());
+    button(harness, QStringLiteral("CustomScriptButton"))->click();
 
     EXPECT_FALSE(button(harness, QStringLiteral("RunButton"))->isEnabled());
 
@@ -293,6 +316,7 @@ TEST(ScriptsTab, StartsARunWithTheEditorsBodyAndTheCheckedHosts) {
     Harness harness;
     harness.announce("PC-001", enrolled());
     harness.announce("PC-002", enrolled());
+    button(harness, QStringLiteral("CustomScriptButton"))->click();
     scripts_editor(harness)->setPlainText(QStringLiteral("Write-Output 'hi'\nexit 0\n"));
     check_hosts(harness, {"PC-002"});
 
@@ -345,6 +369,7 @@ TEST(ScriptsTab, MarksAHostThatCannotElevateWithoutExcludingIt) {
     // failures afterwards.
     Harness harness;
     harness.announce("PC-004", enrolled_unelevated());
+    button(harness, QStringLiteral("CustomScriptButton"))->click();
 
     QListWidgetItem* row = row_for(harness, QStringLiteral("PC-004"));
     ASSERT_NE(row, nullptr);
@@ -888,4 +913,75 @@ TEST(ScriptsTab, StaysUsableForCustomScriptsWhenTheShareIsUnreachable) {
     button(harness, QStringLiteral("CustomScriptButton"))->click();
     ASSERT_NE(scripts_editor(harness), nullptr);
     EXPECT_TRUE(button(harness, QStringLiteral("CustomScriptButton"))->isEnabled());
+}
+
+TEST(ScriptsTab, ShowsTheContentOfTheSelectedScript) {
+    // The operator is about to run this on a hundred machines. Seeing it first
+    // is the entire reason the preview exists (spec section 8).
+    QTemporaryDir share;
+    ASSERT_TRUE(share.isValid());
+    write_script(share, QStringLiteral("Maintenance/clear-temp.ps1"),
+                 QStringLiteral("Remove-Item C:\\Temp\\* -Recurse\nexit 0\n"));
+
+    Harness harness;
+    harness.controller->set_script_share_root(share.path());
+    QApplication::processEvents();
+
+    QTreeWidget* tree = script_tree(harness);
+    QTreeWidgetItem* row = tree_row(tree, QStringLiteral("clear-temp.ps1"));
+    ASSERT_NE(row, nullptr);
+    tree->setCurrentItem(row);
+    QApplication::processEvents();
+
+    auto* preview = harness.window->findChild<QPlainTextEdit*>(QStringLiteral("ScriptPreview"));
+    ASSERT_NE(preview, nullptr);
+    EXPECT_NE(preview->toPlainText().indexOf(QStringLiteral("Remove-Item")), -1)
+        << preview->toPlainText().toStdString();
+    EXPECT_TRUE(preview->isReadOnly()) << "editing here would be editing the share";
+}
+
+TEST(ScriptsTab, ClearsThePreviewWhenAFolderIsSelected) {
+    // A folder is a category and has nothing to run. Leaving the last script's
+    // body on screen would make it look like the folder's own content.
+    QTemporaryDir share;
+    ASSERT_TRUE(share.isValid());
+    write_script(share, QStringLiteral("Maintenance/clear-temp.ps1"),
+                 QStringLiteral("Remove-Item C:\\Temp\\*\n"));
+
+    Harness harness;
+    harness.controller->set_script_share_root(share.path());
+    QApplication::processEvents();
+
+    QTreeWidget* tree = script_tree(harness);
+    tree->setCurrentItem(tree_row(tree, QStringLiteral("clear-temp.ps1")));
+    QApplication::processEvents();
+    tree->setCurrentItem(tree_row(tree, QStringLiteral("Maintenance")));
+    QApplication::processEvents();
+
+    auto* preview = harness.window->findChild<QPlainTextEdit*>(QStringLiteral("ScriptPreview"));
+    ASSERT_NE(preview, nullptr);
+    EXPECT_TRUE(preview->toPlainText().isEmpty());
+}
+
+TEST(ScriptsTab, DisablesRunUntilAScriptIsSelected) {
+    // Run with nothing chosen is a no-op that looks like a failure -- the same
+    // reasoning as Run with no hosts ticked.
+    QTemporaryDir share;
+    ASSERT_TRUE(share.isValid());
+    write_script(share, QStringLiteral("a.ps1"), QStringLiteral("exit 0"));
+
+    Harness harness;
+    harness.controller->set_script_share_root(share.path());
+    harness.announce("PC-001", enrolled());
+    check_hosts(harness, {"PC-001"});
+    QApplication::processEvents();
+
+    EXPECT_FALSE(button(harness, QStringLiteral("RunButton"))->isEnabled())
+        << "hosts are chosen but no script is";
+
+    QTreeWidget* tree = script_tree(harness);
+    tree->setCurrentItem(tree_row(tree, QStringLiteral("a.ps1")));
+    QApplication::processEvents();
+
+    EXPECT_TRUE(button(harness, QStringLiteral("RunButton"))->isEnabled());
 }
