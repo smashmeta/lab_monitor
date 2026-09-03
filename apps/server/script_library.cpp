@@ -21,12 +21,19 @@ void read_into(LibraryFolder& folder, const QDir& dir, const QString& prefix, in
         return;
     }
 
-    // NoSymLinks for the same reason as the depth cap: a junction on a share
-    // can point anywhere, including back up this walk.
+    // NoSymLinks excludes genuine symlinks, but on Windows an NTFS junction is
+    // a different thing: QFileInfo::isSymLink() is false for one and
+    // isJunction() true, and entryInfoList(NoSymLinks) still lists it. A
+    // junction can point anywhere, including back up this walk, so it is
+    // skipped explicitly below. The depth cap is the backstop for anything
+    // neither catches.
     const QFileInfoList entries = dir.entryInfoList(
         QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Name);
 
     for (const QFileInfo& entry : entries) {
+        if (entry.isSymLink() || entry.isJunction()) {
+            continue;
+        }
         const QString relative =
             prefix.isEmpty() ? entry.fileName() : prefix + QStringLiteral("/") + entry.fileName();
         if (entry.isDir()) {

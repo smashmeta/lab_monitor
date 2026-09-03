@@ -93,8 +93,17 @@ TEST(ScriptLibrary, AnUnreachableRootSaysSoRatherThanReadingEmpty) {
     // An empty tree and an unreachable share look identical on screen, and the
     // difference is the whole of what an operator needs: one means "nobody has
     // put scripts here", the other "you are not seeing the scripts".
+    //
+    // Deliberately a local path rather than a bogus UNC one: a nonexistent host
+    // name sends this through SMB name resolution, which costs on the order of
+    // a second and varies with the machine's resolver and firewall policy --
+    // slow and a latent flake. A path under a real QTemporaryDir that was never
+    // created exercises the identical !dir.exists() branch this function
+    // actually takes, in under a millisecond.
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
     const ScriptLibrary library =
-        read_script_library(QStringLiteral("//no-such-host/no-such-share"));
+        read_script_library(dir.filePath(QStringLiteral("does-not-exist")));
 
     EXPECT_FALSE(library.reachable);
     EXPECT_FALSE(library.error.isEmpty()) << "a failure that does not say why is not actionable";
@@ -115,6 +124,16 @@ TEST(ScriptLibrary, AnEmptyRootPathIsUnreachableRatherThanTheWorkingDirectory) {
     // QDir("") is the *current* directory, so an unconfigured share would
     // otherwise list whatever the console happened to be launched from.
     const ScriptLibrary library = read_script_library(QString());
+
+    EXPECT_FALSE(library.reachable);
+    EXPECT_FALSE(library.error.isEmpty());
+}
+
+TEST(ScriptLibrary, AWhitespaceOnlyRootPathIsUnreachableToo) {
+    // The guard is `.trimmed().isEmpty()`, not `.isEmpty()`. Pin the trimmed
+    // half separately: a regression to a plain isEmpty() check would let " "
+    // through to QDir(" ") and nothing else in this suite would catch it.
+    const ScriptLibrary library = read_script_library(QStringLiteral("   "));
 
     EXPECT_FALSE(library.reachable);
     EXPECT_FALSE(library.error.isEmpty());
