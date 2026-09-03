@@ -1,10 +1,13 @@
 #include "scripts_tab.hpp"
 
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -13,16 +16,19 @@
 #include <QStackedWidget>
 #include <QStringList>
 #include <QTableWidget>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 
 #include "lm/core/fleet.hpp"
 #include "lm/core/types.hpp"
 #include "lm/ui/keep_foreground_delegate.hpp"
 #include "lm/ui/theme.hpp"
+#include "script_library.hpp"
 #include "script_run.hpp"
 #include "server_controller.hpp"
 
@@ -321,6 +327,31 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
     auto* library_page = new QWidget(mode_stack_);
     library_page_layout_ = new QVBoxLayout(library_page);
     library_page_layout_->setContentsMargins(0, 0, 0, 0);
+
+    auto* root_row = new QHBoxLayout();
+    share_root_edit_ = new QLineEdit(library_page);
+    share_root_edit_->setObjectName(QStringLiteral("ShareRootEdit"));
+    share_root_edit_->setPlaceholderText(QStringLiteral("\\\\fileserver\\scripts"));
+    auto* browse = new QPushButton(QStringLiteral("Browse…"), library_page);
+    browse->setObjectName(QStringLiteral("BrowseShareButton"));
+    auto* refresh = new QPushButton(QStringLiteral("Refresh"), library_page);
+    refresh->setObjectName(QStringLiteral("RefreshShareButton"));
+    root_row->addWidget(new QLabel(QStringLiteral("Share"), library_page));
+    root_row->addWidget(share_root_edit_, 1);
+    root_row->addWidget(browse);
+    root_row->addWidget(refresh);
+    library_page_layout_->addLayout(root_row);
+
+    share_message_ = new QLabel(library_page);
+    share_message_->setObjectName(QStringLiteral("ShareMessage"));
+    share_message_->setWordWrap(true);
+    library_page_layout_->addWidget(share_message_);
+
+    script_tree_ = new QTreeWidget(library_page);
+    script_tree_->setObjectName(QStringLiteral("ScriptTree"));
+    script_tree_->setHeaderHidden(true);
+    library_page_layout_->addWidget(script_tree_, 1);
+
     auto* to_custom = new QPushButton(QStringLiteral("Custom script…"), library_page);
     to_custom->setObjectName(QStringLiteral("CustomScriptButton"));
     library_page_layout_->addWidget(to_custom);
@@ -356,6 +387,33 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
 
     connect(to_custom, &QPushButton::clicked, this, [this] { mode_stack_->setCurrentIndex(1); });
     connect(back, &QPushButton::clicked, this, [this] { mode_stack_->setCurrentIndex(0); });
+
+    // editingFinished rather than textChanged: re-reading a share on every
+    // keystroke would hit the network for each character of a UNC path.
+    connect(share_root_edit_, &QLineEdit::editingFinished, this,
+            [this] { controller_->set_script_share_root(share_root_edit_->text().trimmed()); });
+    connect(browse, &QPushButton::clicked, this, [this] {
+        const QString chosen = QFileDialog::getExistingDirectory(
+            this, QStringLiteral("Choose the script share"), share_root_edit_->text());
+        if (!chosen.isEmpty()) {
+            share_root_edit_->setText(chosen);
+            controller_->set_script_share_root(chosen);
+        }
+    });
+    connect(refresh, &QPushButton::clicked, this, &ScriptsTab::reload_library);
+    connect(controller_, &ServerController::script_share_root_changed, this,
+            [this](const QString& path) {
+                share_root_edit_->setText(path);
+                reload_library();
+            });
+
+    // Both halves matter: this line is correct when the operator sets the root
+    // later in the same session, but at construction time the controller has
+    // not loaded its persisted config yet (see main.cpp), so it is the signal
+    // connected just above that actually delivers a root set in a previous
+    // session.
+    share_root_edit_->setText(controller_->script_share_root());
+    reload_library();
 
     splitter->addWidget(script_side);
 
@@ -649,4 +707,50 @@ void ScriptsTab::update_run_output() {
     if (run_output_->toPlainText() != text) {
         run_output_->setPlainText(text);
     }
+}
+
+void ScriptsTab::reload_library() {
+    const ScriptLibrary library = read_script_library(controller_->script_share_root());
+
+    script_tree_->clear();
+    scripts_.clear();
+
+    if (!library.reachable) {
+        // The message is the whole point: an empty tree would claim the share
+        // is empty, which is a different fact and a different action.
+        share_message_->setText(library.error);
+        share_message_->setVisible(true);
+        return;
+    }
+    if (library.empty()) {
+        share_message_->setText(QStringLiteral("No .ps1 scripts under %1")
+                                    .arg(controller_->script_share_root()));
+        share_message_->setVisible(true);
+    } else {
+        share_message_->clear();
+        share_message_->setVisible(false);
+    }
+
+    // Folders first, then scripts, each alphabetical -- read_script_library()
+    // already returns them in QDir::Name order within each kind.
+    const std::function<void(const LibraryFolder&, QTreeWidgetItem*)> add =
+        [&](const LibraryFolder& folder, QTreeWidgetItem* parent) {
+            for (const LibraryFolder& child : folder.folders) {
+                auto* row = parent == nullptr ? new QTreeWidgetItem(script_tree_)
+                                              : new QTreeWidgetItem(parent);
+                row->setText(0, child.name);
+                add(child, row);
+            }
+            for (const LibraryScript& script : folder.scripts) {
+                auto* row = parent == nullptr ? new QTreeWidgetItem(script_tree_)
+                                              : new QTreeWidgetItem(parent);
+                // The row shows the file name; the relative path is what a run
+                // records, and it is reachable through kScriptIndexRole.
+                row->setText(0, QFileInfo(script.relative_path).fileName());
+                row->setData(0, kScriptIndexRole, static_cast<int>(scripts_.size()));
+                scripts_.push_back(script);
+            }
+        };
+    add(library.root, nullptr);
+    script_tree_->expandAll();
 }

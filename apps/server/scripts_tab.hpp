@@ -6,12 +6,16 @@
 #include <string>
 #include <vector>
 
+#include "script_library.hpp"
+
 class QLabel;
+class QLineEdit;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QStackedWidget;
 class QTableWidget;
+class QTreeWidget;
 class QVBoxLayout;
 
 class ServerController;
@@ -46,6 +50,11 @@ public:
     /// without duplicating it.
     [[nodiscard]] static QString starter_template();
 
+    /// Index into the tab's flat list of scripts. Absent on folder rows, which
+    /// is how "a script is selected" is decided -- a folder is a category and
+    /// has nothing to run.
+    static constexpr int kScriptIndexRole = Qt::UserRole + 3;
+
 private slots:
     void on_run_clicked();
     /// Repopulates the host list from the controller's fleet, keeping whatever
@@ -60,6 +69,13 @@ private slots:
     void on_script_run_changed(QString run_id);
 
 private:
+    /// Re-reads the share root from the controller and repaints the tree.
+    /// Called on construction, on Refresh, and whenever the controller's root
+    /// changes -- including the load at startup, which is what actually
+    /// delivers a persisted root: at construction time the controller has not
+    /// loaded its config yet.
+    void reload_library();
+
     /// Refreshes "Run on N hosts" and Run's enabled state from the checkboxes.
     void update_target_count();
     /// The ids of every ticked row, in list order.
@@ -82,9 +98,16 @@ private:
     ServerController* controller_;
 
     QStackedWidget* mode_stack_;
-    /// The library page's layout. Empty for now; Tasks 4 and 5 add the tree
-    /// and preview to it.
+    /// The library page's layout. Task 5 adds the preview to it.
     QVBoxLayout* library_page_layout_;
+
+    QLineEdit* share_root_edit_;
+    QTreeWidget* script_tree_;
+    QLabel* share_message_;
+    /// The flat list a tree row's kScriptIndexRole indexes into. Rebuilt from
+    /// scratch by every reload_library(), in the same depth-first order the
+    /// tree is built in, which is what makes the index and the row agree.
+    std::vector<LibraryScript> scripts_;
 
     QPlainTextEdit* editor_;
     QListWidget* host_list_;

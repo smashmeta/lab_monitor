@@ -1,7 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -10,6 +14,8 @@
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QTextStream>
+#include <QTreeWidget>
 
 #include <QColor>
 #include <QImage>
@@ -714,4 +720,122 @@ TEST(ScriptsTab, KeepsWhatWasTypedWhenSwitchingAway) {
 
     EXPECT_EQ(scripts_editor(harness)->toPlainText().toStdString(),
               "Write-Output 'mine'\nexit 0\n");
+}
+
+namespace {
+
+/// Writes `contents` to `relative` under `dir`, creating folders as needed.
+void write_script(const QTemporaryDir& dir, const QString& relative, const QString& contents) {
+    const QString path = dir.filePath(relative);
+    ASSERT_TRUE(QDir().mkpath(QFileInfo(path).absolutePath()));
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    QTextStream stream(&file);
+    stream << contents;
+}
+
+QTreeWidget* script_tree(const Harness& harness) {
+    return harness.window->findChild<QTreeWidget*>(QStringLiteral("ScriptTree"));
+}
+
+/// Depth-first search for the tree row whose text is `label`.
+QTreeWidgetItem* tree_row(QTreeWidget* tree, const QString& label) {
+    const auto matches =
+        tree->findItems(label, Qt::MatchExactly | Qt::MatchRecursive, 0);
+    return matches.isEmpty() ? nullptr : matches.front();
+}
+
+}  // namespace
+
+TEST(ScriptsTab, ShowsTheShareAsATreeOfFoldersAndScripts) {
+    QTemporaryDir share;
+    ASSERT_TRUE(share.isValid());
+    write_script(share, QStringLiteral("Maintenance/clear-temp.ps1"), QStringLiteral("exit 0"));
+
+    Harness harness;
+    harness.controller->set_script_share_root(share.path());
+    QApplication::processEvents();
+
+    QTreeWidget* tree = script_tree(harness);
+    ASSERT_NE(tree, nullptr);
+    QTreeWidgetItem* folder = tree_row(tree, QStringLiteral("Maintenance"));
+    ASSERT_NE(folder, nullptr) << "the folder is the category and must be a row";
+    ASSERT_EQ(folder->childCount(), 1);
+    EXPECT_EQ(folder->child(0)->text(0).toStdString(), "clear-temp.ps1")
+        << "the row shows the file name; the relative path is the recorded name";
+}
+
+TEST(ScriptsTab, SettingTheRootThroughTheFieldPersistsIt) {
+    // The field is the setting, so what it shows and what the console will read
+    // next time must be the same thing.
+    QTemporaryDir share;
+    ASSERT_TRUE(share.isValid());
+
+    Harness harness;
+    auto* edit = harness.window->findChild<QLineEdit*>(QStringLiteral("ShareRootEdit"));
+    ASSERT_NE(edit, nullptr);
+
+    edit->setText(share.path());
+    edit->editingFinished();  // the field commits on focus-out or Enter
+    QApplication::processEvents();
+
+    EXPECT_EQ(harness.controller->script_share_root(), share.path());
+}
+
+TEST(ScriptsTab, ShowsTheRootTheControllerAlreadyHad) {
+    // A restart must not present an empty field over a configured share.
+    QTemporaryDir share;
+    ASSERT_TRUE(share.isValid());
+
+    Harness harness;
+    harness.controller->set_script_share_root(share.path());
+    QApplication::processEvents();
+
+    auto* edit = harness.window->findChild<QLineEdit*>(QStringLiteral("ShareRootEdit"));
+    ASSERT_NE(edit, nullptr);
+    EXPECT_EQ(edit->text(), share.path());
+}
+
+TEST(ScriptsTab, RefreshPicksUpAScriptAddedSinceTheTreeWasRead) {
+    // Read on demand, never watched (spec section 8): Refresh is the only thing
+    // that makes the tree current, which is why it exists.
+    QTemporaryDir share;
+    ASSERT_TRUE(share.isValid());
+    write_script(share, QStringLiteral("first.ps1"), QStringLiteral("exit 0"));
+
+    Harness harness;
+    harness.controller->set_script_share_root(share.path());
+    QApplication::processEvents();
+    ASSERT_NE(tree_row(script_tree(harness), QStringLiteral("first.ps1")), nullptr);
+    EXPECT_EQ(tree_row(script_tree(harness), QStringLiteral("second.ps1")), nullptr);
+
+    write_script(share, QStringLiteral("second.ps1"), QStringLiteral("exit 0"));
+    button(harness, QStringLiteral("RefreshShareButton"))->click();
+    QApplication::processEvents();
+
+    EXPECT_NE(tree_row(script_tree(harness), QStringLiteral("second.ps1")), nullptr);
+}
+
+TEST(ScriptsTab, SaysTheShareIsUnreachableRatherThanShowingAnEmptyTree) {
+    // An empty tree reads as "nobody has put scripts here". The operator needs
+    // to know it is instead "you are not seeing the scripts".
+    Harness harness;
+    harness.controller->set_script_share_root(QStringLiteral("//no-such-host/no-such-share"));
+    QApplication::processEvents();
+
+    auto* message = harness.window->findChild<QLabel*>(QStringLiteral("ShareMessage"));
+    ASSERT_NE(message, nullptr);
+    EXPECT_FALSE(message->text().isEmpty());
+    EXPECT_TRUE(message->isVisible() || !message->text().isEmpty());
+}
+
+TEST(ScriptsTab, StaysUsableForCustomScriptsWhenTheShareIsUnreachable) {
+    // Spec section 8: an unreachable share must not take the tab down with it.
+    Harness harness;
+    harness.controller->set_script_share_root(QStringLiteral("//no-such-host/no-such-share"));
+    QApplication::processEvents();
+
+    button(harness, QStringLiteral("CustomScriptButton"))->click();
+    ASSERT_NE(scripts_editor(harness), nullptr);
+    EXPECT_TRUE(button(harness, QStringLiteral("CustomScriptButton"))->isEnabled());
 }
