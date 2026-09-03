@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QProcess>
 #include <QTemporaryDir>
 #include <QTextStream>
 
@@ -28,6 +29,24 @@ const LibraryFolder* folder_named(const LibraryFolder& parent, const QString& na
     }
     return nullptr;
 }
+
+#ifdef _WIN32
+/// Counts `LibraryScript` entries anywhere in the tree whose file name
+/// matches -- a junction the walk failed to skip would make this 2 instead
+/// of 1, under two different folder names.
+int count_scripts_named(const LibraryFolder& folder, const QString& file_name) {
+    int count = 0;
+    for (const LibraryScript& script : folder.scripts) {
+        if (QFileInfo(script.relative_path).fileName() == file_name) {
+            ++count;
+        }
+    }
+    for (const LibraryFolder& child : folder.folders) {
+        count += count_scripts_named(child, file_name);
+    }
+    return count;
+}
+#endif
 
 }  // namespace
 
@@ -151,3 +170,48 @@ TEST(ScriptLibrary, ReadsAScriptsBytesAndReportsOneItCannot) {
     EXPECT_FALSE(read_script_body(dir.filePath(QStringLiteral("gone.ps1"))).has_value())
         << "a missing file must be distinguishable from an empty one";
 }
+
+#ifdef _WIN32
+TEST(ScriptLibrary, DoesNotDescendIntoAJunction) {
+    // NoSymLinks does not exclude an NTFS junction: QFileInfo::isSymLink() is
+    // false and isJunction() true for one, and entryInfoList(NoSymLinks)
+    // still lists it -- read_into() has to skip isJunction() explicitly. This
+    // is the only test that can see that check regress: drop it and the
+    // picker quietly shows every script under a junction's target twice,
+    // under two folder names, while the rest of this suite stays green.
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    write_file(dir, QStringLiteral("real_target/target.ps1"), QStringLiteral("exit 0"));
+
+    const QString target = dir.filePath(QStringLiteral("real_target"));
+    const QString link = dir.filePath(QStringLiteral("link_to_target"));
+
+    // Junctions need no elevation (unlike symlinks), so this runs from an
+    // ordinary, unprivileged test invocation -- no admin prompt, no special
+    // CI setup.
+    QProcess mklink;
+    mklink.start(QStringLiteral("cmd.exe"),
+                 {QStringLiteral("/c"), QStringLiteral("mklink"), QStringLiteral("/J"),
+                  QDir::toNativeSeparators(link), QDir::toNativeSeparators(target)});
+    if (!mklink.waitForFinished(5000) || mklink.exitCode() != 0) {
+        GTEST_SKIP() << "could not create a junction, so this environment cannot exercise the "
+                        "case: "
+                     << mklink.readAllStandardError().toStdString();
+    }
+
+    const ScriptLibrary library = read_script_library(dir.path());
+    ASSERT_TRUE(library.reachable);
+
+    EXPECT_EQ(count_scripts_named(library.root, QStringLiteral("target.ps1")), 1)
+        << "target.ps1 must appear once, not once per name the junction makes it reachable under";
+    EXPECT_EQ(folder_named(library.root, QStringLiteral("link_to_target")), nullptr)
+        << "the junction itself must not be descended into";
+
+    // Remove the link, not what it points at: QDir::rmdir on the junction
+    // path removes the reparse point itself, the same way Explorer's Delete
+    // on a junction does not touch its target.
+    EXPECT_TRUE(QDir().rmdir(link));
+    EXPECT_TRUE(QFileInfo(dir.filePath(QStringLiteral("real_target/target.ps1"))).exists())
+        << "removing the junction must not have deleted through it";
+}
+#endif
