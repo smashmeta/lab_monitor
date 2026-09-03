@@ -10,7 +10,9 @@ class QLabel;
 class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
+class QStackedWidget;
 class QTableWidget;
+class QVBoxLayout;
 
 class ServerController;
 struct ScriptRun;
@@ -78,6 +80,11 @@ private:
     [[nodiscard]] const RunTarget* selected_target() const;
 
     ServerController* controller_;
+
+    QStackedWidget* mode_stack_;
+    /// The library page's layout. Empty for now; Tasks 4 and 5 add the tree
+    /// and preview to it.
+    QVBoxLayout* library_page_layout_;
 
     QPlainTextEdit* editor_;
     QListWidget* host_list_;

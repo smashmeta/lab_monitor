@@ -10,6 +10,7 @@
 #include <QPushButton>
 #include <QSet>
 #include <QSplitter>
+#include <QStackedWidget>
 #include <QStringList>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -312,7 +313,27 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
     script_layout->setContentsMargins(0, 0, 0, 0);
     script_layout->addWidget(new QLabel(QStringLiteral("Script"), script_side));
 
-    editor_ = new QPlainTextEdit(script_side);
+    mode_stack_ = new QStackedWidget(script_side);
+    mode_stack_->setObjectName(QStringLiteral("ScriptModeStack"));
+
+    // Page 0: the library. Tasks 4 and 5 fill library_page_layout_; the switch
+    // button lives here from the start so the two pages work immediately.
+    auto* library_page = new QWidget(mode_stack_);
+    library_page_layout_ = new QVBoxLayout(library_page);
+    library_page_layout_->setContentsMargins(0, 0, 0, 0);
+    auto* to_custom = new QPushButton(QStringLiteral("Custom script…"), library_page);
+    to_custom->setObjectName(QStringLiteral("CustomScriptButton"));
+    library_page_layout_->addWidget(to_custom);
+    mode_stack_->addWidget(library_page);
+
+    // Page 1: the editor that was the whole tab in phase 1.
+    auto* editor_page = new QWidget(mode_stack_);
+    auto* editor_layout = new QVBoxLayout(editor_page);
+    editor_layout->setContentsMargins(0, 0, 0, 0);
+    auto* back = new QPushButton(QStringLiteral("Back to script list"), editor_page);
+    back->setObjectName(QStringLiteral("BackToListButton"));
+    editor_layout->addWidget(back);
+    editor_ = new QPlainTextEdit(editor_page);
     editor_->setObjectName(QStringLiteral("ScriptEditor"));
     // Fixed-width for the same reason the shopping cart's path pane is: in the
     // proportional UI font PowerShell's punctuation runs together, and this is
@@ -320,14 +341,22 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
     // hundred machines.
     editor_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     editor_->setPlainText(starter_template());
-    script_layout->addWidget(editor_, 1);
+    editor_layout->addWidget(editor_, 1);
 
-    auto* reset_button = new QPushButton(QStringLiteral("Reset to template"), script_side);
+    auto* reset_button = new QPushButton(QStringLiteral("Reset to template"), editor_page);
     reset_button->setObjectName(QStringLiteral("ResetTemplateButton"));
     auto* script_buttons = new QHBoxLayout();
     script_buttons->addWidget(reset_button);
     script_buttons->addStretch(1);
-    script_layout->addLayout(script_buttons);
+    editor_layout->addLayout(script_buttons);
+    mode_stack_->addWidget(editor_page);
+
+    mode_stack_->setCurrentIndex(0);  // the list is the default view
+    script_layout->addWidget(mode_stack_, 1);
+
+    connect(to_custom, &QPushButton::clicked, this, [this] { mode_stack_->setCurrentIndex(1); });
+    connect(back, &QPushButton::clicked, this, [this] { mode_stack_->setCurrentIndex(0); });
+
     splitter->addWidget(script_side);
 
     auto* host_side = new QWidget(splitter);

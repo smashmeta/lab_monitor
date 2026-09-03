@@ -5,6 +5,7 @@
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QStackedWidget>
 #include <QStringList>
 #include <QTableWidget>
 #include <QTabWidget>
@@ -669,4 +670,48 @@ TEST(ScriptRunView, IgnoresAResultForARunItIsNotShowing) {
         EXPECT_EQ(outcome.toStdString(), "Dispatched")
             << "the displayed run moved because an older one did";
     }
+}
+
+namespace {
+
+QStackedWidget* mode_stack(const Harness& harness) {
+    return harness.window->findChild<QStackedWidget*>(QStringLiteral("ScriptModeStack"));
+}
+
+}  // namespace
+
+TEST(ScriptsTab, OpensOnTheScriptListRatherThanTheEditor) {
+    // The list is what an operator wants almost every time; the editor is the
+    // escape hatch and should look like one, not an equal half of the tab.
+    Harness harness;
+    QStackedWidget* stack = mode_stack(harness);
+    ASSERT_NE(stack, nullptr);
+    EXPECT_EQ(stack->currentIndex(), 0) << "the tab opened on the custom editor";
+}
+
+TEST(ScriptsTab, CustomScriptSwitchesToTheEditorAndBackReturns) {
+    Harness harness;
+    QStackedWidget* stack = mode_stack(harness);
+    ASSERT_NE(stack, nullptr);
+
+    button(harness, QStringLiteral("CustomScriptButton"))->click();
+    EXPECT_EQ(stack->currentIndex(), 1);
+    ASSERT_NE(scripts_editor(harness), nullptr) << "the editor is on the page it switched to";
+
+    button(harness, QStringLiteral("BackToListButton"))->click();
+    EXPECT_EQ(stack->currentIndex(), 0);
+}
+
+TEST(ScriptsTab, KeepsWhatWasTypedWhenSwitchingAway) {
+    // The editor is a page, not a dialog: an operator who flicks to the list to
+    // check a name must not come back to an empty box.
+    Harness harness;
+    button(harness, QStringLiteral("CustomScriptButton"))->click();
+    scripts_editor(harness)->setPlainText(QStringLiteral("Write-Output 'mine'\nexit 0\n"));
+
+    button(harness, QStringLiteral("BackToListButton"))->click();
+    button(harness, QStringLiteral("CustomScriptButton"))->click();
+
+    EXPECT_EQ(scripts_editor(harness)->toPlainText().toStdString(),
+              "Write-Output 'mine'\nexit 0\n");
 }
