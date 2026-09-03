@@ -32,7 +32,9 @@ ScriptRun sample_run(std::string run_id) {
     result.refusal_reason = "refusal reason text";
     result.exit_code = 7;
     result.has_reported = true;
-    result.reported_ok = false;
+    // true, not the struct default: a field left at its default cannot catch
+    // the serialiser silently dropping it, since default-in equals default-out.
+    result.reported_ok = true;
     result.reported_message = "reported message text";
     result.stdout_text = "stdout text";
     result.stderr_text = "stderr text";
@@ -73,7 +75,7 @@ TEST(RunStore, RoundTripsEveryFieldARunViewReadsBack) {
     EXPECT_EQ(reloaded->targets[0].result->refusal_reason, "refusal reason text");
     EXPECT_EQ(reloaded->targets[0].result->exit_code, 7);
     EXPECT_EQ(reloaded->targets[0].result->has_reported, true);
-    EXPECT_EQ(reloaded->targets[0].result->reported_ok, false);
+    EXPECT_EQ(reloaded->targets[0].result->reported_ok, true);
     EXPECT_EQ(reloaded->targets[0].result->reported_message, "reported message text");
     EXPECT_EQ(reloaded->targets[0].result->stdout_text, "stdout text");
     EXPECT_EQ(reloaded->targets[0].result->stderr_text, "stderr text");
