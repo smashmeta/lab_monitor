@@ -60,10 +60,16 @@ try {
     # --- your work here ---
     Write-Output "Nothing to do yet."
 
+    # Audible proof this ran on the machine you targeted: one high note for
+    # success, one low one for failure. Two sounds that cannot be mistaken
+    # for each other, so a row of PCs can be checked by ear. Delete both
+    # when you put real work here.
+    [console]::Beep(1047, 400)
     Report $true "completed"
     exit 0
 }
 catch {
+    [console]::Beep(196, 700)
     Report $false $_.Exception.Message
     exit 1
 }
@@ -79,41 +85,35 @@ constexpr std::uint32_t kDefaultTimeoutSeconds = 120;
 /// says where it came from rather than pretending to be a filename.
 const QString kCustomScriptName = QStringLiteral("(custom script)");
 
-constexpr int kEligibleRole = Qt::UserRole + 2;
-
-/// What a row says about a host beyond its name, and whether Select all should
-/// sweep it up.
+/// What a row says about a host beyond its name; empty when there is nothing
+/// to say.
 ///
-/// Two different things wear the same suffix, deliberately: both answer "what
-/// should I know about this machine before I tick it", and splitting them into
-/// a note and a warning would make an operator learn two visual languages for
-/// one question. `eligible` is what keeps them apart where it matters.
-struct HostNote {
-    QString text;      ///< empty when there is nothing to say
-    bool eligible;     ///< false only when this host cannot run a script at all
-};
-
+/// Several different things wear the same suffix, deliberately: they all
+/// answer "what should I know about this machine before I tick it", and
+/// splitting them into a note and a warning would make an operator learn two
+/// visual languages for one question. None of them stops the row being
+/// selected -- the server decides what it will actually dispatch, and says so
+/// per target in the run view.
 /// The wording is the tab's own -- short enough to sit at the end of a row --
 /// where ServerController::start_script_run() records a fuller sentence on the
 /// run itself ("host is Offline, not Online", "not enrolled for script
 /// execution"). The reasons correspond; nothing enforces that the phrasing
 /// does, so do not read one off the other.
-HostNote note_for(const lm::core::FleetEntry& entry) {
+QString note_for(const lm::core::FleetEntry& entry) {
     if (entry.state != lm::core::HostState::Online) {
-        return {QString::fromStdString(lm::core::to_string(entry.state)), false};
+        return QString::fromStdString(lm::core::to_string(entry.state));
     }
     if (!entry.caps.has(lm::core::Capability::Scripts)) {
-        return {QStringLiteral("not enrolled"), false};
+        return QStringLiteral("not enrolled");
     }
     if (!entry.caps.has(lm::core::Capability::Elevated)) {
         // Marked, not refused. Phase 1 has no way to ask for elevation and
         // plenty of scripts need no admin, so this host runs them perfectly
         // well -- the flag is here so an access-denied is read *before* the
-        // run rather than as a column of failures afterwards. Eligible, and
-        // Select all still takes it.
-        return {QStringLiteral("not elevated"), true};
+        // run rather than as a column of failures afterwards.
+        return QStringLiteral("not elevated");
     }
-    return {{}, true};
+    return {};
 }
 
 /// The colour an outcome is painted in.
@@ -339,12 +339,12 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
     host_list_->setObjectName(QStringLiteral("HostList"));
     host_layout->addWidget(host_list_, 1);
 
-    // "eligible", not just "all": the sweep skips the rows that cannot run a
-    // script, and a button whose label promised otherwise would be the
-    // surprise. A row merely marked "not elevated" is still swept -- it can
-    // run one.
-    auto* select_all_button =
-        new QPushButton(QStringLiteral("Select all eligible"), host_side);
+    // Takes every row, including the ones a note marks as unable to comply.
+    // The note is the warning; the server is the gate, and it refuses at
+    // dispatch with a reason rather than sending anything to such a host. A
+    // button that silently skipped rows would be the surprise, since the one
+    // thing "Select all" can be read to mean is all of them.
+    auto* select_all_button = new QPushButton(QStringLiteral("Select all"), host_side);
     select_all_button->setObjectName(QStringLiteral("SelectAllButton"));
     auto* clear_button = new QPushButton(QStringLiteral("Clear"), host_side);
     clear_button->setObjectName(QStringLiteral("ClearButton"));
@@ -431,15 +431,7 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
             [this] { editor_->setPlainText(starter_template()); });
     connect(select_all_button, &QPushButton::clicked, this, [this] {
         for (int row = 0; row < host_list_->count(); ++row) {
-            QListWidgetItem* item = host_list_->item(row);
-            // Eligible rows only. A bulk gesture must never quietly target a
-            // machine that cannot run the script -- those get a Refused target
-            // and no execution, which is noise in the run view rather than a
-            // result. Ticking one by hand still works: that is a decision
-            // somebody made about a named machine.
-            if (item->data(kEligibleRole).toBool()) {
-                item->setCheckState(Qt::Checked);
-            }
+            host_list_->item(row)->setCheckState(Qt::Checked);
         }
     });
     connect(clear_button, &QPushButton::clicked, this, [this] {
@@ -479,18 +471,17 @@ void ScriptsTab::rebuild_host_list() {
     host_list_->clear();
     for (const lm::core::FleetEntry& entry : controller_->fleet().entries) {
         const QString host_id = QString::fromStdString(entry.host_id);
-        const HostNote note = note_for(entry);
+        const QString note = note_for(entry);
 
         // Listed, explained and -- when it cannot comply -- unchecked, never
         // hidden. An operator should see that a machine is excluded and why,
         // not wonder where it went; and they may still tick it deliberately,
         // which is why the row stays checkable rather than being disabled.
         auto* item = new QListWidgetItem(
-            note.text.isEmpty() ? host_id : host_id + QStringLiteral(" — ") + note.text,
+            note.isEmpty() ? host_id : host_id + QStringLiteral(" — ") + note,
             host_list_);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setData(ScriptsTab::kHostIdRole, host_id);
-        item->setData(kEligibleRole, note.eligible);
         // A tick survives even on a row that has since become ineligible: it
         // was a deliberate act, and silently undoing it would be worse than
         // letting the run record the refusal.

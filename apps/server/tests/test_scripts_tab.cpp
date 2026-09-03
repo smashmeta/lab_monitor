@@ -299,27 +299,36 @@ TEST(ScriptsTab, StartsARunWithTheEditorsBodyAndTheCheckedHosts) {
     EXPECT_EQ(run.targets.front().host_id, "PC-002");
 }
 
-TEST(ScriptsTab, ListsAHostThatCannotComplyExplainedAndUnchecked) {
+TEST(ScriptsTab, ListsAHostThatCannotComplyExplainedAndSweepsItUpAnyway) {
     // Listed, not hidden: an operator should see that a machine is excluded
-    // and why, rather than wonder where it went. Select all leaves it alone,
-    // so no bulk gesture ever targets a machine that cannot run the script --
-    // but a deliberate tick still does, which is the operator's call.
+    // and why, rather than wonder where it went. Select all then takes it like
+    // any other row -- the note is the warning, and the *server* is the gate.
+    // It refuses at dispatch, with a reason, and sends that host nothing. A
+    // button that silently skipped rows would be the surprise, since the one
+    // thing "Select all" can be read to mean is all of them.
     Harness harness;
     harness.announce("PC-001", enrolled());
     harness.announce("PC-003", not_enrolled());
 
-    QListWidgetItem* refused = row_for(harness, QStringLiteral("PC-003"));
-    ASSERT_NE(refused, nullptr);
-    EXPECT_NE(refused->text().indexOf(QStringLiteral("not enrolled")), -1)
-        << refused->text().toStdString();
-    EXPECT_EQ(refused->checkState(), Qt::Unchecked);
+    QListWidgetItem* cannot_comply = row_for(harness, QStringLiteral("PC-003"));
+    ASSERT_NE(cannot_comply, nullptr);
+    EXPECT_NE(cannot_comply->text().indexOf(QStringLiteral("not enrolled")), -1)
+        << cannot_comply->text().toStdString();
+    EXPECT_EQ(cannot_comply->checkState(), Qt::Unchecked) << "the list starts empty";
 
     button(harness, QStringLiteral("SelectAllButton"))->click();
-    EXPECT_EQ(row_for(harness, QStringLiteral("PC-003"))->checkState(), Qt::Unchecked);
+    EXPECT_EQ(row_for(harness, QStringLiteral("PC-003"))->checkState(), Qt::Checked);
     EXPECT_EQ(row_for(harness, QStringLiteral("PC-001"))->checkState(), Qt::Checked);
 
-    refused->setCheckState(Qt::Checked);
-    EXPECT_EQ(checked_hosts(harness).size(), 2) << "the operator may still override";
+    press_run(harness);
+
+    const ScriptRun& run = harness.controller->script_runs().back();
+    ASSERT_EQ(run.targets.size(), 2u);
+    const auto found =
+        std::ranges::find(run.targets, std::string("PC-003"), &RunTarget::host_id);
+    ASSERT_NE(found, run.targets.end());
+    EXPECT_EQ(found->state, TargetState::Refused) << "the server is the gate, not the button";
+    EXPECT_FALSE(found->detail.empty()) << "a refusal that does not say why is not actionable";
 }
 
 TEST(ScriptsTab, MarksAHostThatCannotElevateWithoutExcludingIt) {
@@ -336,8 +345,7 @@ TEST(ScriptsTab, MarksAHostThatCannotElevateWithoutExcludingIt) {
         << row->text().toStdString();
 
     button(harness, QStringLiteral("SelectAllButton"))->click();
-    EXPECT_EQ(row_for(harness, QStringLiteral("PC-004"))->checkState(), Qt::Checked)
-        << "a marker is not a refusal: the sweep still takes this host";
+    EXPECT_EQ(row_for(harness, QStringLiteral("PC-004"))->checkState(), Qt::Checked);
 
     button(harness, QStringLiteral("RunButton"))->click();
     QApplication::processEvents();
@@ -359,11 +367,21 @@ TEST(ScriptsTab, NamesTheStateOfAHostThatIsNotReporting) {
     QListWidgetItem* row = row_for(harness, QStringLiteral("PC-009"));
     ASSERT_NE(row, nullptr);
     EXPECT_NE(row->text().indexOf(QStringLiteral("Missing")), -1) << row->text().toStdString();
-    EXPECT_EQ(row->checkState(), Qt::Unchecked);
+    EXPECT_EQ(row->checkState(), Qt::Unchecked) << "the list starts empty";
 
+    // Swept up like every other row. Nothing can be dispatched to it, but that
+    // is the server's call and it records a Refused target saying so -- which
+    // is a result an operator can read, where a checkbox that quietly refused
+    // to tick is not.
     button(harness, QStringLiteral("SelectAllButton"))->click();
-    EXPECT_EQ(row_for(harness, QStringLiteral("PC-009"))->checkState(), Qt::Unchecked)
-        << "nothing can be dispatched to it, so the sweep leaves it alone";
+    EXPECT_EQ(row_for(harness, QStringLiteral("PC-009"))->checkState(), Qt::Checked);
+
+    press_run(harness);
+
+    const ScriptRun& run = harness.controller->script_runs().back();
+    ASSERT_EQ(run.targets.size(), 1u);
+    EXPECT_EQ(run.targets.front().state, TargetState::Refused);
+    EXPECT_FALSE(run.targets.front().detail.empty());
 }
 
 TEST(ScriptsTab, RefreshesARowWhenOnlyItsCapabilitiesChange) {
@@ -548,6 +566,36 @@ TEST(ScriptRunView, PaintsEachOutcomeInThePalettesColourForIt) {
     EXPECT_EQ(outcome_colour(QStringLiteral("PC-002")), QColor(lm::ui::Theme::kMissing));
     EXPECT_EQ(outcome_colour(QStringLiteral("PC-003")), QColor(lm::ui::Theme::kPaused));
     EXPECT_EQ(outcome_colour(QStringLiteral("PC-004")), QColor(lm::ui::Theme::kOffline));
+}
+
+TEST(ScriptsTab, KeepsTheSelectedHostReadable) {
+    // The other half of the same trap. theme.qss overrides the selection
+    // *background* for views but deliberately leaves the text to the palette
+    // -- and the palette's HighlightedText is kBackground, chosen to sit on
+    // the light accent used as Highlight, not on the dark selection grey. A
+    // plain list has no delegate to save it, so the row an operator clicked
+    // was painted dark on dark and became unreadable. Only painting can see
+    // it: every logical assertion about this row passed throughout.
+    Harness harness;
+    show_scripts_tab(harness);
+    harness.announce("PC-001", enrolled());
+
+    QListWidget* hosts = host_list(harness);
+    ASSERT_NE(hosts, nullptr);
+    ASSERT_GT(hosts->count(), 0);
+    hosts->setCurrentRow(0);
+    QApplication::processEvents();
+
+    const QRect row = hosts->visualItemRect(hosts->item(0));
+    ASSERT_FALSE(row.isEmpty());
+    const QImage painted = lm::ui::test::paint(*hosts->viewport()).copy(row);
+
+    // Only the positive claim. kBackground legitimately appears inside this
+    // rect -- it is the checkbox indicator's own fill -- so its absence cannot
+    // be asserted; that the name is drawn in kText is the whole point anyway,
+    // and it is false before the rule this test guards.
+    EXPECT_TRUE(lm::ui::test::contains_colour(painted, QColor(lm::ui::Theme::kText)))
+        << "the selected host's name is not painted in the text colour";
 }
 
 TEST(ScriptRunView, KeepsAnOutcomeColourOnTheRowThatIsSelected) {
