@@ -12,7 +12,8 @@ add_executable(lab_monitor_server WIN32
   add_rule_dialog.cpp
   fleet_window.cpp
   scripts_tab.cpp
-  script_run.cpp)
+  script_run.cpp
+  script_library.cpp)
 
 target_include_directories(lab_monitor_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(lab_monitor_server PRIVATE
@@ -35,12 +36,14 @@ lm_add_test(lab_monitor_server_tests
           tests/test_script_run.cpp
           tests/test_script_dispatch.cpp
           tests/test_scripts_tab.cpp
+          tests/test_script_library.cpp
           server_controller.cpp
           status_ribbon.cpp
           add_rule_dialog.cpp
           fleet_window.cpp
           scripts_tab.cpp
           script_run.cpp
+          script_library.cpp
   LINK lm_core lm_platform lm_transport lm_ui
        Qt6::Widgets Qt6::Test spdlog::spdlog nlohmann_json::nlohmann_json)
 # libs/ui/tests for pixel_probe.hpp: the run view's outcome colours survive
