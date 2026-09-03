@@ -278,6 +278,22 @@ to run on a hundred machines.
 If the share is unreachable the tab says so and stays usable for custom scripts, rather than
 presenting an empty tree that looks like an empty share.
 
+**The root is a persisted setting, not a launch option.** It is stored in the server's
+config directory beside the bundle and the expected-host list, and set from a field with a
+**Browse…** button in the tab. A share moves, or an operator is handed a new one, far more
+often than a console is restarted; making it a command-line flag would mean editing a
+shortcut to do something the console is already the right place to do. There is
+deliberately no CLI equivalent — two ways to set one path is a precedence rule to explain
+and a second thing to get wrong.
+
+**The body is re-read when Run is pressed, and a change since the preview stops the run.**
+The preview's whole promise is that an operator sees what is about to execute on a hundred
+machines, and a share is writable by other people while they read it. So the file is read
+again at dispatch; if the bytes differ from what was shown, the run does not start and the
+operator is told the script changed and shown it again. Dispatching the previewed bytes
+regardless would run a version that no longer exists on the share; re-reading silently
+would run something nobody approved. Neither is a thing to do to a hundred machines.
+
 ### Custom script mode
 
 **The list is the default view.** A **Custom script…** button switches to a plain editor;
