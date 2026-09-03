@@ -91,6 +91,19 @@ void MonitorWorker::announce() {
     // from a dead one -- which is the whole reading this flag exists to fix.
     message.paused = paused_;
     transport_->publish_announce(message);
+
+    // start() announces at once and the timer every 10 s after, so the
+    // seventh announce is the one a minute in. Long enough that a server
+    // merely starting up a little later is not accused, short enough that
+    // somebody watching a machine come up still sees it.
+    constexpr int kAnnouncesBeforeUnheard = 7;
+    if (heard_server_ || said_unheard_) {
+        return;
+    }
+    if (++announces_unheard_ >= kAnnouncesBeforeUnheard) {
+        said_unheard_ = true;
+        emit server_unheard();
+    }
 }
 
 void MonitorWorker::start() {
@@ -203,6 +216,12 @@ void MonitorWorker::set_reporting_paused(bool paused) {
 }
 
 void MonitorWorker::on_bundle(const lm::transport::TemplateBundleMessage& message) {
+    // Before the revision check, and before parsing: any bundle at all, even a
+    // repeat of one already held or one that turns out to be malformed, proves
+    // a server found this client and this client found it back. That is the
+    // only claim server_unheard() makes.
+    heard_server_ = true;
+
     if (message.revision == bundle_.revision) {
         return;
     }

@@ -43,6 +43,10 @@ struct Options {
     bool offline = false;
     bool allow_scripts = false;
     std::string log_level = "info";
+    /// Explicit discovery peers. Empty means rely on multicast alone, which is
+    /// the default and is what fails after a power transition -- see the known
+    /// gap in CLAUDE.md.
+    std::vector<std::string> peers;
     bool install_autostart = false;
     bool uninstall_autostart = false;
     /// What --install-autostart's logon task should pass this executable.
@@ -50,6 +54,22 @@ struct Options {
     /// arguments_for_autostart_task().
     std::vector<std::string> autostart_arguments;
 };
+
+/// The peer list as one line for the startup banner. Written out rather than
+/// reached for through fmt::join so this file needs no extra fmt header.
+std::string peers_line(const std::vector<std::string>& peers) {
+    if (peers.empty()) {
+        return "multicast discovery only";
+    }
+    std::string line;
+    for (const std::string& peer : peers) {
+        if (!line.empty()) {
+            line += ", ";
+        }
+        line += peer;
+    }
+    return line;
+}
 
 /// Binds description's option values to `options` without parsing anything,
 /// so both parse_options() and main()'s boost::program_options::error
@@ -69,6 +89,12 @@ boost::program_options::options_description describe_options(Options& options) {
         "enrol this machine for remote script execution (off unless asked for)")(
         "log-level", po::value(&options.log_level)->default_value("info"),
         "trace|debug|info|warn|err|critical|off")(
+        "peer", po::value(&options.peers)->multitoken(),
+        "IPv4 address of a discovery peer, repeatable. Announcements are sent "
+        "to these directly as well as over multicast, which is what makes "
+        "discovery work where multicast does not: a blocked network, or a "
+        "participant that has outlived a change of network interface. Pass "
+        "127.0.0.1 when the server runs on this machine")(
         "install-autostart", po::bool_switch(&options.install_autostart),
         "register a logon task that starts this executable elevated, with no UAC "
         "prompt. The task runs this executable with the options given here -- "
@@ -123,6 +149,13 @@ std::vector<std::string> arguments_for_autostart_task(
     if (!vm["log-level"].defaulted()) {
         arguments.emplace_back("--log-level");
         arguments.push_back(options.log_level);
+    }
+    for (const std::string& peer : options.peers) {
+        // Carried for the same reason as --domain-id: a peer list decides
+        // whether the installed agent can be found at all, and dropping it
+        // would register a task that silently never reaches the server.
+        arguments.emplace_back("--peer");
+        arguments.push_back(peer);
     }
     if (options.offline) {
         arguments.emplace_back("--offline");
@@ -411,11 +444,13 @@ int main(int argc, char** argv) {
         } else {
             lm::transport::DdsConfig config;
             config.domain_id = options.domain_id;
+            config.initial_peers = options.peers;
             transport = lm::transport::make_dds_client(config);
         }
         spdlog::info("  joined      : {}",
                      options.offline ? "in-process bus"
                                      : "DDS domain " + std::to_string(options.domain_id));
+        spdlog::info("  peers       : {}", peers_line(options.peers));
 
         // MonitorWorker owns all probing and messaging and lives entirely on
         // this worker thread; the GUI thread never touches probes_ or
@@ -462,6 +497,15 @@ int main(int argc, char** argv) {
         QObject::connect(worker, &MonitorWorker::template_applied, tray, &TrayController::set_applied_revision);
         QObject::connect(worker, &MonitorWorker::connection_changed, window, &DetailWindow::set_connected);
         QObject::connect(worker, &MonitorWorker::connection_changed, tray, &TrayController::set_connected);
+        // Logged rather than shown: the client is normally headless, so the
+        // log is where somebody investigating a machine missing from the
+        // fleet actually looks.
+        QObject::connect(worker, &MonitorWorker::server_unheard, worker, [] {
+            spdlog::warn("no server has answered in the first minute -- this machine is "
+                         "probably missing from the fleet. If the server is up, its "
+                         "discovery may have outlived a network or power state change; "
+                         "restart it, or give both ends --peer.");
+        });
 
         QObject::connect(tray, &TrayController::reporting_paused_changed, worker,
                           &MonitorWorker::set_reporting_paused);

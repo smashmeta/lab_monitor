@@ -918,6 +918,33 @@ Team choice. Boost is consequently confined to `program_options` in the two apps
 
 ## Known gaps
 
+- **A long-running participant stops discovering after a Windows power
+  transition.** Observed, not theorised: a server up since 09:58 went through a
+  `Kernel-Power` 566 session transition at 11:40, and every client started
+  after that was invisible to it — while the client already connected kept
+  reporting normally until it was quit. That asymmetry is the signature. RTPS
+  talks to peers it has already discovered over the unicast locators it holds,
+  so established traffic survives; discovery is multicast, and the multicast
+  group membership does not survive the interface state change. Fast DDS binds
+  and joins once, at participant creation, and never re-scans:
+  `update_network_interfaces()` exists on `TransportInterface` but is **not**
+  exposed on `DomainParticipant`, so a running participant cannot be made to
+  recover. Restarting the affected process is the only cure.
+
+  Two things exist because of this. `--peer <ipv4>` (repeatable, both apps)
+  fills `DdsConfig::initial_peers`, which adds unicast announcements alongside
+  multicast — `--peer 127.0.0.1` makes a server and client on one machine
+  immune, since loopback has no interface state to lose. And the client emits
+  `server_unheard()` after a minute of announcing with no bundle ever
+  received, logged as a warning: before it, this failure was completely silent
+  at both ends, and the only symptom was a machine quietly absent from the
+  fleet.
+
+  Diagnosing it: the client's log is decisive. A client that joined its domain
+  and never logged `applied template bundle` was never discovered, because the
+  bundle is `TRANSIENT_LOCAL` and reaches a client the moment it is seen.
+
+
 - **The Linux code paths have never been compiled.** Everything has been built with
   MSVC. CI is authored but has never run; expect the first Linux job to fail on GCC
   warnings under `-Wall -Wextra -Wpedantic -Wshadow` with warnings-as-errors.
@@ -998,7 +1025,8 @@ Every binary lands in `build\windows\bin\<config>\` — both apps, all eight tes
 executables, and the four `lm_*.dll` they load. That single directory is
 deliberate; see *The libraries are shared* below.
 
-Both accept `--domain-id`, `--config`, `--offline` (in-process transport, no DDS)
+Both accept `--domain-id`, `--config`, `--peer` (repeatable; see Known gaps),
+`--offline` (in-process transport, no DDS)
 and `--log-level`. The client **starts hidden** — look for the tray icon.
 
 `.vscode/launch.json` has configurations for both apps, the shopping cart,

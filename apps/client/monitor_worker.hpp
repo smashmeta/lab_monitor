@@ -65,6 +65,18 @@ signals:
     void report_ready(lm::core::ComplianceReport report, QVector<lm::ui::RuleDetail> details);
     void template_applied(quint64 revision);
     void connection_changed(int state);
+    /// Emitted once when this client has announced for a full minute without
+    /// ever receiving a template bundle -- so nothing on the domain has
+    /// answered it.
+    ///
+    /// Discovery failing is otherwise completely silent at this end: the
+    /// client starts, joins its domain, announces on its timer and looks
+    /// entirely healthy, while the server never sees it. That happens for real
+    /// when a long-running participant loses its multicast group membership
+    /// across a Windows power transition -- see the known gap in CLAUDE.md --
+    /// and the only symptom is a machine quietly absent from the fleet, with
+    /// no line in either log to say why.
+    void server_unheard();
 
 private slots:
     void on_script_command(const lm::transport::ScriptCommand& command);
@@ -85,6 +97,13 @@ private:
     std::unique_ptr<lm::transport::IClientTransport> transport_;
     std::unique_ptr<lm::platform::IScriptRunner> runner_;
     lm::core::TemplateBundle bundle_;
+    /// A bundle can only have come from a server, so holding one proves this
+    /// client has been discovered in both directions.
+    bool heard_server_ = false;
+    /// Counted rather than timed so the check costs no clock and is testable
+    /// by calling announce() rather than by waiting a minute.
+    int announces_unheard_ = 0;
+    bool said_unheard_ = false;
     bool paused_ = false;
     bool allow_scripts_ = false;
     /// run_ids already executed. Volatile durability prevents replay across a
