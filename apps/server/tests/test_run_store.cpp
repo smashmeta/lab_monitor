@@ -25,8 +25,17 @@ ScriptRun sample_run(std::string run_id) {
     result.host_id = "PC-001";
     result.run_id = run.run_id;
     result.status = lm::core::ScriptStatus::Completed;
-    result.exit_code = 0;
-    result.stdout_text = "done";
+    // Every field gets its own non-default, mutually distinct value: a shared
+    // value between two fields (e.g. both bools true, or two fields reading
+    // "done") would let the writer or reader cross or drop one silently and
+    // still pass an equality check.
+    result.refusal_reason = "refusal reason text";
+    result.exit_code = 7;
+    result.has_reported = true;
+    result.reported_ok = false;
+    result.reported_message = "reported message text";
+    result.stdout_text = "stdout text";
+    result.stderr_text = "stderr text";
     result.duration_ms = 240;
     completed.result = result;
     run.targets.push_back(completed);
@@ -60,8 +69,14 @@ TEST(RunStore, RoundTripsEveryFieldARunViewReadsBack) {
     EXPECT_EQ(reloaded->targets[0].host_id, "PC-001");
     EXPECT_EQ(reloaded->targets[0].state, TargetState::Completed);
     ASSERT_TRUE(reloaded->targets[0].result.has_value());
-    EXPECT_EQ(reloaded->targets[0].result->exit_code, 0);
-    EXPECT_EQ(reloaded->targets[0].result->stdout_text, "done");
+    EXPECT_EQ(reloaded->targets[0].result->status, lm::core::ScriptStatus::Completed);
+    EXPECT_EQ(reloaded->targets[0].result->refusal_reason, "refusal reason text");
+    EXPECT_EQ(reloaded->targets[0].result->exit_code, 7);
+    EXPECT_EQ(reloaded->targets[0].result->has_reported, true);
+    EXPECT_EQ(reloaded->targets[0].result->reported_ok, false);
+    EXPECT_EQ(reloaded->targets[0].result->reported_message, "reported message text");
+    EXPECT_EQ(reloaded->targets[0].result->stdout_text, "stdout text");
+    EXPECT_EQ(reloaded->targets[0].result->stderr_text, "stderr text");
     EXPECT_EQ(reloaded->targets[0].result->duration_ms, 240u);
 
     EXPECT_EQ(reloaded->targets[1].state, TargetState::Refused);
@@ -153,18 +168,23 @@ TEST(RunStore, DeletingARunThatIsNotThereIsAFailureThatSaysSo) {
 
 TEST(RunStore, RejectsAPathTraversingRunId) {
     // run_id is server-generated and already filesystem-safe, but save_run()
-    // and delete_run() must not simply trust that.
+    // and delete_run() must not simply trust that. Covers every character the
+    // guard rejects: '/', '\', "..", ':' (an NTFS alternate-data-stream
+    // separator on Windows), and empty (would otherwise write plain ".json").
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
-    QString error;
 
-    ScriptRun run = sample_run("../evil");
-    EXPECT_FALSE(save_run(dir.path(), run, &error));
-    EXPECT_FALSE(error.isEmpty());
+    for (const std::string& unsafe_id :
+         {std::string("../evil"), std::string("..\\evil"), std::string("a/b"), std::string("a\\b"),
+          std::string("a:b"), std::string("")}) {
+        QString error;
+        EXPECT_FALSE(save_run(dir.path(), sample_run(unsafe_id), &error)) << unsafe_id;
+        EXPECT_FALSE(error.isEmpty()) << unsafe_id;
 
-    error.clear();
-    EXPECT_FALSE(delete_run(dir.path(), "..\\evil", &error));
-    EXPECT_FALSE(error.isEmpty());
+        error.clear();
+        EXPECT_FALSE(delete_run(dir.path(), unsafe_id, &error)) << unsafe_id;
+        EXPECT_FALSE(error.isEmpty()) << unsafe_id;
+    }
 }
 
 TEST(RunStore, RoundTripsEveryTargetState) {
@@ -217,5 +237,28 @@ TEST(RunStore, RoundTripsEveryScriptStatus) {
         ASSERT_EQ(reloaded->targets.size(), 1u);
         ASSERT_TRUE(reloaded->targets[0].result.has_value());
         EXPECT_EQ(reloaded->targets[0].result->status, status) << lm::core::to_string(status);
+    }
+}
+
+TEST(TargetStateFromString, RejectsUnknownAndBogusText) {
+    // "Unknown" is to_string(TargetState)'s own unreachable fallback after an
+    // exhaustive switch -- it must not read back as any real state, and this
+    // is correct today only by its absence from an if-chain that a later
+    // well-meaning branch could quietly undo.
+    EXPECT_FALSE(target_state_from_string("Unknown").has_value());
+    EXPECT_FALSE(target_state_from_string("Banana").has_value());
+}
+
+TEST(RunStore, RejectsUnknownAndBogusScriptStatus) {
+    // script_status_from_string is file-local to run_store.cpp -- the inverse
+    // of lm::core::to_string(ScriptStatus) -- so it is reachable only through
+    // run_from_json here. Same reasoning as
+    // TargetStateFromString.RejectsUnknownAndBogusText: "Unknown" is
+    // to_string(ScriptStatus)'s own unreachable fallback and must not parse
+    // back as a real status.
+    for (const std::string& status_text : {std::string("Unknown"), std::string("Banana")}) {
+        nlohmann::json document = run_to_json(sample_run("run-bad-status"));
+        document["targets"][0]["result"]["status"] = status_text;
+        EXPECT_FALSE(run_from_json(document).has_value()) << status_text;
     }
 }
