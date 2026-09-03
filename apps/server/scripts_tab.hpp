@@ -135,6 +135,11 @@ private:
     QListWidget* host_list_ = nullptr;
     QLabel* target_count_label_ = nullptr;
     QPushButton* run_button_ = nullptr;
+    /// Explains a Run press that dispatched nothing -- a share-side change
+    /// caught at re-read, or a script that has vanished. Cleared at the start
+    /// of every on_run_clicked(), so it never shows a stale reason for a run
+    /// that just went out.
+    QLabel* run_blocked_message_ = nullptr;
 
     QLabel* run_summary_ = nullptr;
     QTableWidget* run_targets_ = nullptr;

@@ -1033,3 +1033,130 @@ TEST(ScriptsTab, RefreshDropsASelectionTheShareNoLongerHas) {
         << "the tree must not go on offering a script the share no longer has";
     EXPECT_FALSE(button(harness, QStringLiteral("RunButton"))->isEnabled());
 }
+
+TEST(ScriptsTab, RunsTheSelectedScriptUnderItsRelativePath) {
+    QTemporaryDir share;
+    ASSERT_TRUE(share.isValid());
+    write_script(share, QStringLiteral("Software/install.ps1"), QStringLiteral("exit 0\n"));
+
+    Harness harness;
+    harness.controller->set_script_share_root(share.path());
+    harness.announce("PC-001", enrolled());
+    QApplication::processEvents();
+    script_tree(harness)->setCurrentItem(
+        tree_row(script_tree(harness), QStringLiteral("install.ps1")));
+    check_hosts(harness, {"PC-001"});
+    QApplication::processEvents();
+
+    // Not press_run(): that helper switches to the editor page first, which
+    // would run the custom-script body instead of the library selection.
+    button(harness, QStringLiteral("RunButton"))->click();
+    QApplication::processEvents();
+
+    ASSERT_EQ(harness.controller->script_runs().size(), 1u);
+    const ScriptRun& run = harness.controller->script_runs().back();
+    EXPECT_EQ(run.script_name, "Software/install.ps1")
+        << "history has to say which install.ps1 ran";
+    EXPECT_EQ(run.script_body, "exit 0\n");
+}
+
+TEST(ScriptsTab, RefusesToRunAScriptThatChangedSinceThePreview) {
+    // The preview's whole promise is that the operator sees what will execute.
+    // A share is writable by other people while it is being read, so the file
+    // is read again at Run and a difference stops the run (spec section 8).
+    QTemporaryDir share;
+    ASSERT_TRUE(share.isValid());
+    write_script(share, QStringLiteral("a.ps1"), QStringLiteral("exit 0\n"));
+
+    Harness harness;
+    harness.controller->set_script_share_root(share.path());
+    harness.announce("PC-001", enrolled());
+    QApplication::processEvents();
+    script_tree(harness)->setCurrentItem(tree_row(script_tree(harness), QStringLiteral("a.ps1")));
+    check_hosts(harness, {"PC-001"});
+    QApplication::processEvents();
+
+    // Somebody else edits the share between the preview and the click.
+    write_script(share, QStringLiteral("a.ps1"), QStringLiteral("Remove-Item C:\\ -Recurse\n"));
+
+    button(harness, QStringLiteral("RunButton"))->click();
+    QApplication::processEvents();
+
+    EXPECT_TRUE(harness.controller->script_runs().empty()) << "nothing may be dispatched";
+
+    auto* blocked = harness.window->findChild<QLabel*>(QStringLiteral("RunBlockedMessage"));
+    ASSERT_NE(blocked, nullptr);
+    EXPECT_FALSE(blocked->text().isEmpty()) << "silence would look like a broken button";
+
+    auto* preview = harness.window->findChild<QPlainTextEdit*>(QStringLiteral("ScriptPreview"));
+    EXPECT_NE(preview->toPlainText().indexOf(QStringLiteral("Remove-Item")), -1)
+        << "the operator must be shown what it changed to";
+}
+
+TEST(ScriptsTab, RunsAfterTheChangedScriptHasBeenSeenAndAccepted) {
+    // The block is one-shot: having been shown the new content, pressing Run
+    // again runs what is now on screen. Otherwise the script could never run.
+    QTemporaryDir share;
+    ASSERT_TRUE(share.isValid());
+    write_script(share, QStringLiteral("a.ps1"), QStringLiteral("exit 0\n"));
+
+    Harness harness;
+    harness.controller->set_script_share_root(share.path());
+    harness.announce("PC-001", enrolled());
+    QApplication::processEvents();
+    script_tree(harness)->setCurrentItem(tree_row(script_tree(harness), QStringLiteral("a.ps1")));
+    check_hosts(harness, {"PC-001"});
+    QApplication::processEvents();
+
+    write_script(share, QStringLiteral("a.ps1"), QStringLiteral("exit 1\n"));
+    button(harness, QStringLiteral("RunButton"))->click();
+    QApplication::processEvents();
+    ASSERT_TRUE(harness.controller->script_runs().empty());
+
+    button(harness, QStringLiteral("RunButton"))->click();
+    QApplication::processEvents();
+
+    ASSERT_EQ(harness.controller->script_runs().size(), 1u);
+    EXPECT_EQ(harness.controller->script_runs().back().script_body, "exit 1\n");
+}
+
+TEST(ScriptsTab, RefusesToRunAScriptThatHasVanishedFromTheShare) {
+    QTemporaryDir share;
+    ASSERT_TRUE(share.isValid());
+    write_script(share, QStringLiteral("a.ps1"), QStringLiteral("exit 0\n"));
+
+    Harness harness;
+    harness.controller->set_script_share_root(share.path());
+    harness.announce("PC-001", enrolled());
+    QApplication::processEvents();
+    script_tree(harness)->setCurrentItem(tree_row(script_tree(harness), QStringLiteral("a.ps1")));
+    check_hosts(harness, {"PC-001"});
+    QApplication::processEvents();
+
+    ASSERT_TRUE(QFile::remove(share.filePath(QStringLiteral("a.ps1"))));
+
+    button(harness, QStringLiteral("RunButton"))->click();
+    QApplication::processEvents();
+
+    EXPECT_TRUE(harness.controller->script_runs().empty());
+    auto* blocked = harness.window->findChild<QLabel*>(QStringLiteral("RunBlockedMessage"));
+    ASSERT_NE(blocked, nullptr);
+    EXPECT_FALSE(blocked->text().isEmpty());
+}
+
+TEST(ScriptsTab, StillRunsTheEditorsBodyInCustomMode) {
+    // The share is only where a body came from; dispatch is identical.
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    button(harness, QStringLiteral("CustomScriptButton"))->click();
+    scripts_editor(harness)->setPlainText(QStringLiteral("Write-Output 'hi'\nexit 0\n"));
+    check_hosts(harness, {"PC-001"});
+    QApplication::processEvents();
+
+    press_run(harness);
+
+    ASSERT_EQ(harness.controller->script_runs().size(), 1u);
+    const ScriptRun& run = harness.controller->script_runs().back();
+    EXPECT_EQ(run.script_name, "(custom script)");
+    EXPECT_EQ(run.script_body, "Write-Output 'hi'\nexit 0\n");
+}

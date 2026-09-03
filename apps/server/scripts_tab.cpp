@@ -483,6 +483,14 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
     run_row->addWidget(target_count_label_);
     run_row->addWidget(run_button_);
     compose_layout->addLayout(run_row);
+
+    // Inline, deliberately, rather than a QMessageBox: a modal would block the
+    // console for something the operator has to *read and compare*, and it
+    // cannot show them the new body sitting in the preview behind it.
+    run_blocked_message_ = new QLabel(compose_side);
+    run_blocked_message_->setObjectName(QStringLiteral("RunBlockedMessage"));
+    run_blocked_message_->setWordWrap(true);
+    compose_layout->addWidget(run_blocked_message_);
     vertical->addWidget(compose_side);
 
     auto* run_side = new QWidget(vertical);
@@ -642,13 +650,49 @@ void ScriptsTab::update_target_count() {
 }
 
 void ScriptsTab::on_run_clicked() {
+    run_blocked_message_->clear();
+
     const std::vector<std::string> hosts = checked_hosts();
     if (hosts.empty()) {
         return;  // the button is disabled; belt and braces for a programmatic click
     }
-    const QString run_id = controller_->start_script_run(
-        kCustomScriptName.toStdString(), editor_->toPlainText().toStdString(), hosts,
-        kDefaultTimeoutSeconds);
+
+    std::string script_name;
+    std::string script_body;
+
+    if (mode_stack_->currentIndex() == 1) {
+        script_name = kCustomScriptName.toStdString();
+        script_body = editor_->toPlainText().toStdString();
+    } else {
+        if (!selected_script_.has_value()) {
+            return;  // Run is disabled in this state; belt and braces
+        }
+        // Re-read at Run. The preview promised the operator this is what would
+        // execute, and a share is writable by other people while they read it.
+        const auto current = read_script_body(selected_script_->absolute_path);
+        if (!current.has_value()) {
+            run_blocked_message_->setText(
+                QStringLiteral("%1 could not be read from the share. Nothing was run.")
+                    .arg(selected_script_->relative_path));
+            return;
+        }
+        if (*current != previewed_body_) {
+            // Shown, not just reported: the operator has to see what it became
+            // before deciding. Pressing Run again dispatches what is now shown.
+            previewed_body_ = *current;
+            preview_->setPlainText(previewed_body_);
+            run_blocked_message_->setText(
+                QStringLiteral("%1 changed on the share since you previewed it. Nothing was "
+                               "run — the new content is shown; press Run again to use it.")
+                    .arg(selected_script_->relative_path));
+            return;
+        }
+        script_name = selected_script_->relative_path.toStdString();
+        script_body = current->toStdString();
+    }
+
+    const QString run_id = controller_->start_script_run(script_name, script_body, hosts,
+                                                          kDefaultTimeoutSeconds);
 
     displayed_run_id_ = run_id.toStdString();
     // A different run is a different set of hosts, so its rows are built from
