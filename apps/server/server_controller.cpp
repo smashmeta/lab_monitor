@@ -586,14 +586,23 @@ void ServerController::save_script_settings() {
     nlohmann::json document;
     document["share_root"] = script_share_root_.toStdString();
 
-    QFile file(script_settings_path());
+    const QString path = script_settings_path();
+    QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        emit config_error(
-            QStringLiteral("Could not save the script settings to %1").arg(script_settings_path()));
+        const QString message =
+            QStringLiteral("Failed to save script settings to %1: %2").arg(path, file.errorString());
+        spdlog::error(message.toStdString());
+        emit config_error(message);
         return;
     }
     const std::string text = document.dump(2);
-    file.write(text.c_str(), static_cast<qint64>(text.size()));
+    const qint64 written = file.write(text.data(), static_cast<qint64>(text.size()));
+    if (written != static_cast<qint64>(text.size())) {
+        const QString message =
+            QStringLiteral("Failed to write script settings to %1: %2").arg(path, file.errorString());
+        spdlog::error(message.toStdString());
+        emit config_error(message);
+    }
 }
 
 void ServerController::load_config() {
@@ -682,9 +691,11 @@ void ServerController::load_config() {
                 emit script_share_root_changed(script_share_root_);
             }
         } else {
-            emit config_error(QStringLiteral("The script settings in %1 could not be read; the "
-                                             "share is unset until one is chosen again")
-                                  .arg(script_settings_path()));
+            const QString message = QStringLiteral("The script settings in %1 could not be read; the "
+                                                     "share is unset until one is chosen again")
+                                         .arg(script_settings_path());
+            spdlog::error(message.toStdString());
+            emit config_error(message);
         }
     }
 }

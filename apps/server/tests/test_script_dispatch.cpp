@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QFile>
+#include <QIODevice>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -351,5 +353,54 @@ TEST(ScriptShareRoot, EmitsNothingOnStartWithAFreshConfigDirectory) {
 
     EXPECT_EQ(spy.count(), 0)
         << "an unconfigured share is the starting state, not a change to announce";
+    controller.stop();
+}
+
+TEST(ScriptShareRoot, ReportsAMalformedSettingsFileAndLeavesTheRootEmpty) {
+    // Valid JSON, wrong shape -- not the {"share_root": "..."} object load_config()
+    // expects. This must take the same "could not be read" branch as unparseable
+    // JSON, not silently adopt something that happens to parse.
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    {
+        QFile file(dir.path() + QStringLiteral("/scripts.json"));
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write("[]");
+    }
+
+    MessageBus bus;
+    ServerController controller(make_in_memory_server(bus), dir.path());
+    QSignalSpy spy(&controller, &ServerController::config_error);
+    ASSERT_TRUE(spy.isValid());
+
+    controller.start();
+
+    EXPECT_TRUE(controller.script_share_root().isEmpty())
+        << "a malformed settings file must not read as a configured share";
+    EXPECT_EQ(spy.count(), 1);
+    controller.stop();
+}
+
+TEST(ScriptShareRoot, ReportsAnUnparseableSettingsFileTheSameWay) {
+    // Pins that nlohmann::json::parse's allow_exceptions=false is actually
+    // doing its job here, rather than something throwing past it.
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    {
+        QFile file(dir.path() + QStringLiteral("/scripts.json"));
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        file.write("{ this is not json");
+    }
+
+    MessageBus bus;
+    ServerController controller(make_in_memory_server(bus), dir.path());
+    QSignalSpy spy(&controller, &ServerController::config_error);
+    ASSERT_TRUE(spy.isValid());
+
+    controller.start();
+
+    EXPECT_TRUE(controller.script_share_root().isEmpty())
+        << "unparseable JSON must not read as a configured share";
+    EXPECT_EQ(spy.count(), 1);
     controller.stop();
 }
