@@ -396,6 +396,16 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
         const QString chosen = QFileDialog::getExistingDirectory(
             this, QStringLiteral("Choose the script share"), share_root_edit_->text());
         if (!chosen.isEmpty()) {
+            // Not redundant with set_script_share_root() below, even though
+            // that call's own signal (see the script_share_root_changed
+            // connection above) would normally write this same field. The gap
+            // it closes: an operator can type into the field without
+            // committing (no editingFinished), then Browse and pick the
+            // directory that is *already* the current root -- at which point
+            // set_script_share_root() no-ops (it only acts on a change) and
+            // emits nothing, and without this line the field would keep
+            // showing the operator's uncommitted text while the tree quietly
+            // reflects the real, unchanged root.
             share_root_edit_->setText(chosen);
             controller_->set_script_share_root(chosen);
         }

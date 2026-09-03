@@ -783,7 +783,12 @@ TEST(ScriptsTab, SettingTheRootThroughTheFieldPersistsIt) {
 }
 
 TEST(ScriptsTab, ShowsTheRootTheControllerAlreadyHad) {
-    // A restart must not present an empty field over a configured share.
+    // Not a restart -- Harness already has a live ScriptsTab when this runs,
+    // so set_script_share_root() drives the tab entirely through
+    // script_share_root_changed(), the signal an already-built tab relies on.
+    // A real restart -- FleetWindow built before start() loads scripts.json,
+    // so the root is only ever delivered by that signal -- is
+    // PicksUpAShareConfiguredInAPreviousSession below.
     QTemporaryDir share;
     ASSERT_TRUE(share.isValid());
 
@@ -794,6 +799,51 @@ TEST(ScriptsTab, ShowsTheRootTheControllerAlreadyHad) {
     auto* edit = harness.window->findChild<QLineEdit*>(QStringLiteral("ShareRootEdit"));
     ASSERT_NE(edit, nullptr);
     EXPECT_EQ(edit->text(), share.path());
+}
+
+TEST(ScriptsTab, PicksUpAShareConfiguredInAPreviousSession) {
+    // main.cpp's real order (main.cpp:270 vs :303): FleetWindow, and so this
+    // tab, is built against a controller that has not called start() yet --
+    // and therefore has not read scripts.json -- so the root the operator
+    // configured last time can only ever reach the field and the tree through
+    // script_share_root_changed(), fired from inside load_config(). Every
+    // other test in this file drives the signal by calling
+    // set_script_share_root() on an already-built tab, which never exercises
+    // that ordering; this one builds things in the real order to pin it.
+    QTemporaryDir share;
+    ASSERT_TRUE(share.isValid());
+    write_script(share, QStringLiteral("clear-temp.ps1"), QStringLiteral("exit 0"));
+
+    QTemporaryDir config_dir;
+    ASSERT_TRUE(config_dir.isValid());
+    {
+        // Writing scripts.json directly, rather than through a throwaway
+        // controller, is what keeps this test from needing a second bus and
+        // a second in-memory transport just to go out of scope again.
+        QFile settings(config_dir.filePath(QStringLiteral("scripts.json")));
+        ASSERT_TRUE(settings.open(QIODevice::WriteOnly | QIODevice::Text));
+        QTextStream stream(&settings);
+        stream << QStringLiteral("{\"share_root\": \"%1\"}").arg(share.path());
+    }
+
+    MessageBus bus;
+    auto controller = std::make_unique<ServerController>(make_in_memory_server(bus), config_dir.path());
+    auto window = std::make_unique<FleetWindow>(controller.get());  // before start(), as main.cpp does
+    controller->start();
+    QApplication::processEvents();
+
+    auto* edit = window->findChild<QLineEdit*>(QStringLiteral("ShareRootEdit"));
+    ASSERT_NE(edit, nullptr);
+    EXPECT_EQ(edit->text(), share.path())
+        << "the field must show the persisted root, not the empty one the controller "
+           "had when the tab was constructed";
+
+    QTreeWidget* tree = window->findChild<QTreeWidget*>(QStringLiteral("ScriptTree"));
+    ASSERT_NE(tree, nullptr);
+    EXPECT_NE(tree_row(tree, QStringLiteral("clear-temp.ps1")), nullptr)
+        << "the tree must reflect the persisted share's contents, not an empty root";
+
+    controller->stop();
 }
 
 TEST(ScriptsTab, RefreshPicksUpAScriptAddedSinceTheTreeWasRead) {
