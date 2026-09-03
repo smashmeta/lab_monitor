@@ -404,3 +404,79 @@ TEST(ScriptShareRoot, ReportsAnUnparseableSettingsFileTheSameWay) {
     EXPECT_EQ(spy.count(), 1);
     controller.stop();
 }
+
+TEST(RunHistory, KeepsAFinishedRunAcrossARestart) {
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    std::string run_id;
+
+    {
+        MessageBus bus;
+        ServerController controller(make_in_memory_server(bus), dir.path());
+        controller.start();
+        const auto client = make_in_memory_client(bus);
+        ClientAnnounce announce;
+        announce.host_id = "PC-001";
+        announce.capabilities = enrolled().raw();
+        client->publish_announce(announce);
+        controller.add_expected_host("PC-001", "");
+        QApplication::processEvents();
+
+        run_id = controller.start_script_run("a.ps1", "exit 0", {"PC-001"}, 60).toStdString();
+        ScriptResultMessage result;
+        result.host_id = "PC-001";
+        result.run_id = run_id;
+        result.status = ScriptStatus::Completed;
+        client->publish_script_result(result);
+        QApplication::processEvents();
+        controller.stop();
+    }
+
+    MessageBus bus;
+    ServerController reopened(make_in_memory_server(bus), dir.path());
+    reopened.start();
+
+    ASSERT_EQ(reopened.script_runs().size(), 1u) << "the audit trail did not survive";
+    EXPECT_EQ(reopened.script_runs().front().run_id, run_id);
+    EXPECT_EQ(reopened.script_runs().front().targets.front().state, TargetState::Completed);
+    reopened.stop();
+}
+
+TEST(RunHistory, DeletesOneRunAndSaysItChanged) {
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    const QString run_id =
+        harness.controller->start_script_run("a.ps1", "exit 0", {"PC-001"}, 60);
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+
+    QSignalSpy spy(harness.controller.get(), &ServerController::script_runs_changed);
+    ASSERT_TRUE(spy.isValid());
+
+    EXPECT_TRUE(harness.controller->delete_script_run(run_id.toStdString()));
+    EXPECT_TRUE(harness.controller->script_runs().empty());
+    EXPECT_GT(spy.count(), 0) << "the history view has no other way to know";
+}
+
+TEST(RunHistory, DeletesOnlyRunsOlderThanTheCutoff) {
+    // No automatic pruning anywhere (spec section 8): this runs when an
+    // operator asks, and takes exactly what they asked for.
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    const QString old_run =
+        harness.controller->start_script_run("old.ps1", "exit 0", {"PC-001"}, 60);
+    harness.publish_result("PC-001", old_run.toStdString(), ScriptStatus::Completed);
+
+    const auto cutoff = std::chrono::system_clock::now() + std::chrono::hours(1);
+    const QString recent =
+        harness.controller->start_script_run("new.ps1", "exit 0", {"PC-001"}, 60);
+    harness.publish_result("PC-001", recent.toStdString(), ScriptStatus::Completed);
+
+    EXPECT_EQ(harness.controller->delete_script_runs_before(cutoff), 2u)
+        << "both are older than an hour from now";
+    EXPECT_TRUE(harness.controller->script_runs().empty());
+
+    EXPECT_EQ(harness.controller->delete_script_runs_before(
+                  std::chrono::system_clock::now() - std::chrono::hours(24)),
+              0u)
+        << "nothing is older than yesterday, and nothing may be taken";
+}

@@ -23,6 +23,7 @@
 
 #include "lm/core/json.hpp"
 #include "lm/ui/rule_detail.hpp"
+#include "run_store.hpp"
 
 namespace {
 
@@ -489,6 +490,21 @@ void ServerController::on_script_result(const lm::transport::ScriptResultMessage
     run->apply_result(result);
     spdlog::info("script run {}: {} reported {} (exit {}, {} ms)", result.run_id, result.host_id,
                  lm::core::to_string(result.status), result.exit_code, result.duration_ms);
+
+    // Written once, when the run reaches a state it will never leave. A run
+    // still waiting is not an audit record yet, and rewriting a file per
+    // result would turn a hundred-host run into a hundred writes of the same
+    // growing file.
+    if (run->is_finished() && !saved_runs_.contains(run->run_id)) {
+        QString error;
+        if (save_run(runs_dir(), *run, &error)) {
+            saved_runs_.insert(run->run_id);
+        } else {
+            spdlog::error(error.toStdString());
+            emit config_error(error);
+        }
+    }
+
     emit script_run_changed(QString::fromStdString(result.run_id));
 }
 
@@ -505,7 +521,59 @@ void ServerController::on_run_deadline(const std::string& run_id) {
     run->apply_deadline();
     spdlog::info("script run {}: {} host(s) did not respond within {} s", run_id, waiting,
                  run->timeout_seconds);
+
+    // Written once, when the run reaches a state it will never leave. See
+    // on_script_result() for why this is guarded the same way there.
+    if (run->is_finished() && !saved_runs_.contains(run->run_id)) {
+        QString error;
+        if (save_run(runs_dir(), *run, &error)) {
+            saved_runs_.insert(run->run_id);
+        } else {
+            spdlog::error(error.toStdString());
+            emit config_error(error);
+        }
+    }
+
     emit script_run_changed(QString::fromStdString(run_id));
+}
+
+bool ServerController::delete_script_run(const std::string& run_id) {
+    QString error;
+    const bool removed = delete_run(runs_dir(), run_id, &error);
+    if (!removed) {
+        spdlog::error(error.toStdString());
+        emit config_error(error);
+    }
+    // The in-memory entry goes either way: an operator who asked for it gone
+    // and still sees it will simply ask again, and the file is already
+    // absent in the case that matters.
+    std::erase_if(script_runs_, [&](const ScriptRun& run) { return run.run_id == run_id; });
+    saved_runs_.erase(run_id);
+    spdlog::info("script run {} deleted", run_id);
+    emit script_runs_changed();
+    return removed;
+}
+
+std::size_t ServerController::delete_script_runs_before(
+    std::chrono::system_clock::time_point cutoff) {
+    std::vector<std::string> doomed;
+    for (const ScriptRun& run : script_runs_) {
+        if (run.issued_at < cutoff) {
+            doomed.push_back(run.run_id);
+        }
+    }
+    for (const std::string& run_id : doomed) {
+        QString error;
+        if (!delete_run(runs_dir(), run_id, &error)) {
+            spdlog::error(error.toStdString());
+            emit config_error(error);
+        }
+        saved_runs_.erase(run_id);
+    }
+    std::erase_if(script_runs_, [&](const ScriptRun& run) { return run.issued_at < cutoff; });
+    spdlog::info("deleted {} script run(s) older than the chosen date", doomed.size());
+    emit script_runs_changed();
+    return doomed.size();
 }
 
 void ServerController::apply_coalesced(QVector<lm::transport::ResourceSampleMessage> batch) {
@@ -568,6 +636,8 @@ QString ServerController::bundle_path() const { return config_dir_ + QStringLite
 QString ServerController::script_settings_path() const {
     return config_dir_ + QStringLiteral("/scripts.json");
 }
+
+QString ServerController::runs_dir() const { return config_dir_ + QStringLiteral("/runs"); }
 
 void ServerController::set_script_share_root(QString path) {
     if (path == script_share_root_) {
@@ -697,6 +767,29 @@ void ServerController::load_config() {
             spdlog::error(message.toStdString());
             emit config_error(message);
         }
+    }
+
+    std::vector<QString> run_errors;
+    script_runs_ = load_runs(runs_dir(), &run_errors);
+    // Loaded runs are finished by construction -- nothing here may be saved
+    // again, and none of them gets a deadline timer, since a loaded run has
+    // no live targets waiting.
+    for (const ScriptRun& run : script_runs_) {
+        saved_runs_.insert(run.run_id);
+    }
+    std::ranges::sort(script_runs_, {}, &ScriptRun::issued_at);
+    for (const QString& message : run_errors) {
+        spdlog::error(message.toStdString());
+        emit config_error(message);
+    }
+    // Same reason as expected_hosts_changed() and published_changed() above:
+    // load_config() runs inside start(), which the caller invokes AFTER
+    // connecting its signals -- so a history view built before this ran holds
+    // an empty list and is never told otherwise. Only when a run was actually
+    // loaded: a fresh config directory with no runs/ is the normal starting
+    // state, not a change.
+    if (!script_runs_.empty()) {
+        emit script_runs_changed();
     }
 }
 

@@ -7,8 +7,10 @@
 #include <QVector>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -129,6 +131,9 @@ public:
     /// re-reads the share without anyone having to remember to ask it to.
     void set_script_share_root(QString path);
 
+    /// `<config_dir>/runs` -- one file per finished run, see run_store.hpp.
+    [[nodiscard]] QString runs_dir() const;
+
 public slots:
     /// Recomputes can_publish() and emits draft_publishable_changed(). Call
     /// after mutating draft() from the outside.
@@ -143,6 +148,20 @@ public slots:
     /// Bumps revision, recomputes content_hash, persists, and calls
     /// transport_->publish_bundle(). No-op when can_publish() is false.
     void publish();
+
+    /// Deletes one run's saved file and its in-memory entry. The in-memory
+    /// entry is removed either way -- an operator who asked for it gone and
+    /// still sees it will simply ask again, and the file is already absent in
+    /// the case that matters. A failed file delete is reported through
+    /// config_error() rather than the return value alone, matching every
+    /// other failure path here. Returns whether the file delete succeeded.
+    bool delete_script_run(const std::string& run_id);
+
+    /// Deletes every run issued before `cutoff`. There is no automatic
+    /// pruning anywhere in this codebase (see CLAUDE.md); this exists only
+    /// for an operator to invoke deliberately, and removes exactly the runs
+    /// asked for and no others. Returns how many were removed.
+    std::size_t delete_script_runs_before(std::chrono::system_clock::time_point cutoff);
 
 signals:
     void counts_changed(lm::core::FleetCounts counts);
@@ -160,6 +179,13 @@ signals:
     /// the run itself is reachable through script_runs(), and passing the
     /// whole ScriptRun would copy every host's captured output on each result.
     void script_run_changed(QString run_id);
+    /// The set of runs changed shape: one was loaded from disk at startup, or
+    /// one (or more) was deleted. Carries nothing -- script_runs() is the
+    /// source of truth -- and is deliberately separate from
+    /// script_run_changed(), which fires for an existing run's target moving
+    /// and is not what a list of runs needs to hear about being added or
+    /// removed.
+    void script_runs_changed();
     /// A config file existed but failed to parse. The message is meant for
     /// direct display (e.g. a status bar or message box); the last good
     /// in-memory bundle/expected-host list is left untouched.
@@ -227,6 +253,11 @@ private:
     /// the GUI, and both the result callback and the deadline timer land here
     /// through the event loop.
     std::vector<ScriptRun> script_runs_;
+    /// Ids already written to disk, so a later result for an already-finished
+    /// run cannot cause a second write. A run loaded from load_runs() is
+    /// inserted here too -- it is finished by construction and must never be
+    /// saved again.
+    std::set<std::string> saved_runs_;
 
     QMap<QString, lm::core::ResourceSample> resource_cache_;
     QMap<QString, lm::core::ComplianceReport> report_cache_;
