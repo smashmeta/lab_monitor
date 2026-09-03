@@ -430,14 +430,6 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
                 reload_library();
             });
 
-    // Both halves matter: this line is correct when the operator sets the root
-    // later in the same session, but at construction time the controller has
-    // not loaded its persisted config yet (see main.cpp), so it is the signal
-    // connected just above that actually delivers a root set in a previous
-    // session.
-    share_root_edit_->setText(controller_->script_share_root());
-    reload_library();
-
     splitter->addWidget(script_side);
 
     auto* host_side = new QWidget(splitter);
@@ -560,6 +552,23 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
     connect(controller_, &ServerController::fleet_changed, this, &ScriptsTab::rebuild_host_list);
     connect(controller_, &ServerController::script_run_changed, this,
             &ScriptsTab::on_script_run_changed);
+
+    // Both halves matter: this line is correct when the operator sets the root
+    // later in the same session, but at construction time the controller has
+    // not loaded its persisted config yet (see main.cpp), so it is the signal
+    // connected above that actually delivers a root set in a previous session.
+    //
+    // Must run after every widget its handlers can reach is built -- not just
+    // share_root_edit_ and script_tree_, but run_button_ and
+    // target_count_label_ too: reload_library() clears script_tree_, and
+    // clearing it can drive on_script_selection_changed() straight through to
+    // update_target_count(). Placed here, at the very end of the constructor,
+    // rather than up beside share_root_edit_'s construction, so that chain
+    // never touches an as-yet-unconstructed pointer. Do not move it back
+    // up -- see the null default member initialisers in the header for the
+    // failure mode this guards against.
+    share_root_edit_->setText(controller_->script_share_root());
+    reload_library();
 
     rebuild_host_list();
     refresh_run_view();
@@ -766,6 +775,20 @@ void ScriptsTab::on_script_selection_changed() {
 }
 
 void ScriptsTab::reload_library() {
+    // Explicit, rather than relying on script_tree_->clear() below to null
+    // the current item and fire currentItemChanged into
+    // on_script_selection_changed() for us. It does today -- but that is an
+    // undocumented Qt side effect nothing here pins, and an incremental
+    // rewrite of this function (updating existing rows in place instead of
+    // clearing) would silently stop clearing the tree and just as silently
+    // stop resetting the selection with it. Whatever was selected cannot
+    // survive a fresh read of the share regardless: its index into scripts_
+    // is about to be invalidated, so the preview and Run's enabled state must
+    // not go on depending on it.
+    selected_script_.reset();
+    previewed_body_.clear();
+    preview_->clear();
+
     const ScriptLibrary library = read_script_library(controller_->script_share_root());
 
     script_tree_->clear();
@@ -776,6 +799,7 @@ void ScriptsTab::reload_library() {
         // is empty, which is a different fact and a different action.
         share_message_->setText(library.error);
         share_message_->setVisible(true);
+        update_target_count();
         return;
     }
     if (library.empty()) {
@@ -809,4 +833,5 @@ void ScriptsTab::reload_library() {
         };
     add(library.root, nullptr);
     script_tree_->expandAll();
+    update_target_count();
 }

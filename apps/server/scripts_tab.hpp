@@ -103,19 +103,26 @@ private:
 
     ServerController* controller_;
 
-    QStackedWidget* mode_stack_;
+    // Every widget pointer below is null-initialised rather than left to the
+    // constructor to fill in. reload_library() runs from inside the
+    // constructor and can, through script_tree_'s currentItemChanged signal,
+    // reach update_target_count() -- which touches run_button_ and
+    // target_count_label_ -- so a future reordering that calls it before
+    // those two exist becomes a loud null dereference here instead of a wild
+    // write into whatever garbage the pointer held.
+    QStackedWidget* mode_stack_ = nullptr;
     /// The library page's layout. Task 5 adds the preview to it.
-    QVBoxLayout* library_page_layout_;
+    QVBoxLayout* library_page_layout_ = nullptr;
 
-    QLineEdit* share_root_edit_;
-    QTreeWidget* script_tree_;
-    QLabel* share_message_;
+    QLineEdit* share_root_edit_ = nullptr;
+    QTreeWidget* script_tree_ = nullptr;
+    QLabel* share_message_ = nullptr;
     /// The flat list a tree row's kScriptIndexRole indexes into. Rebuilt from
     /// scratch by every reload_library(), in the same depth-first order the
     /// tree is built in, which is what makes the index and the row agree.
     std::vector<LibraryScript> scripts_;
     /// Read-only preview of whatever script is selected in script_tree_.
-    QPlainTextEdit* preview_;
+    QPlainTextEdit* preview_ = nullptr;
     /// The script backing the preview, or nullopt when nothing selected (or
     /// unreadable) leaves nothing to run. Task 6 re-reads the file at Run and
     /// compares it against previewed_body_ below.
@@ -124,14 +131,14 @@ private:
     /// is empty.
     QString previewed_body_;
 
-    QPlainTextEdit* editor_;
-    QListWidget* host_list_;
-    QLabel* target_count_label_;
-    QPushButton* run_button_;
+    QPlainTextEdit* editor_ = nullptr;
+    QListWidget* host_list_ = nullptr;
+    QLabel* target_count_label_ = nullptr;
+    QPushButton* run_button_ = nullptr;
 
-    QLabel* run_summary_;
-    QTableWidget* run_targets_;
-    QPlainTextEdit* run_output_;
+    QLabel* run_summary_ = nullptr;
+    QTableWidget* run_targets_ = nullptr;
+    QPlainTextEdit* run_output_ = nullptr;
 
     /// The run on screen. An id rather than a pointer or an index, because
     /// ServerController's vector of runs reallocates as runs are added and

@@ -953,13 +953,21 @@ TEST(ScriptsTab, ClearsThePreviewWhenAFolderIsSelected) {
     QApplication::processEvents();
 
     QTreeWidget* tree = script_tree(harness);
+    auto* preview = harness.window->findChild<QPlainTextEdit*>(QStringLiteral("ScriptPreview"));
+    ASSERT_NE(preview, nullptr);
+
     tree->setCurrentItem(tree_row(tree, QStringLiteral("clear-temp.ps1")));
     QApplication::processEvents();
+    // Establishes this test's own premise: if the fill branch were broken
+    // entirely, the preview would stay empty throughout and the assertion
+    // below would pass without the folder selection having done anything.
+    ASSERT_FALSE(preview->toPlainText().isEmpty())
+        << "selecting the script did not fill the preview -- nothing for the "
+           "folder selection below to prove it clears";
+
     tree->setCurrentItem(tree_row(tree, QStringLiteral("Maintenance")));
     QApplication::processEvents();
 
-    auto* preview = harness.window->findChild<QPlainTextEdit*>(QStringLiteral("ScriptPreview"));
-    ASSERT_NE(preview, nullptr);
     EXPECT_TRUE(preview->toPlainText().isEmpty());
 }
 
@@ -984,4 +992,44 @@ TEST(ScriptsTab, DisablesRunUntilAScriptIsSelected) {
     QApplication::processEvents();
 
     EXPECT_TRUE(button(harness, QStringLiteral("RunButton"))->isEnabled());
+}
+
+TEST(ScriptsTab, RefreshDropsASelectionTheShareNoLongerHas) {
+    // reload_library() resets selected_script_/previewed_body_/preview_
+    // explicitly now, rather than leaning on script_tree_->clear() happening
+    // to null the current item and fire currentItemChanged for it -- an
+    // undocumented Qt side effect nothing else pins. This is the regression
+    // that explicit reset exists for: a script selected before Refresh must
+    // not go on being "the selected script" once Refresh finds it gone,
+    // because Run would otherwise stay enabled for a body that can no longer
+    // be read.
+    QTemporaryDir share;
+    ASSERT_TRUE(share.isValid());
+    write_script(share, QStringLiteral("a.ps1"), QStringLiteral("exit 0"));
+
+    Harness harness;
+    harness.controller->set_script_share_root(share.path());
+    harness.announce("PC-001", enrolled());
+    check_hosts(harness, {"PC-001"});
+    QApplication::processEvents();
+
+    QTreeWidget* tree = script_tree(harness);
+    tree->setCurrentItem(tree_row(tree, QStringLiteral("a.ps1")));
+    QApplication::processEvents();
+
+    auto* preview = harness.window->findChild<QPlainTextEdit*>(QStringLiteral("ScriptPreview"));
+    ASSERT_NE(preview, nullptr);
+    ASSERT_FALSE(preview->toPlainText().isEmpty())
+        << "premise: the script is selected and previewed before it is removed";
+    ASSERT_TRUE(button(harness, QStringLiteral("RunButton"))->isEnabled())
+        << "premise: a host and a script are both chosen before it is removed";
+
+    ASSERT_TRUE(QFile::remove(share.filePath(QStringLiteral("a.ps1"))));
+    button(harness, QStringLiteral("RefreshShareButton"))->click();
+    QApplication::processEvents();
+
+    EXPECT_TRUE(preview->toPlainText().isEmpty());
+    EXPECT_EQ(tree_row(tree, QStringLiteral("a.ps1")), nullptr)
+        << "the tree must not go on offering a script the share no longer has";
+    EXPECT_FALSE(button(harness, QStringLiteral("RunButton"))->isEnabled());
 }
