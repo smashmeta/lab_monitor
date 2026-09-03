@@ -1113,11 +1113,17 @@ TEST(ScriptsTab, RunsAfterTheChangedScriptHasBeenSeenAndAccepted) {
     QApplication::processEvents();
     ASSERT_TRUE(harness.controller->script_runs().empty());
 
+    auto* blocked = harness.window->findChild<QLabel*>(QStringLiteral("RunBlockedMessage"));
+    ASSERT_NE(blocked, nullptr);
+    ASSERT_FALSE(blocked->text().isEmpty()) << "premise: the first press left the banner up";
+
     button(harness, QStringLiteral("RunButton"))->click();
     QApplication::processEvents();
 
     ASSERT_EQ(harness.controller->script_runs().size(), 1u);
     EXPECT_EQ(harness.controller->script_runs().back().script_body, "exit 1\n");
+    EXPECT_TRUE(blocked->text().isEmpty())
+        << "a stale banner over a run that just succeeded would misreport what happened";
 }
 
 TEST(ScriptsTab, RefusesToRunAScriptThatHasVanishedFromTheShare) {
