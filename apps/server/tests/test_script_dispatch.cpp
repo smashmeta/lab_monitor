@@ -442,6 +442,78 @@ TEST(RunHistory, KeepsAFinishedRunAcrossARestart) {
     reopened.stop();
 }
 
+TEST(RunHistory, AnnouncesLoadedRunsWhenStartIsCalled) {
+    // main.cpp constructs FleetWindow (and so Task 9's history list, reading
+    // script_runs() from its constructor) *before* calling controller->start()
+    // -- the exact trap this branch was already bitten by once, on the share
+    // root (ScriptShareRoot.AnnouncesTheLoadedRootWhenStartIsCalled, below). A
+    // run loaded from disk has to announce itself from inside start(), not
+    // just sit in script_runs() for a view that already read an empty vector
+    // and was never told to look again. KeepsAFinishedRunAcrossARestart above
+    // pins that the runs are *loaded*; this pins that anyone is *told* --
+    // different failures with the same symptom on screen. The spy is
+    // connected before start() runs, which is the whole point: connecting
+    // after would pass while this bug was live.
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    std::string run_id;
+
+    {
+        MessageBus bus;
+        ServerController controller(make_in_memory_server(bus), dir.path());
+        controller.start();
+        const auto client = make_in_memory_client(bus);
+        ClientAnnounce announce;
+        announce.host_id = "PC-001";
+        announce.capabilities = enrolled().raw();
+        client->publish_announce(announce);
+        controller.add_expected_host("PC-001", "");
+        QApplication::processEvents();
+
+        run_id = controller.start_script_run("a.ps1", "exit 0", {"PC-001"}, 60).toStdString();
+        ScriptResultMessage result;
+        result.host_id = "PC-001";
+        result.run_id = run_id;
+        result.status = ScriptStatus::Completed;
+        client->publish_script_result(result);
+        QApplication::processEvents();
+        controller.stop();
+    }
+
+    MessageBus bus;
+    ServerController reopened(make_in_memory_server(bus), dir.path());
+    QSignalSpy spy(&reopened, &ServerController::script_runs_changed);
+    ASSERT_TRUE(spy.isValid());
+
+    reopened.start();
+
+    ASSERT_GT(spy.count(), 0)
+        << "the persisted run must be announced on load, not just returned by the getter";
+    ASSERT_EQ(reopened.script_runs().size(), 1u);
+    EXPECT_EQ(reopened.script_runs().front().run_id, run_id);
+    reopened.stop();
+}
+
+TEST(RunHistory, EmitsNothingOnStartWithAFreshConfigDirectory) {
+    // A fresh config directory with no runs/ is the normal starting state,
+    // not a change -- a spurious emit here would have the history list
+    // rebuilding for nothing on every clean launch.
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+
+    MessageBus bus;
+    ServerController controller(make_in_memory_server(bus), dir.path());
+    QSignalSpy spy(&controller, &ServerController::script_runs_changed);
+    ASSERT_TRUE(spy.isValid());
+
+    controller.start();
+
+    EXPECT_EQ(spy.count(), 0)
+        << "an empty run history is the starting state, not a change to announce";
+    EXPECT_TRUE(controller.script_runs().empty());
+    controller.stop();
+}
+
 TEST(RunHistory, DeletesOneRunAndSaysItChanged) {
     Harness harness;
     harness.announce("PC-001", enrolled());
