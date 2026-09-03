@@ -15,6 +15,16 @@ std::string to_string(TargetState state) {
     return "Unknown";
 }
 
+std::optional<TargetState> target_state_from_string(std::string_view text) {
+    if (text == "Pending")     return TargetState::Pending;
+    if (text == "Dispatched")  return TargetState::Dispatched;
+    if (text == "Completed")   return TargetState::Completed;
+    if (text == "Failed")      return TargetState::Failed;
+    if (text == "Refused")     return TargetState::Refused;
+    if (text == "NoResponse")  return TargetState::NoResponse;
+    return std::nullopt;
+}
+
 namespace {
 
 /// Every site that needs a target by host id goes through this, rather than

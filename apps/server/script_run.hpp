@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "lm/core/script.hpp"
@@ -21,6 +22,10 @@ enum class TargetState {
 };
 
 [[nodiscard]] std::string to_string(TargetState state);
+
+/// The inverse of to_string(TargetState). nullopt for anything else, so a
+/// hand-edited or future file is rejected rather than silently read as Pending.
+[[nodiscard]] std::optional<TargetState> target_state_from_string(std::string_view text);
 
 struct RunTarget {
     lm::core::HostId host_id;
