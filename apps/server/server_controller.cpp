@@ -565,6 +565,37 @@ QString ServerController::expected_hosts_path() const {
 
 QString ServerController::bundle_path() const { return config_dir_ + QStringLiteral("/bundle.json"); }
 
+QString ServerController::script_settings_path() const {
+    return config_dir_ + QStringLiteral("/scripts.json");
+}
+
+void ServerController::set_script_share_root(QString path) {
+    if (path == script_share_root_) {
+        return;  // not a change, and re-reading a share for nothing costs a stall
+    }
+    script_share_root_ = std::move(path);
+    save_script_settings();
+    spdlog::info("script share root set to {}", script_share_root_.isEmpty()
+                                                    ? std::string("(none)")
+                                                    : script_share_root_.toStdString());
+    emit script_share_root_changed(script_share_root_);
+}
+
+void ServerController::save_script_settings() {
+    QDir().mkpath(config_dir_);
+    nlohmann::json document;
+    document["share_root"] = script_share_root_.toStdString();
+
+    QFile file(script_settings_path());
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        emit config_error(
+            QStringLiteral("Could not save the script settings to %1").arg(script_settings_path()));
+        return;
+    }
+    const std::string text = document.dump(2);
+    file.write(text.c_str(), static_cast<qint64>(text.size()));
+}
+
 void ServerController::load_config() {
     QDir().mkpath(config_dir_);
 
@@ -625,6 +656,23 @@ void ServerController::load_config() {
             emit config_error(message);
             // Keep the last good bundle in memory -- default-constructed
             // (empty) on a first run, or whatever was already loaded.
+        }
+    }
+
+    // Absent on a fresh config directory, and a missing file is not an error:
+    // an unconfigured share is the starting state, not a failure.
+    QFile settings_file(script_settings_path());
+    if (settings_file.open(QIODevice::ReadOnly)) {
+        const QByteArray text = settings_file.readAll();
+        const nlohmann::json document =
+            nlohmann::json::parse(text.constData(), nullptr, /*allow_exceptions=*/false);
+        if (document.is_object() && document.contains("share_root") &&
+            document["share_root"].is_string()) {
+            script_share_root_ = QString::fromStdString(document["share_root"].get<std::string>());
+        } else {
+            emit config_error(QStringLiteral("The script settings in %1 could not be read; the "
+                                             "share is unset until one is chosen again")
+                                  .arg(script_settings_path()));
         }
     }
 }

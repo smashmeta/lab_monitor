@@ -261,3 +261,46 @@ TEST(ScriptDispatch, TheDeadlineSaysNothingAboutARunEverybodyAnswered) {
         << "a deadline must never overwrite an answer";
     EXPECT_EQ(spy.count(), 1) << "only the result moved anything; the deadline had nothing to say";
 }
+
+TEST(ScriptShareRoot, PersistsAcrossARestart) {
+    // A share moves, or an operator is handed a new one, far more often than
+    // this console is restarted -- so it is a setting beside the bundle, not a
+    // launch option (spec section 8).
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString share = QStringLiteral("C:/scripts/share");
+
+    {
+        MessageBus bus;
+        ServerController controller(make_in_memory_server(bus), dir.path());
+        controller.start();
+        controller.set_script_share_root(share);
+        controller.stop();
+    }
+
+    MessageBus bus;
+    ServerController reopened(make_in_memory_server(bus), dir.path());
+    reopened.start();
+    EXPECT_EQ(reopened.script_share_root(), share);
+    reopened.stop();
+}
+
+TEST(ScriptShareRoot, AnnouncesAChangeSoTheTabCanReread) {
+    Harness harness;
+    QSignalSpy spy(harness.controller.get(), &ServerController::script_share_root_changed);
+    ASSERT_TRUE(spy.isValid());
+
+    harness.controller->set_script_share_root(QStringLiteral("C:/scripts"));
+
+    ASSERT_EQ(spy.count(), 1);
+    EXPECT_EQ(spy.front().at(0).toString(), QStringLiteral("C:/scripts"));
+
+    harness.controller->set_script_share_root(QStringLiteral("C:/scripts"));
+    EXPECT_EQ(spy.count(), 1) << "setting the same path again is not a change";
+}
+
+TEST(ScriptShareRoot, StartsEmptyOnAFreshConfigDirectory) {
+    Harness harness;
+    EXPECT_TRUE(harness.controller->script_share_root().isEmpty())
+        << "an unconfigured share must not read as a configured one";
+}

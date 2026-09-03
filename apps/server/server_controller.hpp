@@ -123,6 +123,12 @@ public:
     /// Every run this server has issued, oldest first.
     [[nodiscard]] const std::vector<ScriptRun>& script_runs() const { return script_runs_; }
 
+    /// Where the script picker reads from. Empty until an operator sets one.
+    [[nodiscard]] QString script_share_root() const { return script_share_root_; }
+    /// Persists immediately and emits script_share_root_changed(), so the tab
+    /// re-reads the share without anyone having to remember to ask it to.
+    void set_script_share_root(QString path);
+
 public slots:
     /// Recomputes can_publish() and emits draft_publishable_changed(). Call
     /// after mutating draft() from the outside.
@@ -158,6 +164,7 @@ signals:
     /// direct display (e.g. a status bar or message box); the last good
     /// in-memory bundle/expected-host list is left untouched.
     void config_error(QString message);
+    void script_share_root_changed(QString path);
 
 private:
     void on_announce(const lm::transport::ClientAnnounce& announce);
@@ -196,8 +203,10 @@ private:
     /// since a failure path now emits a signal.
     void save_expected_hosts();
     void save_published_bundle();
+    void save_script_settings();
     [[nodiscard]] QString expected_hosts_path() const;
     [[nodiscard]] QString bundle_path() const;
+    [[nodiscard]] QString script_settings_path() const;
 
     std::unique_ptr<lm::transport::IServerTransport> transport_;
     QString config_dir_;
@@ -221,4 +230,6 @@ private:
 
     QMap<QString, lm::core::ResourceSample> resource_cache_;
     QMap<QString, lm::core::ComplianceReport> report_cache_;
+
+    QString script_share_root_;
 };
