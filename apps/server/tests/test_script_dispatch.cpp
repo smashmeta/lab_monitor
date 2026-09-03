@@ -304,3 +304,52 @@ TEST(ScriptShareRoot, StartsEmptyOnAFreshConfigDirectory) {
     EXPECT_TRUE(harness.controller->script_share_root().isEmpty())
         << "an unconfigured share must not read as a configured one";
 }
+
+TEST(ScriptShareRoot, AnnouncesTheLoadedRootWhenStartIsCalled) {
+    // main.cpp constructs FleetWindow (and so ScriptsTab, and its connection to
+    // script_share_root_changed) *before* calling controller->start() -- so a
+    // root loaded from disk has to announce itself from inside start(), not
+    // just sit in the getter for a tab that already read an empty string and
+    // was never told to look again. The spy is connected before start() runs,
+    // which is the whole point: connecting after would pass while this bug
+    // was live.
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString share = QStringLiteral("C:/scripts/share");
+
+    {
+        MessageBus bus;
+        ServerController controller(make_in_memory_server(bus), dir.path());
+        controller.start();
+        controller.set_script_share_root(share);
+        controller.stop();
+    }
+
+    MessageBus bus;
+    ServerController reopened(make_in_memory_server(bus), dir.path());
+    QSignalSpy spy(&reopened, &ServerController::script_share_root_changed);
+    ASSERT_TRUE(spy.isValid());
+
+    reopened.start();
+
+    ASSERT_EQ(spy.count(), 1)
+        << "the persisted root must be announced on load, not just returned by the getter";
+    EXPECT_EQ(spy.front().at(0).toString(), share);
+    reopened.stop();
+}
+
+TEST(ScriptShareRoot, EmitsNothingOnStartWithAFreshConfigDirectory) {
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+
+    MessageBus bus;
+    ServerController controller(make_in_memory_server(bus), dir.path());
+    QSignalSpy spy(&controller, &ServerController::script_share_root_changed);
+    ASSERT_TRUE(spy.isValid());
+
+    controller.start();
+
+    EXPECT_EQ(spy.count(), 0)
+        << "an unconfigured share is the starting state, not a change to announce";
+    controller.stop();
+}

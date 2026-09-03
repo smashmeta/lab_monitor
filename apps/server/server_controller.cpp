@@ -669,6 +669,18 @@ void ServerController::load_config() {
         if (document.is_object() && document.contains("share_root") &&
             document["share_root"].is_string()) {
             script_share_root_ = QString::fromStdString(document["share_root"].get<std::string>());
+            // load_config() runs inside start(), which the caller invokes AFTER
+            // connecting its signals -- see expected_hosts_changed() and
+            // published_changed() above for the same pattern. Without this, the
+            // Scripts tab (built before this ran, against an empty controller)
+            // reads an empty share_root and is never told otherwise: a share
+            // configured yesterday would look unconfigured on every launch.
+            // Only when a root was actually loaded -- a fresh config directory
+            // with no scripts.json is the normal starting state, not a change,
+            // and announcing it would show "no share configured" for no reason.
+            if (!script_share_root_.isEmpty()) {
+                emit script_share_root_changed(script_share_root_);
+            }
         } else {
             emit config_error(QStringLiteral("The script settings in %1 could not be read; the "
                                              "share is unset until one is chosen again")
