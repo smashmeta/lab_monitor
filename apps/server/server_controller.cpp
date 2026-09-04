@@ -353,6 +353,41 @@ ScriptRun* ServerController::find_run(const std::string& run_id) {
     return found == script_runs_.end() ? nullptr : &*found;
 }
 
+void ServerController::persist_run_if_finished(ScriptRun& run) {
+    if (!run.is_finished()) {
+        // A run still waiting is not an audit record yet, and writing on
+        // every result would turn a hundred-host run into a hundred writes
+        // of the same growing file. This guard is the entire protection
+        // against that -- not a "have we saved this before?" check, which
+        // would leave a corrected record unwritten. See below.
+        return;
+    }
+
+    // "Written once and never mutated" (spec, see run_store.hpp) describes
+    // the file *format* -- one file per run, so a corrupt one costs a single
+    // run rather than the whole history -- not a promise that this run's own
+    // record can never change. on_script_result() still accepts a result for
+    // a target already at NoResponse, because a late answer is exactly what
+    // an operator wants to see; if that target's run had already finished
+    // and been saved (its deadline fired first), the file on disk would go
+    // on saying NoResponse forever unless this call rewrites it. A record
+    // that claims a machine never answered when it did is worse than a
+    // second write, and QSaveFile makes that second write atomic -- a
+    // rewrite here can never corrupt what was already on disk.
+    const bool already_saved = saved_runs_.contains(run.run_id);
+    QString error;
+    if (save_run(runs_dir(), run, &error)) {
+        saved_runs_.insert(run.run_id);
+        if (already_saved) {
+            spdlog::info("script run {} corrected on disk after a later event changed it",
+                         run.run_id);
+        }
+    } else {
+        spdlog::error(error.toStdString());
+        emit config_error(error);
+    }
+}
+
 QString ServerController::start_script_run(const std::string& script_name,
                                             const std::string& script_body,
                                             const std::vector<std::string>& hosts,
@@ -491,19 +526,7 @@ void ServerController::on_script_result(const lm::transport::ScriptResultMessage
     spdlog::info("script run {}: {} reported {} (exit {}, {} ms)", result.run_id, result.host_id,
                  lm::core::to_string(result.status), result.exit_code, result.duration_ms);
 
-    // Written once, when the run reaches a state it will never leave. A run
-    // still waiting is not an audit record yet, and rewriting a file per
-    // result would turn a hundred-host run into a hundred writes of the same
-    // growing file.
-    if (run->is_finished() && !saved_runs_.contains(run->run_id)) {
-        QString error;
-        if (save_run(runs_dir(), *run, &error)) {
-            saved_runs_.insert(run->run_id);
-        } else {
-            spdlog::error(error.toStdString());
-            emit config_error(error);
-        }
-    }
+    persist_run_if_finished(*run);
 
     emit script_run_changed(QString::fromStdString(result.run_id));
 }
@@ -522,17 +545,7 @@ void ServerController::on_run_deadline(const std::string& run_id) {
     spdlog::info("script run {}: {} host(s) did not respond within {} s", run_id, waiting,
                  run->timeout_seconds);
 
-    // Written once, when the run reaches a state it will never leave. See
-    // on_script_result() for why this is guarded the same way there.
-    if (run->is_finished() && !saved_runs_.contains(run->run_id)) {
-        QString error;
-        if (save_run(runs_dir(), *run, &error)) {
-            saved_runs_.insert(run->run_id);
-        } else {
-            spdlog::error(error.toStdString());
-            emit config_error(error);
-        }
-    }
+    persist_run_if_finished(*run);
 
     emit script_run_changed(QString::fromStdString(run_id));
 }
@@ -771,9 +784,13 @@ void ServerController::load_config() {
 
     std::vector<QString> run_errors;
     script_runs_ = load_runs(runs_dir(), &run_errors);
-    // Loaded runs are finished by construction -- nothing here may be saved
-    // again, and none of them gets a deadline timer, since a loaded run has
-    // no live targets waiting.
+    // Loaded runs are finished by construction, so none of them gets a
+    // deadline timer -- a loaded run has no live targets waiting. Marking
+    // them here in saved_runs_ only means "already exists on disk"; it does
+    // not exempt one from persist_run_if_finished()'s later-correction path
+    // if a late result for a still-NoResponse target arrives after this
+    // restart -- that is the same record-correction case as any other run,
+    // loaded or not.
     for (const ScriptRun& run : script_runs_) {
         saved_runs_.insert(run.run_id);
     }

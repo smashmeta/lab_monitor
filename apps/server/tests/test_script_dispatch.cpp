@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "lm/transport/in_memory_transport.hpp"
+#include "run_store.hpp"
 #include "server_controller.hpp"
 
 using namespace lm::core;
@@ -514,6 +515,68 @@ TEST(RunHistory, EmitsNothingOnStartWithAFreshConfigDirectory) {
     controller.stop();
 }
 
+TEST(RunHistory, WritesNoFileUntilEveryTargetIsTerminal) {
+    // The actual invariant, now that persist_run_if_finished() can rewrite an
+    // already-saved run: not "saved exactly once", but "nothing is written
+    // until the run finishes" -- which is what the hundred-writes concern was
+    // about in the first place. Every other test here finishes a run with a
+    // single host and a single event, so deleting the is_finished() guard
+    // entirely would fail nothing else in this file.
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    harness.announce("PC-002", enrolled());
+    const QString run_id =
+        harness.controller->start_script_run("a.ps1", "exit 0", {"PC-001", "PC-002"}, 60);
+    const QString run_file =
+        harness.controller->runs_dir() + QStringLiteral("/") + run_id + QStringLiteral(".json");
+
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+    EXPECT_FALSE(QFile::exists(run_file))
+        << "one of two targets answering must not write anything yet";
+
+    harness.publish_result("PC-002", run_id.toStdString(), ScriptStatus::Completed);
+    EXPECT_TRUE(QFile::exists(run_file))
+        << "the last target finishing is what makes the run an audit record";
+}
+
+TEST(RunHistory, CorrectsTheFileOnDiskWhenALateResultArrivesAfterTheDeadline) {
+    // A deadline fires first, saving NoResponse for a host that turns out to
+    // have merely been slow. on_script_result() still accepts a result for a
+    // target already at NoResponse -- a late answer is exactly what an
+    // operator wants to see -- and the file on disk, not just the in-memory
+    // run, has to end up saying so: read back with load_runs() rather than
+    // trusting script_runs(), which would pass even if the on-disk record
+    // were never rewritten.
+    Harness harness{std::chrono::milliseconds{5}};
+    harness.announce("PC-001", enrolled());
+    const QString run_id =
+        harness.controller->start_script_run("a.ps1", "exit 0", {"PC-001"}, 0);
+
+    QSignalSpy spy(harness.controller.get(), &ServerController::script_run_changed);
+    ASSERT_TRUE(spy.isValid());
+    ASSERT_TRUE(spy.wait(5000)) << "the deadline timer never fired";
+    ASSERT_EQ(target_for(harness.controller->script_runs().back(), "PC-001").state,
+              TargetState::NoResponse);
+
+    {
+        std::vector<QString> errors;
+        const std::vector<ScriptRun> on_disk = load_runs(harness.controller->runs_dir(), &errors);
+        ASSERT_EQ(on_disk.size(), 1u) << "the deadline must have written the file already";
+        EXPECT_EQ(target_for(on_disk.front(), "PC-001").state, TargetState::NoResponse);
+    }
+
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+    EXPECT_EQ(target_for(harness.controller->script_runs().back(), "PC-001").state,
+              TargetState::Completed)
+        << "the in-memory run must accept the late answer";
+
+    std::vector<QString> errors;
+    const std::vector<ScriptRun> on_disk = load_runs(harness.controller->runs_dir(), &errors);
+    ASSERT_EQ(on_disk.size(), 1u);
+    EXPECT_EQ(target_for(on_disk.front(), "PC-001").state, TargetState::Completed)
+        << "the record on disk must be corrected, not left saying NoResponse forever";
+}
+
 TEST(RunHistory, DeletesOneRunAndSaysItChanged) {
     Harness harness;
     harness.announce("PC-001", enrolled());
@@ -531,24 +594,63 @@ TEST(RunHistory, DeletesOneRunAndSaysItChanged) {
 
 TEST(RunHistory, DeletesOnlyRunsOlderThanTheCutoff) {
     // No automatic pruning anywhere (spec section 8): this runs when an
-    // operator asks, and takes exactly what they asked for.
-    Harness harness;
-    harness.announce("PC-001", enrolled());
-    const QString old_run =
-        harness.controller->start_script_run("old.ps1", "exit 0", {"PC-001"}, 60);
-    harness.publish_result("PC-001", old_run.toStdString(), ScriptStatus::Completed);
+    // operator asks, and takes exactly what they asked for -- which means
+    // this test needs one run genuinely older than the cutoff and one
+    // genuinely newer *in the same call*, or a version that deleted
+    // everything regardless of the argument would pass unchanged. A run
+    // issued 48 hours ago is written straight to disk with save_run(),
+    // before the controller starts and loads it back -- no sleeping
+    // required to get a run older than an hour.
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString runs_dir = dir.path() + QStringLiteral("/runs");
 
-    const auto cutoff = std::chrono::system_clock::now() + std::chrono::hours(1);
-    const QString recent =
-        harness.controller->start_script_run("new.ps1", "exit 0", {"PC-001"}, 60);
-    harness.publish_result("PC-001", recent.toStdString(), ScriptStatus::Completed);
+    ScriptRun old_run;
+    old_run.run_id = "old-run";
+    old_run.script_name = "old.ps1";
+    old_run.script_body = "exit 0";
+    old_run.issued_at = std::chrono::system_clock::now() - std::chrono::hours(48);
+    old_run.timeout_seconds = 60;
+    old_run.targets.push_back(RunTarget{"PC-001", TargetState::Completed, {}, {}});
+    QString save_error;
+    ASSERT_TRUE(save_run(runs_dir, old_run, &save_error)) << save_error.toStdString();
 
-    EXPECT_EQ(harness.controller->delete_script_runs_before(cutoff), 2u)
-        << "both are older than an hour from now";
-    EXPECT_TRUE(harness.controller->script_runs().empty());
+    MessageBus bus;
+    ServerController controller(make_in_memory_server(bus), dir.path());
+    controller.start();
+    ASSERT_EQ(controller.script_runs().size(), 1u) << "the old run must have loaded";
 
-    EXPECT_EQ(harness.controller->delete_script_runs_before(
-                  std::chrono::system_clock::now() - std::chrono::hours(24)),
+    const auto client = make_in_memory_client(bus);
+    ClientAnnounce announce;
+    announce.host_id = "PC-002";
+    announce.capabilities = enrolled().raw();
+    client->publish_announce(announce);
+    controller.add_expected_host("PC-002", "");
+    QApplication::processEvents();
+
+    // Issued just now, in this session -- genuinely newer than the cutoff
+    // below, unlike the loaded run.
+    const QString recent = controller.start_script_run("new.ps1", "exit 0", {"PC-002"}, 60);
+    ScriptResultMessage result;
+    result.host_id = "PC-002";
+    result.run_id = recent.toStdString();
+    result.status = ScriptStatus::Completed;
+    client->publish_script_result(result);
+    QApplication::processEvents();
+    ASSERT_EQ(controller.script_runs().size(), 2u);
+
+    EXPECT_EQ(controller.delete_script_runs_before(std::chrono::system_clock::now() -
+                                                    std::chrono::hours(1)),
+              1u)
+        << "only the 48-hour-old run is older than an hour ago; a version that ignored the "
+           "cutoff and deleted everything would also report a wrong count here";
+    ASSERT_EQ(controller.script_runs().size(), 1u);
+    EXPECT_EQ(controller.script_runs().front().run_id, recent.toStdString())
+        << "the recent run must survive; only the old one was asked for";
+
+    EXPECT_EQ(controller.delete_script_runs_before(std::chrono::system_clock::now() -
+                                                     std::chrono::hours(24)),
               0u)
-        << "nothing is older than yesterday, and nothing may be taken";
+        << "nothing left is older than yesterday, and nothing may be taken";
+    controller.stop();
 }

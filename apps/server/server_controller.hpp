@@ -203,6 +203,14 @@ private:
     /// Null for a run this server never issued -- a stray result, or one for a
     /// run from a previous process.
     [[nodiscard]] ScriptRun* find_run(const std::string& run_id);
+    /// Writes `run` to disk once it has just reached is_finished(), and again
+    /// whenever a later event still changes an already-saved run -- a late
+    /// result for a target that already timed out to NoResponse is exactly
+    /// that case. A no-op while the run is still live: that is the entire
+    /// guard against a hundred-host run becoming a hundred writes. Called
+    /// from on_script_result() and on_run_deadline() after they have already
+    /// mutated the target in question.
+    void persist_run_if_finished(ScriptRun& run);
     void apply_coalesced(QVector<lm::transport::ResourceSampleMessage> batch);
     void reconcile_now();
 
@@ -253,10 +261,12 @@ private:
     /// the GUI, and both the result callback and the deadline timer land here
     /// through the event loop.
     std::vector<ScriptRun> script_runs_;
-    /// Ids already written to disk, so a later result for an already-finished
-    /// run cannot cause a second write. A run loaded from load_runs() is
-    /// inserted here too -- it is finished by construction and must never be
-    /// saved again.
+    /// Ids already written to disk. Not a "never write again" guard -- see
+    /// persist_run_if_finished() -- but what tells it whether the next write
+    /// for a given id is the run's first save or a correction of one already
+    /// on disk. A run loaded from load_runs() is inserted here too, since its
+    /// file already exists; it can still be rewritten later by that same
+    /// correction path.
     std::set<std::string> saved_runs_;
 
     QMap<QString, lm::core::ResourceSample> resource_cache_;
