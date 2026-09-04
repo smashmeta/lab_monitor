@@ -654,6 +654,45 @@ TEST(RunHistory, DeletesOneRunAndSaysItChanged) {
     EXPECT_GT(spy.count(), 0) << "the history view has no other way to know";
 }
 
+TEST(RunHistory, SweepingUpARunThatWasNeverWrittenIsNotAnErrorEither) {
+    // The same guard as DeletingARunThatWasNeverWrittenIsNotAnError, on the
+    // bulk path, and it is user-reachable rather than mechanical: an old
+    // issued_at does not imply a finished run. A script started days ago and
+    // still in flight -- a long install, a machine that has never answered --
+    // is taken by a cutoff that includes its start date while having no file
+    // on disk at all, and delete_run()'s "No such run" for it would raise a
+    // modal titled "Configuration error" over a sweep that did exactly what
+    // was asked.
+    //
+    // Reproduced with a cutoff in the *future*, which takes everything
+    // regardless of age, rather than by ageing the run: start_script_run()
+    // stamps issued_at from Clock::now() with no seam to backdate it, and the
+    // one way to get an old timestamp -- writing a run to disk and loading it
+    // -- makes the run saved by construction, which is the other branch. The
+    // branch under test is reached by "unwritten and swept", and how it came
+    // to be swept is not what decides it.
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    const QString run_id =
+        harness.controller->start_script_run("a.ps1", "exit 0", {"PC-001"}, 60);
+    ASSERT_EQ(target_for(harness.controller->script_runs().back(), "PC-001").state,
+              TargetState::Dispatched)
+        << "premise: still in flight, so nothing has been written for this run";
+    ASSERT_FALSE(QFile::exists(harness.controller->runs_dir() + QStringLiteral("/") + run_id +
+                               QStringLiteral(".json")));
+
+    QSignalSpy spy(harness.controller.get(), &ServerController::config_error);
+    ASSERT_TRUE(spy.isValid());
+
+    EXPECT_EQ(harness.controller->delete_script_runs_before(std::chrono::system_clock::now() +
+                                                            std::chrono::hours(1)),
+              1u);
+
+    EXPECT_EQ(spy.count(), 0) << "a run that was never written is not an error to sweep up";
+    EXPECT_TRUE(harness.controller->script_runs().empty())
+        << "and it still has to go from the history";
+}
+
 TEST(RunHistory, DeletesOnlyRunsOlderThanTheCutoff) {
     // No automatic pruning anywhere (spec section 8): this runs when an
     // operator asks, and takes exactly what they asked for -- which means
