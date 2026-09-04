@@ -539,6 +539,68 @@ TEST(RunHistory, WritesNoFileUntilEveryTargetIsTerminal) {
         << "the last target finishing is what makes the run an audit record";
 }
 
+TEST(RunHistory, KeepsARunThatDispatchedToNobody) {
+    // A run whose every target was Refused at dispatch -- no host Online, none
+    // enrolled -- is is_finished() the moment it is created: no result will
+    // ever arrive for it, and start_script_run() deliberately arms no deadline
+    // when nothing went out. So the two callers of persist_run_if_finished()
+    // that existed before this test (on_script_result, on_run_deadline) can
+    // never run for it, and it lived in the History list for the session and
+    // was gone at the next launch.
+    //
+    // It is precisely the run worth auditing: somebody pushed a script at a
+    // machine and it went nowhere. Read back with load_runs() rather than
+    // trusting script_runs(), which would pass on the in-memory entry alone
+    // while nothing was ever written.
+    Harness harness;
+    harness.controller->add_expected_host("PC-gone", "");
+    QApplication::processEvents();
+
+    const QString run_id =
+        harness.controller->start_script_run("a.ps1", "exit 0", {"PC-gone"}, 60);
+
+    ASSERT_TRUE(harness.dispatched.empty()) << "premise: nothing was sent to anybody";
+    ASSERT_EQ(harness.controller->script_runs().size(), 1u);
+    ASSERT_EQ(target_for(harness.controller->script_runs().back(), "PC-gone").state,
+              TargetState::Refused)
+        << "premise: the run is finished from birth, with nothing left to move it";
+
+    std::vector<QString> errors;
+    const std::vector<ScriptRun> on_disk = load_runs(harness.controller->runs_dir(), &errors);
+    ASSERT_EQ(on_disk.size(), 1u)
+        << "a run that reached nobody is still an audit record, and must survive a restart";
+    EXPECT_EQ(on_disk.front().run_id, run_id.toStdString());
+    EXPECT_EQ(target_for(on_disk.front(), "PC-gone").state, TargetState::Refused);
+}
+
+TEST(RunHistory, DeletingARunThatWasNeverWrittenIsNotAnError) {
+    // A run's History row exists from creation, so Run -> select it -> Delete
+    // is an ordinary sequence on a run still in flight -- which has no file,
+    // because nothing is written until a run finishes. delete_run() reporting
+    // "No such run" for that reached config_error(), which FleetWindow turns
+    // into a modal titled "Configuration error" over an action that did
+    // exactly what was asked. A false error on a destructive action trains
+    // people to dismiss the real ones.
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    const QString run_id =
+        harness.controller->start_script_run("a.ps1", "exit 0", {"PC-001"}, 60);
+    ASSERT_EQ(target_for(harness.controller->script_runs().back(), "PC-001").state,
+              TargetState::Dispatched)
+        << "premise: still live, so nothing has been written for this run";
+    ASSERT_FALSE(QFile::exists(harness.controller->runs_dir() + QStringLiteral("/") + run_id +
+                               QStringLiteral(".json")));
+
+    QSignalSpy spy(harness.controller.get(), &ServerController::config_error);
+    ASSERT_TRUE(spy.isValid());
+
+    harness.controller->delete_script_run(run_id.toStdString());
+
+    EXPECT_EQ(spy.count(), 0) << "a run that was never written is not an error to delete";
+    EXPECT_TRUE(harness.controller->script_runs().empty())
+        << "and it still has to go from the history";
+}
+
 TEST(RunHistory, CorrectsTheFileOnDiskWhenALateResultArrivesAfterTheDeadline) {
     // A deadline fires first, saving NoResponse for a host that turns out to
     // have merely been slow. on_script_result() still accepts a result for a

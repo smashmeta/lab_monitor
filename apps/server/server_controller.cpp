@@ -489,6 +489,16 @@ QString ServerController::start_script_run(const std::string& script_name,
                            [this, deadline_run_id] { on_run_deadline(deadline_run_id); });
     }
 
+    // A run every one of whose targets was Refused at dispatch -- no host
+    // Online, none enrolled -- is is_finished() from birth, and no deadline
+    // was armed for it above, so on_script_result() and on_run_deadline() will
+    // never run for it. Without this call it would live in the History list
+    // for the session and be gone at the next launch: "fifteen machines and
+    // every one refused it" is exactly the run worth auditing. The
+    // is_finished() guard inside makes this a no-op for a run with live
+    // targets, so the hundred-writes protection is untouched.
+    persist_run_if_finished(run);
+
     emit script_run_changed(run_id);
     // A new run is a new entry in the set script_runs() enumerates, exactly
     // the fact this signal already carries for a load at startup or a
@@ -557,9 +567,17 @@ void ServerController::on_run_deadline(const std::string& run_id) {
 }
 
 bool ServerController::delete_script_run(const std::string& run_id) {
+    // Whether there is a file to miss. A run's History row exists from the
+    // moment it is created, so an operator can select and delete one that has
+    // not finished and so has never been written -- and delete_run() reporting
+    // "No such run" for that would reach config_error() and raise a modal
+    // titled "Configuration error" over an action that did exactly what was
+    // asked. saved_runs_ is the state that knows; a run never written is not
+    // an error to delete.
+    const bool was_saved = saved_runs_.contains(run_id);
     QString error;
     const bool removed = delete_run(runs_dir(), run_id, &error);
-    if (!removed) {
+    if (!removed && was_saved) {
         spdlog::error(error.toStdString());
         emit config_error(error);
     }
@@ -582,8 +600,12 @@ std::size_t ServerController::delete_script_runs_before(
         }
     }
     for (const std::string& run_id : doomed) {
+        // Same guard, and for the same reason, as delete_script_run() above: a
+        // run still in flight has never been written, and "No such run" for
+        // one is a modal reporting a failure that did not happen.
+        const bool was_saved = saved_runs_.contains(run_id);
         QString error;
-        if (!delete_run(runs_dir(), run_id, &error)) {
+        if (!delete_run(runs_dir(), run_id, &error) && was_saved) {
             spdlog::error(error.toStdString());
             emit config_error(error);
         }
