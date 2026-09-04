@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QDate>
+#include <QDateEdit>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -1267,4 +1269,46 @@ TEST(ScriptsTab, UpdatesTheHistoryRowInPlaceRatherThanRebuildingTheList) {
     ASSERT_EQ(history->count(), 1);
     EXPECT_EQ(history->item(0), row) << "same object: the list was not torn down";
     EXPECT_NE(row->text(), text_before_result) << "the tally must actually have updated";
+}
+
+TEST(ScriptsTab, DeletesRunsOlderThanTheChosenDate) {
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    const QString run_id =
+        harness.controller->start_script_run("a.ps1", "exit 0", {"PC-001"}, 60);
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+    QApplication::processEvents();
+
+    auto* date = harness.window->findChild<QDateEdit*>(QStringLiteral("DeleteOlderDate"));
+    ASSERT_NE(date, nullptr);
+    date->setDate(QDate::currentDate().addDays(1));  // everything is older than tomorrow
+
+    button(harness, QStringLiteral("DeleteOlderButton"))->click();
+    QApplication::processEvents();
+
+    EXPECT_TRUE(harness.controller->script_runs().empty());
+    auto* message = harness.window->findChild<QLabel*>(QStringLiteral("CleanupMessage"));
+    ASSERT_NE(message, nullptr);
+    EXPECT_NE(message->text().indexOf(QStringLiteral("1")), -1)
+        << "the operator is told how much was taken: " << message->text().toStdString();
+}
+
+TEST(ScriptsTab, KeepsRunsNewerThanTheChosenDate) {
+    // Silently discarding an audit trail is worse than a large directory
+    // (spec section 8), so this must take exactly what was asked for.
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    const QString run_id =
+        harness.controller->start_script_run("a.ps1", "exit 0", {"PC-001"}, 60);
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+    QApplication::processEvents();
+
+    auto* date = harness.window->findChild<QDateEdit*>(QStringLiteral("DeleteOlderDate"));
+    ASSERT_NE(date, nullptr);
+    date->setDate(QDate::currentDate().addDays(-7));
+
+    button(harness, QStringLiteral("DeleteOlderButton"))->click();
+    QApplication::processEvents();
+
+    EXPECT_EQ(harness.controller->script_runs().size(), 1u) << "a run from today was taken";
 }

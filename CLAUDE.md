@@ -821,6 +821,56 @@ fixture: what it did is worth watching while it runs and worth nothing an hour
 later, and a log file beside a tool nobody supports is one more thing to
 explain.
 
+### Scripts: a share read on demand, a body re-read at Run, and cleanup nobody automated
+The Scripts tab (`apps/server/scripts_tab.{hpp,cpp}`) dispatches PowerShell to
+many machines at once, so every read in it is deliberate about when it happens
+and what it promises the operator it is showing them.
+
+**The share is read on demand, and never watched.** `reload_library()` walks
+`read_script_library()` at construction, on Refresh, and when the root
+changes — nowhere else. A UNC path can be slow or briefly unreachable, and
+polling it on a timer would let a flaky share stall the console every few
+seconds for a tree nobody is looking at. Refresh is the whole mechanism for
+"is this current now" — see the *Known gaps* note on why that read still runs
+on the GUI thread rather than a worker.
+
+**The share root is a persisted setting, deliberately with no CLI
+equivalent.** `ServerController::set_script_share_root()` writes it to config
+and emits `script_share_root_changed()` immediately; nothing under `main.cpp`
+takes it from `program_options`. A launch flag would have to be re-typed by
+whoever starts the server next, on whichever machine that is, where a setting
+just follows the config directory.
+
+**The body is re-read when Run is pressed, and a change since the preview
+blocks the run.** `on_run_clicked()` calls `read_script_body()` again rather
+than trusting `previewed_body_`, because the share is writable by other people
+while an operator is reading it, and the preview is a promise about what will
+execute. A mismatch does not silently run the new content — it repaints the
+preview with what the file now says and refuses to dispatch, so the operator
+sees the same text they would be trusting a hundred machines with before
+pressing Run again to accept it.
+
+**Runs are one file each under `<config>/runs/`, written when the run
+finishes and rewritten if a late result corrects it.** `persist_run_if_finished()`
+guards the write on `run.is_finished()` so a ninety-host run is not a hundred
+writes of the same growing file, but "written once" describes the *format* —
+one file per run, so a corrupt one costs a single record rather than the whole
+history — not a promise the file can never change again. A target that
+answers after its deadline has already been saved as `NoResponse` still moves
+through `apply_result()`, and `persist_run_if_finished()` rewrites that run's
+file through `QSaveFile` (atomic, so the rewrite can never corrupt what was
+already on disk) rather than leaving the audit trail saying forever that a
+machine never answered when it did.
+
+**Cleanup is explicit and operator-driven, never automatic.** `DeleteRunButton`
+removes one run at a time; `DeleteOlderButton` sweeps everything before an
+operator-chosen date through `ServerController::delete_script_runs_before()`,
+with no confirmation dialog — an explicit action on a date somebody typed does
+not need a modal, and `CleanupMessage` reporting `Deleted N run(s).` (0 included)
+is the feedback instead. Nothing in this feature runs on a timer to prune old
+runs by itself: silently discarding an audit trail is worse than a large
+`runs/` directory, so a run persists until somebody asks for it to go.
+
 ### nlohmann-json, not boost-json
 Team choice. Boost is consequently confined to `program_options` in the two apps.
 

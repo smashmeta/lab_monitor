@@ -9,6 +9,7 @@
 
 #include "script_library.hpp"
 
+class QDateEdit;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -202,6 +203,20 @@ private:
     /// selected, for the same reason RunButton is: a button that does nothing
     /// when pressed reads as broken.
     QPushButton* delete_run_button_ = nullptr;
+
+    /// The cutoff date for bulk cleanup, defaulting to 30 days ago. Read at
+    /// DeleteOlderButton's click, never on a timer -- there is deliberately
+    /// no automatic pruning of the run history anywhere in this feature.
+    QDateEdit* delete_older_date_ = nullptr;
+    /// Deletes every run older than delete_older_date_'s chosen day (its
+    /// local midnight). No confirmation dialog: this is an explicit,
+    /// operator-driven action on a date they typed, and cleanup_message_
+    /// reporting the count is the feedback.
+    QPushButton* delete_older_button_ = nullptr;
+    /// "Deleted N run(s)." after DeleteOlderButton is pressed -- including
+    /// N == 0, which is a real answer for a cutoff that matched nothing, not
+    /// a silent no-op.
+    QLabel* cleanup_message_ = nullptr;
 
     /// The run on screen. An id rather than a pointer or an index, because
     /// ServerController's vector of runs reallocates as runs are added and

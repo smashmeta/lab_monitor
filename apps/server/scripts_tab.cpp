@@ -1,5 +1,7 @@
 #include "scripts_tab.hpp"
 
+#include <QDate>
+#include <QDateEdit>
 #include <QDateTime>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -18,13 +20,16 @@
 #include <QStackedWidget>
 #include <QStringList>
 #include <QTableWidget>
+#include <QTime>
 #include <QTimeZone>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <functional>
 
 #include "lm/core/fleet.hpp"
@@ -533,6 +538,26 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
     delete_run_button_->setObjectName(QStringLiteral("DeleteRunButton"));
     delete_run_button_->setEnabled(false);  // nothing selected yet
     history_layout->addWidget(delete_run_button_);
+
+    // Bulk cleanup, below the one-at-a-time Delete: an explicit,
+    // operator-driven sweep of everything older than a chosen day, never a
+    // timer -- see "There is no automatic pruning" in the brief and CLAUDE.md.
+    auto* cleanup_row = new QHBoxLayout();
+    cleanup_row->addWidget(new QLabel(QStringLiteral("Delete runs older than…"), history_side));
+    delete_older_date_ = new QDateEdit(QDate::currentDate().addDays(-30), history_side);
+    delete_older_date_->setObjectName(QStringLiteral("DeleteOlderDate"));
+    delete_older_date_->setCalendarPopup(true);
+    cleanup_row->addWidget(delete_older_date_);
+    delete_older_button_ = new QPushButton(QStringLiteral("Delete"), history_side);
+    delete_older_button_->setObjectName(QStringLiteral("DeleteOlderButton"));
+    cleanup_row->addWidget(delete_older_button_);
+    history_layout->addLayout(cleanup_row);
+
+    cleanup_message_ = new QLabel(history_side);
+    cleanup_message_->setObjectName(QStringLiteral("CleanupMessage"));
+    cleanup_message_->setWordWrap(true);
+    history_layout->addWidget(cleanup_message_);
+
     run_side_layout->addWidget(history_side, 1);
 
     auto* run_detail_side = new QWidget(run_side);
@@ -648,6 +673,19 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
             displayed_run_id_.clear();
             refresh_run_view();
         }
+    });
+    connect(delete_older_button_, &QPushButton::clicked, this, [this] {
+        // Local midnight of the chosen day: an operator picking a date means
+        // "from the beginning of that day", not "this time on that day".
+        const QDateTime cutoff_local(delete_older_date_->date(), QTime(0, 0),
+                                      QTimeZone::LocalTime);
+        const auto cutoff = std::chrono::system_clock::from_time_t(
+            static_cast<std::time_t>(cutoff_local.toSecsSinceEpoch()));
+        const std::size_t removed = controller_->delete_script_runs_before(cutoff);
+        // rebuild_run_history() runs on its own through script_runs_changed(),
+        // emitted by delete_script_runs_before() -- calling it here too would
+        // rebuild the list twice for one click.
+        cleanup_message_->setText(QStringLiteral("Deleted %1 run(s).").arg(removed));
     });
 
     // Both halves matter: this line is correct when the operator sets the root
