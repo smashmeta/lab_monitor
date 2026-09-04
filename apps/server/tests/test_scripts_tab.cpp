@@ -1242,3 +1242,29 @@ TEST(ScriptsTab, DisablesDeleteUntilARunIsSelected) {
     Harness harness;
     EXPECT_FALSE(button(harness, QStringLiteral("DeleteRunButton"))->isEnabled());
 }
+
+TEST(ScriptsTab, UpdatesTheHistoryRowInPlaceRatherThanRebuildingTheList) {
+    // A rebuild would tear the row down and hand back a new QListWidgetItem,
+    // which is indistinguishable from an update if the test only checks the
+    // text -- the pointer identity is the part that actually proves nothing
+    // was torn down, and it is what a ninety-host run needs: the panel must
+    // not visibly reflow through every one of up to ninety results.
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    const QString run_id =
+        harness.controller->start_script_run("a.ps1", "exit 0", {"PC-001"}, 60);
+    QApplication::processEvents();
+
+    auto* history = harness.window->findChild<QListWidget*>(QStringLiteral("RunHistoryList"));
+    ASSERT_NE(history, nullptr);
+    ASSERT_EQ(history->count(), 1) << "the row appears at creation, not at first result";
+    QListWidgetItem* row = history->item(0);
+    const QString text_before_result = row->text();
+
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+    QApplication::processEvents();
+
+    ASSERT_EQ(history->count(), 1);
+    EXPECT_EQ(history->item(0), row) << "same object: the list was not torn down";
+    EXPECT_NE(row->text(), text_before_result) << "the tally must actually have updated";
+}

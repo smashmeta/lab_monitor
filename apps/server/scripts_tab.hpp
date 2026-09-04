@@ -73,19 +73,33 @@ private slots:
     /// Refreshes the run view, but only when the run that moved is the one on
     /// screen. script_run_changed fires for every result of every run this
     /// server has issued, and a run nobody is looking at must not repaint.
-    /// Also rebuilds the history list -- a run's tally in that row can be
-    /// stale the instant a target of it moves, whether or not that run is the
-    /// one currently on screen.
+    ///
+    /// Also updates that run's RunHistoryList row in place -- via
+    /// update_run_history_row(), never rebuild_run_history() -- so a tally
+    /// stays current on a run nobody has (re)selected without tearing the
+    /// whole list down on every one of up to ninety results a run produces.
+    /// A run this signal names that the list does not yet have a row for
+    /// (the gap between start_script_run() appending it and the
+    /// script_runs_changed() it also emits reaching rebuild_run_history())
+    /// is left alone rather than rebuilt around -- that row is guaranteed to
+    /// exist by the time either signal's slot has run, since both are
+    /// ordinary direct connections on the same thread.
     void on_script_run_changed(QString run_id);
 
     /// Rebuilds RunHistoryList, newest run first, from
-    /// controller_->script_runs(). Connected to
-    /// ServerController::script_runs_changed() (the set of runs changed shape
-    /// -- loaded at startup, or a deletion) and called once at the end of the
-    /// constructor, because construction happens before
-    /// ServerController::start() loads persisted runs -- see main.cpp. Also
-    /// reached from on_script_run_changed(), so a run's tally stays current
-    /// even while nobody has (re)selected it.
+    /// controller_->script_runs(). Connected only to
+    /// ServerController::script_runs_changed() -- the set of runs changed
+    /// shape: one was created, one was loaded at startup, or one (or more)
+    /// was deleted -- and called once more at the end of the constructor,
+    /// because construction happens before ServerController::start() loads
+    /// persisted runs -- see main.cpp.
+    ///
+    /// Deliberately *not* connected to script_run_changed(), which fires
+    /// again for every later result of a run already in the list: rebuilding
+    /// on that too would clear() and reconstruct the whole panel once per
+    /// result -- about ninety times over a ninety-host run, with the panel
+    /// visibly reflowing throughout the one workload this tab exists to
+    /// watch. update_run_history_row() carries that case instead.
     ///
     /// Preserves the selection by displayed_run_id_ across a rebuild: a
     /// rebuild driven by an unrelated run must not knock an operator off the
@@ -127,6 +141,11 @@ private:
     /// Fills the output pane from whichever row is selected, or explains why
     /// there is nothing to show.
     void update_run_output();
+    /// Re-texts the one RunHistoryList row for `run`, found by kRunIdRole,
+    /// using the same formatting rebuild_run_history() builds a row with --
+    /// so the two cannot drift into disagreeing about how a row reads. A
+    /// no-op if the row is not there yet; see on_script_run_changed().
+    void update_run_history_row(const ScriptRun& run);
     /// The target the selected row stands for, or null when nothing is
     /// selected.
     [[nodiscard]] const RunTarget* selected_target() const;

@@ -179,12 +179,12 @@ signals:
     /// the run itself is reachable through script_runs(), and passing the
     /// whole ScriptRun would copy every host's captured output on each result.
     void script_run_changed(QString run_id);
-    /// The set of runs changed shape: one was loaded from disk at startup, or
-    /// one (or more) was deleted. Carries nothing -- script_runs() is the
-    /// source of truth -- and is deliberately separate from
-    /// script_run_changed(), which fires for an existing run's target moving
-    /// and is not what a list of runs needs to hear about being added or
-    /// removed.
+    /// The set of runs changed shape: one was created, one was loaded from
+    /// disk at startup, or one (or more) was deleted. Carries nothing --
+    /// script_runs() is the source of truth -- and is deliberately separate
+    /// from script_run_changed(), which fires again for every later result of
+    /// a run already in that set and is not what a list of runs needs to hear
+    /// about repeatedly.
     void script_runs_changed();
     /// A config file existed but failed to parse. The message is meant for
     /// direct display (e.g. a status bar or message box); the last good

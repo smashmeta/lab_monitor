@@ -603,10 +603,14 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
     connect(controller_, &ServerController::fleet_changed, this, &ScriptsTab::rebuild_host_list);
     connect(controller_, &ServerController::script_run_changed, this,
             &ScriptsTab::on_script_run_changed);
-    // The set of runs changed shape -- loaded at startup (see the ordering
-    // note on rebuild_run_history()), or a deletion. A run appearing or its
-    // targets moving is on_script_run_changed() above, which also rebuilds
-    // the history so a row's tally never goes stale.
+    // The set of runs changed shape -- one was created, one was loaded at
+    // startup (see the ordering note on rebuild_run_history()), or one (or
+    // more) was deleted. Deliberately not also wired to script_run_changed,
+    // which fires again for every later result of a run already in the list
+    // -- see rebuild_run_history()'s own doc comment for why that would be
+    // wrong. on_script_run_changed() above updates that one row in place
+    // instead, so a tally never goes stale without tearing the whole panel
+    // down to do it.
     connect(controller_, &ServerController::script_runs_changed, this,
             &ScriptsTab::rebuild_run_history);
 
@@ -803,10 +807,32 @@ void ScriptsTab::on_script_run_changed(QString run_id) {
     if (run_id.toStdString() == displayed_run_id_) {
         refresh_run_view();
     }
-    // Every emission -- a new run dispatched, or one more target of an
-    // existing run reporting back -- can change what a history row says, not
-    // only the row of whichever run happens to be on screen.
-    rebuild_run_history();
+    // Updates that one row in place rather than rebuilding: every result of
+    // an in-flight run reaches here, up to once per host, and a rebuild on
+    // each would clear() and reconstruct the whole panel through exactly the
+    // run an operator is watching it during.
+    const std::vector<ScriptRun>& runs = controller_->script_runs();
+    const auto found = std::ranges::find(runs, run_id.toStdString(), &ScriptRun::run_id);
+    if (found != runs.end()) {
+        update_run_history_row(*found);
+    }
+}
+
+void ScriptsTab::update_run_history_row(const ScriptRun& run) {
+    const QString run_id = QString::fromStdString(run.run_id);
+    for (int row = 0; row < run_history_->count(); ++row) {
+        QListWidgetItem* item = run_history_->item(row);
+        if (item->data(ScriptsTab::kRunIdRole).toString() == run_id) {
+            item->setText(history_row_text(run));
+            return;
+        }
+    }
+    // No row for this run yet: script_runs_changed() -- emitted alongside
+    // script_run_changed() by start_script_run(), and always ahead of it on
+    // an ordinary direct, same-thread connection -- has not been processed
+    // by rebuild_run_history() yet. That row is guaranteed to exist by the
+    // time this signal fires again, so there is nothing to do here but wait
+    // for it rather than rebuild around the gap.
 }
 
 void ScriptsTab::rebuild_run_history() {

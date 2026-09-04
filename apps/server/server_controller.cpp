@@ -490,6 +490,12 @@ QString ServerController::start_script_run(const std::string& script_name,
     }
 
     emit script_run_changed(run_id);
+    // A new run is a new entry in the set script_runs() enumerates, exactly
+    // the fact this signal already carries for a load at startup or a
+    // deletion -- so a view of the *set* of runs (the Scripts tab's history
+    // list) needs this as much as those two, and not only script_run_changed,
+    // which fires again for every result this run goes on to receive.
+    emit script_runs_changed();
     return run_id;
 }
 
