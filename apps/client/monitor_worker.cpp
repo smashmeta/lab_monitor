@@ -4,7 +4,10 @@
 
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <expected>
+#include <string>
+#include <thread>
 #include <utility>
 
 #include "lm/core/compliance.hpp"
@@ -51,12 +54,29 @@ constexpr const char* kAgentVersion = "0.1.0";
 
 MonitorWorker::MonitorWorker(std::unique_ptr<lm::platform::HostProbes> probes,
                               std::unique_ptr<lm::transport::IClientTransport> transport,
-                              QObject* parent)
-    : QObject(parent), probes_(std::move(probes)), transport_(std::move(transport)) {
+                              std::unique_ptr<lm::platform::IScriptRunner> runner,
+                              bool allow_scripts, QObject* parent)
+    : QObject(parent),
+      probes_(std::move(probes)),
+      transport_(std::move(transport)),
+      runner_(std::move(runner)),
+      allow_scripts_(allow_scripts) {
     register_metatypes_once();
 
     transport_->on_connection_changed(
         [this](lm::transport::ConnectionState state) { emit connection_changed(static_cast<int>(state)); });
+}
+
+MonitorWorker::~MonitorWorker() {
+    // The run thread posts its result back to this object and reads runner_,
+    // both of which are about to stop existing. Joining here is what makes
+    // that impossible rather than merely unlikely; a detached thread would
+    // leave a use-after-free that only appears when a shutdown lands mid-run.
+    // The wait is bounded by the script's own timeout, which the runner
+    // enforces.
+    if (script_thread_.joinable()) {
+        script_thread_.join();
+    }
 }
 
 void MonitorWorker::announce() {
@@ -71,6 +91,19 @@ void MonitorWorker::announce() {
     // from a dead one -- which is the whole reading this flag exists to fix.
     message.paused = paused_;
     transport_->publish_announce(message);
+
+    // start() announces at once and the timer every 10 s after, so the
+    // seventh announce is the one a minute in. Long enough that a server
+    // merely starting up a little later is not accused, short enough that
+    // somebody watching a machine come up still sees it.
+    constexpr int kAnnouncesBeforeUnheard = 7;
+    if (heard_server_ || said_unheard_) {
+        return;
+    }
+    if (++announces_unheard_ >= kAnnouncesBeforeUnheard) {
+        said_unheard_ = true;
+        emit server_unheard();
+    }
 }
 
 void MonitorWorker::start() {
@@ -93,6 +126,16 @@ void MonitorWorker::start() {
     transport_->on_bundle([this](const lm::transport::TemplateBundleMessage& message) {
         QMetaObject::invokeMethod(
             this, [this, message] { on_bundle(message); }, Qt::QueuedConnection);
+    });
+
+    // Same marshalling, same reason, as on_bundle above: the transport hands
+    // this to us on its own polling/listener thread, and everything the
+    // handler touches (executed_, runner_, the transport) belongs to this
+    // one. Queued also means the handler returns to that thread immediately
+    // rather than holding it for the length of a decision.
+    transport_->on_script_command([this](const lm::transport::ScriptCommand& command) {
+        QMetaObject::invokeMethod(
+            this, [this, command] { on_script_command(command); }, Qt::QueuedConnection);
     });
 
     // Created here rather than in main(): start() only ever runs after
@@ -173,6 +216,12 @@ void MonitorWorker::set_reporting_paused(bool paused) {
 }
 
 void MonitorWorker::on_bundle(const lm::transport::TemplateBundleMessage& message) {
+    // Before the revision check, and before parsing: any bundle at all, even a
+    // repeat of one already held or one that turns out to be malformed, proves
+    // a server found this client and this client found it back. That is the
+    // only claim server_unheard() makes.
+    heard_server_ = true;
+
     if (message.revision == bundle_.revision) {
         return;
     }
@@ -190,4 +239,121 @@ void MonitorWorker::on_bundle(const lm::transport::TemplateBundleMessage& messag
                  bundle_.revision, lm::core::rules_for(bundle_, probes_->host_id()).size());
     emit template_applied(bundle_.revision);
     evaluate_compliance();
+}
+
+void MonitorWorker::refuse_script(const lm::transport::ScriptCommand& command,
+                                  const std::string& reason) {
+    spdlog::info("refusing script run {} ({}): {}", command.run_id, command.script_name, reason);
+    lm::transport::ScriptResultMessage message;
+    message.host_id = probes_->host_id();
+    message.run_id = command.run_id;
+    message.status = lm::core::ScriptStatus::Refused;
+    message.refusal_reason = reason;
+    transport_->publish_script_result(message);
+}
+
+void MonitorWorker::publish_script_outcome(const std::string& run_id,
+                                           const std::string& script_name,
+                                           const lm::core::ScriptOutcome& outcome) {
+    lm::transport::ScriptResultMessage message;
+    message.host_id = probes_->host_id();
+    message.run_id = run_id;
+    // Taken from the outcome, never re-derived: exit code, timeout, never
+    // started and the script's own LM-RESULT line all feed one verdict, and a
+    // second place weighing them would be free to disagree with the first.
+    message.status = outcome.status();
+    message.exit_code = outcome.exit_code;
+    // "Said nothing" and "said it failed" stay distinguishable on the wire,
+    // which is why the flag travels beside the value rather than as a sentinel
+    // inside it.
+    message.has_reported = outcome.reported.has_value();
+    if (outcome.reported) {
+        message.reported_ok = outcome.reported->ok;
+        message.reported_message = outcome.reported->message;
+    }
+    message.stdout_text = outcome.stdout_text;
+    message.stderr_text = outcome.stderr_text;
+    message.duration_ms = outcome.duration_ms;
+    transport_->publish_script_result(message);
+
+    spdlog::info("script {} (run {}) {}: exit {} after {} ms", script_name, run_id,
+                 lm::core::to_string(message.status), outcome.exit_code, outcome.duration_ms);
+}
+
+void MonitorWorker::on_script_command(const lm::transport::ScriptCommand& command) {
+    if (command.host_id != probes_->host_id()) {
+        return;  // addressed to somebody else
+    }
+
+    // Two branches, not one condition, because they answer different questions
+    // and only the first is something an operator can act on. Telling somebody
+    // on a platform with no runner to pass --allow-scripts sends them to try a
+    // flag they have already passed.
+    if (!allow_scripts_) {
+        // Visibly, not silently. The opt-in is what stops an agent upgrade
+        // turning a monitoring box into one that runs remote code, but an
+        // operator watching a run that never reports needs to be told why.
+        refuse_script(command,
+                      "this machine is not enrolled for script execution (--allow-scripts)");
+        return;
+    }
+    if (runner_ == nullptr) {
+        refuse_script(command, "this platform has no script runner");
+        return;
+    }
+    if (!executed_.insert(command.run_id).second) {
+        // Already done. Silent by design: the server has the first result, and
+        // a second one would make the run view contradict itself.
+        return;
+    }
+    if (running_.exchange(true)) {
+        executed_.erase(command.run_id);  // it did not run, so let a retry through
+        refuse_script(command, "another script is already running on this machine");
+        return;
+    }
+
+    spdlog::info("running script {} (run {})", command.script_name, command.run_id);
+
+    // On a thread of its own: this one carries the 10 s announce, and a 60 s
+    // script blocking it would push the host past its liveliness lease -- the
+    // fleet would watch the machine go Offline mid-run and then come back.
+    //
+    // running_ guarantees at most one live run, so the only thread joined here
+    // is a finished one from an earlier command; joining it costs nothing and
+    // keeps std::thread's assignment operator from terminating the process.
+    if (script_thread_.joinable()) {
+        script_thread_.join();
+    }
+    const std::string body = command.script_body;
+    const auto timeout = std::chrono::seconds(command.timeout_seconds);
+    const std::string run_id = command.run_id;
+    const std::string name = command.script_name;
+    script_thread_ = std::thread([this, body, timeout, run_id, name] {
+        lm::core::ScriptOutcome outcome;
+        try {
+            outcome = runner_->run(body, timeout);
+        } catch (...) {
+            // IScriptRunner promises nothing about throwing, and an escaping
+            // exception on a bare std::thread is std::terminate -- a
+            // monitoring agent killed with no log line and no result at all.
+            // started = false is the outcome's own word for "never ran as a
+            // run", so status() reports Error rather than a fabricated exit
+            // code. Same reasoning as codec.cpp's decode(): catch the class of
+            // risk at the boundary and report it, rather than trusting a
+            // dependency to be non-throwing.
+            outcome = lm::core::ScriptOutcome{};
+            outcome.started = false;
+            outcome.stderr_text = "the script runner threw while starting the script";
+        }
+        // Back onto the worker thread to publish: the transport is this
+        // object's, and one thread publishing is one fewer thing the DDS
+        // writer has to be safe against.
+        QMetaObject::invokeMethod(
+            this,
+            [this, outcome, run_id, name] {
+                publish_script_outcome(run_id, name, outcome);
+                running_ = false;
+            },
+            Qt::QueuedConnection);
+    });
 }

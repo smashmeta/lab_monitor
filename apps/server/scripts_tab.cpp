@@ -1,0 +1,1177 @@
+#include "scripts_tab.hpp"
+
+#include <QDate>
+#include <QDateEdit>
+#include <QDateTime>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QFontDatabase>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QItemSelectionModel>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QPlainTextEdit>
+#include <QPushButton>
+#include <QSet>
+#include <QSignalBlocker>
+#include <QSplitter>
+#include <QStackedWidget>
+#include <QStringList>
+#include <QTableWidget>
+#include <QTime>
+#include <QTimeZone>
+#include <QTreeWidget>
+#include <QVBoxLayout>
+
+#include <algorithm>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <ctime>
+#include <functional>
+
+#include "lm/core/fleet.hpp"
+#include "lm/core/types.hpp"
+#include "lm/ui/keep_foreground_delegate.hpp"
+#include "lm/ui/theme.hpp"
+#include "script_library.hpp"
+#include "script_run.hpp"
+#include "server_controller.hpp"
+
+namespace {
+
+/// The editor's starting content, verbatim from the design spec.
+///
+/// Three things about it are deliberate and must survive an edit here.
+///
+/// It **runs as-is and does nothing**, so pressing Run on an untouched
+/// template is safe and demonstrates the whole path -- dispatch, capture,
+/// verdict -- before anybody has written a line of their own.
+///
+/// It shows **both** branches, because the failure one is what people get
+/// wrong: a script that catches its own error and forgets to exit non-zero
+/// reports success, and PowerShell will happily let it.
+///
+/// It builds its JSON with ConvertTo-Json rather than a hand-built string,
+/// because hand-quoting JSON inside PowerShell is a reliable source of
+/// malformed markers -- and a malformed marker is silently ignored, so the
+/// mistake costs an operator the one line they wrote the script to see.
+///
+/// This is also the only place the LM-RESULT convention is taught. A page of
+/// documentation describing it would be read by nobody; boilerplate that
+/// already does it correctly gets edited rather than replaced.
+constexpr const char* kStarterTemplate = R"PS(# Runs on each selected host as the lab_monitor agent.
+# The exit code decides the outcome: 0 = Completed, anything else = Failed.
+# The LM-RESULT line is optional — it lets you say *why*, in the run view.
+
+function Report($ok, $message) {
+    $payload = @{ ok = $ok; message = $message } | ConvertTo-Json -Compress
+    Write-Output "LM-RESULT: $payload"
+}
+
+try {
+    # --- your work here ---
+    Write-Output "Nothing to do yet."
+
+    # Audible proof this ran on the machine you targeted: one high note for
+    # success, one low one for failure. Two sounds that cannot be mistaken
+    # for each other, so a row of PCs can be checked by ear. Delete both
+    # when you put real work here.
+    [console]::Beep(1047, 400)
+    Report $true "completed"
+    exit 0
+}
+catch {
+    [console]::Beep(196, 700)
+    Report $false $_.Exception.Message
+    exit 1
+}
+)PS";
+
+/// Phase 1 has no per-run timeout control, and 120 s matches ScriptRun's own
+/// default. Named rather than inlined so the run view and this agree when the
+/// control arrives.
+constexpr std::uint32_t kDefaultTimeoutSeconds = 120;
+
+/// The name a run made from the editor is recorded under. Custom runs are as
+/// auditable as named ones -- the body is kept verbatim either way -- so this
+/// says where it came from rather than pretending to be a filename.
+const QString kCustomScriptName = QStringLiteral("(custom script)");
+
+/// What a row says about a host beyond its name; empty when there is nothing
+/// to say.
+///
+/// Several different things wear the same suffix, deliberately: they all
+/// answer "what should I know about this machine before I tick it", and
+/// splitting them into a note and a warning would make an operator learn two
+/// visual languages for one question. None of them stops the row being
+/// selected -- the server decides what it will actually dispatch, and says so
+/// per target in the run view.
+/// The wording is the tab's own -- short enough to sit at the end of a row --
+/// where ServerController::start_script_run() records a fuller sentence on the
+/// run itself ("host is Offline, not Online", "not enrolled for script
+/// execution"). The reasons correspond; nothing enforces that the phrasing
+/// does, so do not read one off the other.
+QString note_for(const lm::core::FleetEntry& entry) {
+    if (entry.state != lm::core::HostState::Online) {
+        return QString::fromStdString(lm::core::to_string(entry.state));
+    }
+    if (!entry.caps.has(lm::core::Capability::Scripts)) {
+        return QStringLiteral("not enrolled");
+    }
+    if (!entry.caps.has(lm::core::Capability::Elevated)) {
+        // Marked, not refused. Phase 1 has no way to ask for elevation and
+        // plenty of scripts need no admin, so this host runs them perfectly
+        // well -- the flag is here so an access-denied is read *before* the
+        // run rather than as a column of failures afterwards.
+        return QStringLiteral("not elevated");
+    }
+    return {};
+}
+
+/// The colour an outcome is painted in.
+///
+/// Every one of these comes from lm::ui::Theme's existing status palette
+/// rather than a set invented here, so a red in the run view and a red in the
+/// fleet table cannot come to mean different things. The *word* is still the
+/// signal -- "Completed" reads as itself in greyscale -- and the colour only
+/// makes the one row worth acting on findable at a glance.
+///
+/// Pending is the muted grey of a row nothing has happened to yet. Dispatched
+/// takes kPaused, the blue that already means "somebody chose this, it is
+/// neither an alarm nor healthy" in the fleet table -- it cannot share the grey
+/// with NoResponse, because kTextMuted and kNotApplicable are the same value
+/// and "still waiting" and "gave up waiting" would then be indistinguishable.
+/// NoResponse is the row an operator most needs to find on a ninety-row table.
+QColor colour_for(TargetState state) {
+    switch (state) {
+        case TargetState::Pending:
+            return QColor(lm::ui::Theme::kTextMuted);
+        case TargetState::Dispatched:
+            return QColor(lm::ui::Theme::kPaused);
+        case TargetState::Completed:
+            return QColor(lm::ui::Theme::kOnline);
+        case TargetState::Failed:
+            return QColor(lm::ui::Theme::kMissing);
+        case TargetState::Refused:
+            return QColor(lm::ui::Theme::kOffline);
+        case TargetState::NoResponse:
+            return QColor(lm::ui::Theme::kNotApplicable);
+    }
+    return QColor(lm::ui::Theme::kText);
+}
+
+/// What the Outcome column says.
+///
+/// to_string(TargetState) is the wire and log spelling and stays exactly as it
+/// is -- other tests assert its values verbatim. Only NoResponse reads badly to
+/// an operator, so the view spells that one itself rather than reshaping a
+/// helper that is not the view's to own.
+QString display_name(TargetState state) {
+    switch (state) {
+        case TargetState::NoResponse:
+            return QStringLiteral("No response");
+        case TargetState::Pending:
+        case TargetState::Dispatched:
+        case TargetState::Completed:
+        case TargetState::Failed:
+        case TargetState::Refused:
+            break;
+    }
+    return QString::fromStdString(to_string(state));
+}
+
+/// The one-line "why" beside an outcome: the refusal reason, else whatever the
+/// script itself said in its LM-RESULT line, else the exit code when it is not
+/// zero. Empty when there is nothing to add -- a successful run with nothing to
+/// report should not have to fill a column.
+QString detail_for(const RunTarget& target) {
+    if (!target.detail.empty()) {
+        return QString::fromStdString(target.detail);
+    }
+    if (!target.result.has_value()) {
+        return {};
+    }
+    const lm::transport::ScriptResultMessage& result = *target.result;
+    if (result.has_reported && !result.reported_message.empty()) {
+        return QString::fromStdString(result.reported_message);
+    }
+    if (result.exit_code != 0) {
+        return QStringLiteral("exit %1").arg(result.exit_code);
+    }
+    return {};
+}
+
+/// `12 completed · 2 failed · 1 no response`.
+///
+/// Only the non-zero counts appear: on a run where every host succeeded, four
+/// zeroes alongside the one number that matters is noise, and the reader has
+/// to find the real figure among them. Outcomes lead, because they are what is
+/// being waited for; what is still in flight follows.
+QString summarise(const RunTally& tally) {
+    QStringList parts;
+    const auto add = [&parts](std::size_t count, const char* noun) {
+        if (count > 0) {
+            parts << QStringLiteral("%1 %2").arg(QString::number(static_cast<qulonglong>(count)),
+                                                 QString::fromLatin1(noun));
+        }
+    };
+    add(tally.completed, "completed");
+    add(tally.failed, "failed");
+    add(tally.refused, "refused");
+    add(tally.no_response, "no response");
+    add(tally.dispatched, "dispatched");
+    add(tally.pending, "pending");
+    return parts.join(QStringLiteral(" · "));
+}
+
+/// `<script name> — <local time> — <tally>`, one line of RunHistoryList.
+///
+/// issued_at is a system_clock::time_point -- UTC by construction -- so it is
+/// read into a QDateTime as UTC first and only then converted to local time;
+/// building a local QDateTime straight from the epoch seconds would silently
+/// reinterpret them in the wrong zone.
+QString history_row_text(const ScriptRun& run) {
+    const auto seconds =
+        std::chrono::duration_cast<std::chrono::seconds>(run.issued_at.time_since_epoch())
+            .count();
+    const QDateTime local =
+        QDateTime::fromSecsSinceEpoch(static_cast<qint64>(seconds), QTimeZone::UTC).toLocalTime();
+    return QStringLiteral("%1 — %2 — %3")
+        .arg(QString::fromStdString(run.script_name),
+             local.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")), summarise(run.tally()));
+}
+
+/// What to say for a target that has no result yet. Its own function so the
+/// switch stays exhaustive: the three answered states cannot reach here --
+/// ScriptRun::apply_result() always stores the message that moved them -- and
+/// saying so once beats a `default:` that would swallow a future state.
+QString waiting_text(const RunTarget& target) {
+    const QString host = QString::fromStdString(target.host_id);
+    switch (target.state) {
+        case TargetState::Pending:
+            return QStringLiteral("%1 has not been sent the script yet.").arg(host);
+        case TargetState::Dispatched:
+            return QStringLiteral("Waiting for %1 to report back…").arg(host);
+        case TargetState::NoResponse:
+            return QStringLiteral("%1 did not report back before the deadline.").arg(host);
+        case TargetState::Completed:
+        case TargetState::Failed:
+        case TargetState::Refused:
+            break;
+    }
+    return QStringLiteral("%1 reported nothing.").arg(host);
+}
+
+/// Everything known about one target, for the output pane.
+QString output_for(const RunTarget& target) {
+    const QString host = QString::fromStdString(target.host_id);
+
+    if (target.state == TargetState::Refused) {
+        // A refused host has no output -- nothing ran. An empty pane here
+        // would read as "ran and printed nothing", which is a different and
+        // far more worrying thing, so the reason takes output's place.
+        //
+        // detail is the only place to look: refuse_at_dispatch() always passes
+        // a reason, and apply_result() copies refusal_reason into detail for
+        // every Refused result, so a second read of the message itself could
+        // never say anything this does not.
+        return QStringLiteral("%1 was not asked to run this script.\n\n%2")
+            .arg(host, target.detail.empty() ? QStringLiteral("No reason was given.")
+                                             : QString::fromStdString(target.detail));
+    }
+    if (!target.result.has_value()) {
+        return waiting_text(target);
+    }
+
+    const lm::transport::ScriptResultMessage& result = *target.result;
+    QStringList lines;
+    lines << QStringLiteral("%1 — %2, exit code %3, %4 ms")
+                 .arg(host, display_name(target.state),
+                      QString::number(result.exit_code),
+                      QString::number(static_cast<qulonglong>(result.duration_ms)));
+    if (result.has_reported) {
+        lines << QStringLiteral("LM-RESULT: %1 — %2")
+                     .arg(result.reported_ok ? QStringLiteral("ok") : QStringLiteral("not ok"),
+                          QString::fromStdString(result.reported_message));
+    }
+    if (!result.stdout_text.empty()) {
+        lines << QString() << QString::fromStdString(result.stdout_text);
+    }
+    if (!result.stderr_text.empty()) {
+        lines << QString() << QStringLiteral("stderr:")
+              << QString::fromStdString(result.stderr_text);
+    }
+    if (result.stdout_text.empty() && result.stderr_text.empty()) {
+        // Said explicitly, because a script that printed nothing and one whose
+        // output was lost look identical in a blank pane.
+        lines << QString() << QStringLiteral("(no output)");
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
+/// Writes a cell, reusing the item already there.
+///
+/// Not setItem(): replacing an item drops the row's selection with it, and a
+/// result arriving for one host would then throw away whichever row the
+/// operator had opened in the output pane.
+void set_cell(QTableWidget* table, int row, int column, const QString& text,
+              const QColor& colour) {
+    QTableWidgetItem* item = table->item(row, column);
+    if (item == nullptr) {
+        item = new QTableWidgetItem;
+        table->setItem(row, column, item);
+    }
+    item->setText(text);
+    item->setForeground(colour);
+}
+
+}  // namespace
+
+QString ScriptsTab::starter_template() {
+    return QString::fromUtf8(kStarterTemplate);
+}
+
+ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
+    : QWidget(parent), controller_(controller) {
+    auto* layout = new QVBoxLayout(this);
+    auto* splitter = new QSplitter(Qt::Horizontal, this);
+
+    auto* script_side = new QWidget(splitter);
+    auto* script_layout = new QVBoxLayout(script_side);
+    script_layout->setContentsMargins(0, 0, 0, 0);
+    script_layout->addWidget(new QLabel(QStringLiteral("Script"), script_side));
+
+    mode_stack_ = new QStackedWidget(script_side);
+    mode_stack_->setObjectName(QStringLiteral("ScriptModeStack"));
+
+    // Page 0: the library. Tasks 4 and 5 fill library_page_layout_; the switch
+    // button lives here from the start so the two pages work immediately.
+    auto* library_page = new QWidget(mode_stack_);
+    library_page_layout_ = new QVBoxLayout(library_page);
+    library_page_layout_->setContentsMargins(0, 0, 0, 0);
+
+    auto* root_row = new QHBoxLayout();
+    share_root_edit_ = new QLineEdit(library_page);
+    share_root_edit_->setObjectName(QStringLiteral("ShareRootEdit"));
+    share_root_edit_->setPlaceholderText(QStringLiteral("\\\\fileserver\\scripts"));
+    auto* browse = new QPushButton(QStringLiteral("Browse…"), library_page);
+    browse->setObjectName(QStringLiteral("BrowseShareButton"));
+    auto* refresh = new QPushButton(QStringLiteral("Refresh"), library_page);
+    refresh->setObjectName(QStringLiteral("RefreshShareButton"));
+    root_row->addWidget(new QLabel(QStringLiteral("Share"), library_page));
+    root_row->addWidget(share_root_edit_, 1);
+    root_row->addWidget(browse);
+    root_row->addWidget(refresh);
+    library_page_layout_->addLayout(root_row);
+
+    share_message_ = new QLabel(library_page);
+    share_message_->setObjectName(QStringLiteral("ShareMessage"));
+    share_message_->setWordWrap(true);
+    library_page_layout_->addWidget(share_message_);
+
+    script_tree_ = new QTreeWidget(library_page);
+    script_tree_->setObjectName(QStringLiteral("ScriptTree"));
+    script_tree_->setHeaderHidden(true);
+    library_page_layout_->addWidget(script_tree_, 1);
+
+    preview_ = new QPlainTextEdit(library_page);
+    preview_->setObjectName(QStringLiteral("ScriptPreview"));
+    preview_->setReadOnly(true);  // this is the share's content, not ours
+    preview_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    library_page_layout_->addWidget(preview_, 1);
+
+    connect(script_tree_, &QTreeWidget::currentItemChanged, this,
+            &ScriptsTab::on_script_selection_changed);
+
+    auto* to_custom = new QPushButton(QStringLiteral("Custom script…"), library_page);
+    to_custom->setObjectName(QStringLiteral("CustomScriptButton"));
+    library_page_layout_->addWidget(to_custom);
+    mode_stack_->addWidget(library_page);
+
+    // Page 1: the editor that was the whole tab in phase 1.
+    auto* editor_page = new QWidget(mode_stack_);
+    auto* editor_layout = new QVBoxLayout(editor_page);
+    editor_layout->setContentsMargins(0, 0, 0, 0);
+    auto* back = new QPushButton(QStringLiteral("Back to script list"), editor_page);
+    back->setObjectName(QStringLiteral("BackToListButton"));
+    editor_layout->addWidget(back);
+    editor_ = new QPlainTextEdit(editor_page);
+    editor_->setObjectName(QStringLiteral("ScriptEditor"));
+    // Fixed-width for the same reason the shopping cart's path pane is: in the
+    // proportional UI font PowerShell's punctuation runs together, and this is
+    // text somebody has to read character by character before running it on a
+    // hundred machines.
+    editor_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    editor_->setPlainText(starter_template());
+    editor_layout->addWidget(editor_, 1);
+
+    auto* reset_button = new QPushButton(QStringLiteral("Reset to template"), editor_page);
+    reset_button->setObjectName(QStringLiteral("ResetTemplateButton"));
+    auto* script_buttons = new QHBoxLayout();
+    script_buttons->addWidget(reset_button);
+    script_buttons->addStretch(1);
+    editor_layout->addLayout(script_buttons);
+    mode_stack_->addWidget(editor_page);
+
+    mode_stack_->setCurrentIndex(0);  // the list is the default view
+    script_layout->addWidget(mode_stack_, 1);
+
+    connect(to_custom, &QPushButton::clicked, this, [this] { mode_stack_->setCurrentIndex(1); });
+    connect(back, &QPushButton::clicked, this, [this] { mode_stack_->setCurrentIndex(0); });
+    // Run needs a body, and which page supplies one depends on which page is
+    // showing -- so switching pages must re-evaluate Run's enabled state.
+    connect(mode_stack_, &QStackedWidget::currentChanged, this,
+            [this](int) { update_target_count(); });
+
+    // editingFinished rather than textChanged: re-reading a share on every
+    // keystroke would hit the network for each character of a UNC path.
+    connect(share_root_edit_, &QLineEdit::editingFinished, this,
+            [this] { controller_->set_script_share_root(share_root_edit_->text().trimmed()); });
+    connect(browse, &QPushButton::clicked, this, [this] {
+        const QString chosen = QFileDialog::getExistingDirectory(
+            this, QStringLiteral("Choose the script share"), share_root_edit_->text());
+        if (!chosen.isEmpty()) {
+            // Not redundant with set_script_share_root() below, even though
+            // that call's own signal (see the script_share_root_changed
+            // connection above) would normally write this same field. The gap
+            // it closes: an operator can type into the field without
+            // committing (no editingFinished), then Browse and pick the
+            // directory that is *already* the current root -- at which point
+            // set_script_share_root() no-ops (it only acts on a change) and
+            // emits nothing, and without this line the field would keep
+            // showing the operator's uncommitted text while the tree quietly
+            // reflects the real, unchanged root.
+            share_root_edit_->setText(chosen);
+            controller_->set_script_share_root(chosen);
+        }
+    });
+    connect(refresh, &QPushButton::clicked, this, &ScriptsTab::reload_library);
+    connect(controller_, &ServerController::script_share_root_changed, this,
+            [this](const QString& path) {
+                share_root_edit_->setText(path);
+                reload_library();
+            });
+
+    splitter->addWidget(script_side);
+
+    auto* host_side = new QWidget(splitter);
+    auto* host_layout = new QVBoxLayout(host_side);
+    host_layout->setContentsMargins(0, 0, 0, 0);
+    host_layout->addWidget(new QLabel(QStringLiteral("Hosts"), host_side));
+
+    host_list_ = new QListWidget(host_side);
+    host_list_->setObjectName(QStringLiteral("HostList"));
+    host_layout->addWidget(host_list_, 1);
+
+    // Takes every row, including the ones a note marks as unable to comply.
+    // The note is the warning; the server is the gate, and it refuses at
+    // dispatch with a reason rather than sending anything to such a host. A
+    // button that silently skipped rows would be the surprise, since the one
+    // thing "Select all" can be read to mean is all of them.
+    auto* select_all_button = new QPushButton(QStringLiteral("Select all"), host_side);
+    select_all_button->setObjectName(QStringLiteral("SelectAllButton"));
+    auto* clear_button = new QPushButton(QStringLiteral("Clear"), host_side);
+    clear_button->setObjectName(QStringLiteral("ClearButton"));
+    auto* host_buttons = new QHBoxLayout();
+    host_buttons->addWidget(select_all_button);
+    host_buttons->addWidget(clear_button);
+    host_buttons->addStretch(1);
+    host_layout->addLayout(host_buttons);
+    splitter->addWidget(host_side);
+
+    // The editor is the working surface; the host list is a column of names.
+    splitter->setStretchFactor(0, 3);
+    splitter->setStretchFactor(1, 1);
+
+    // Composing a run and watching one are stacked rather than tabbed: the
+    // second follows straight from the first, and an operator who has just
+    // pressed Run should not have to go and find the answer.
+    auto* vertical = new QSplitter(Qt::Vertical, this);
+
+    auto* compose_side = new QWidget(vertical);
+    auto* compose_layout = new QVBoxLayout(compose_side);
+    compose_layout->setContentsMargins(0, 0, 0, 0);
+    compose_layout->addWidget(splitter, 1);
+
+    // The count sits beside Run because the blast radius must be readable
+    // without counting checkboxes -- this is the last thing seen before code
+    // goes out to other people's machines.
+    target_count_label_ = new QLabel(compose_side);
+    target_count_label_->setObjectName(QStringLiteral("TargetCountLabel"));
+    run_button_ = new QPushButton(QStringLiteral("Run"), compose_side);
+    run_button_->setObjectName(QStringLiteral("RunButton"));
+    auto* run_row = new QHBoxLayout();
+    run_row->addStretch(1);
+    run_row->addWidget(target_count_label_);
+    run_row->addWidget(run_button_);
+    compose_layout->addLayout(run_row);
+
+    // Inline, deliberately, rather than a QMessageBox: a modal would block the
+    // console for something the operator has to *read and compare*, and it
+    // cannot show them the new body sitting in the preview behind it.
+    run_blocked_message_ = new QLabel(compose_side);
+    run_blocked_message_->setObjectName(QStringLiteral("RunBlockedMessage"));
+    run_blocked_message_->setWordWrap(true);
+
+    // Left of the banner, not under Run. Run sits at the far right of the row
+    // above; putting the acknowledgement anywhere near it would make
+    // "press again" the same gesture in the same place, which is exactly the
+    // reflex the block exists to interrupt.
+    accept_changed_button_ =
+        new QPushButton(QStringLiteral("Use the new version"), compose_side);
+    accept_changed_button_->setObjectName(QStringLiteral("AcceptChangedScriptButton"));
+    accept_changed_button_->setVisible(false);  // nothing to accept yet
+
+    auto* blocked_row = new QHBoxLayout();
+    blocked_row->addWidget(accept_changed_button_);
+    blocked_row->addWidget(run_blocked_message_, 1);
+    compose_layout->addLayout(blocked_row);
+    vertical->addWidget(compose_side);
+
+    auto* run_side = new QWidget(vertical);
+    auto* run_side_layout = new QHBoxLayout(run_side);
+    run_side_layout->setContentsMargins(0, 0, 0, 0);
+
+    // Past runs, to the left of the run view they open into -- selecting one
+    // here is a shortcut into the same panel a fresh run already lands on, so
+    // the two sit side by side rather than behind a tab.
+    auto* history_side = new QWidget(run_side);
+    auto* history_layout = new QVBoxLayout(history_side);
+    history_layout->setContentsMargins(0, 0, 0, 0);
+    history_layout->addWidget(new QLabel(QStringLiteral("History"), history_side));
+
+    run_history_ = new QListWidget(history_side);
+    run_history_->setObjectName(QStringLiteral("RunHistoryList"));
+    history_layout->addWidget(run_history_, 1);
+
+    delete_run_button_ = new QPushButton(QStringLiteral("Delete"), history_side);
+    delete_run_button_->setObjectName(QStringLiteral("DeleteRunButton"));
+    delete_run_button_->setEnabled(false);  // nothing selected yet
+    history_layout->addWidget(delete_run_button_);
+
+    // Bulk cleanup, below the one-at-a-time Delete: an explicit,
+    // operator-driven sweep of everything older than a chosen day, never a
+    // timer -- see "There is no automatic pruning" in the brief and CLAUDE.md.
+    auto* cleanup_row = new QHBoxLayout();
+    cleanup_row->addWidget(new QLabel(QStringLiteral("Delete runs older than…"), history_side));
+    delete_older_date_ = new QDateEdit(QDate::currentDate().addDays(-30), history_side);
+    delete_older_date_->setObjectName(QStringLiteral("DeleteOlderDate"));
+    delete_older_date_->setCalendarPopup(true);
+    cleanup_row->addWidget(delete_older_date_);
+    delete_older_button_ = new QPushButton(QStringLiteral("Delete"), history_side);
+    delete_older_button_->setObjectName(QStringLiteral("DeleteOlderButton"));
+    cleanup_row->addWidget(delete_older_button_);
+    history_layout->addLayout(cleanup_row);
+
+    cleanup_message_ = new QLabel(history_side);
+    cleanup_message_->setObjectName(QStringLiteral("CleanupMessage"));
+    cleanup_message_->setWordWrap(true);
+    history_layout->addWidget(cleanup_message_);
+
+    run_side_layout->addWidget(history_side, 1);
+
+    auto* run_detail_side = new QWidget(run_side);
+    auto* run_layout = new QVBoxLayout(run_detail_side);
+    run_layout->setContentsMargins(0, 0, 0, 0);
+
+    // Above the rows, not below and not in a status bar: on a run of ninety
+    // machines the counts are what is read, and the rows are what is drilled
+    // into afterwards.
+    run_summary_ = new QLabel(run_detail_side);
+    run_summary_->setObjectName(QStringLiteral("RunSummary"));
+    run_layout->addWidget(run_summary_);
+
+    auto* result_splitter = new QSplitter(Qt::Horizontal, run_detail_side);
+    run_targets_ = new QTableWidget(0, 3, result_splitter);
+    run_targets_->setObjectName(QStringLiteral("RunTargets"));
+    run_targets_->setHorizontalHeaderLabels(
+        {QStringLiteral("Host"), QStringLiteral("Outcome"), QStringLiteral("Detail")});
+    run_targets_->verticalHeader()->setVisible(false);
+    run_targets_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    run_targets_->setSelectionMode(QAbstractItemView::SingleSelection);
+    run_targets_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    run_targets_->horizontalHeader()->setStretchLastSection(true);
+    // Without this the stylesheet repaints a selected row in
+    // QPalette::HighlightedText *after* the outcome colour was set, so the one
+    // row an operator clicked on is the one row whose outcome loses its colour
+    // -- see theme.qss and lm_ui_render_tests.
+    run_targets_->setItemDelegate(new lm::ui::KeepForegroundDelegate(run_targets_));
+    result_splitter->addWidget(run_targets_);
+
+    run_output_ = new QPlainTextEdit(result_splitter);
+    run_output_->setObjectName(QStringLiteral("RunOutput"));
+    run_output_->setReadOnly(true);
+    // Fixed-width for the same reason the editor is: this is a console
+    // transcript, and column alignment is often the whole of what it says.
+    run_output_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    result_splitter->addWidget(run_output_);
+    result_splitter->setStretchFactor(0, 2);
+    result_splitter->setStretchFactor(1, 3);
+    run_layout->addWidget(result_splitter, 1);
+    run_side_layout->addWidget(run_detail_side, 3);
+    vertical->addWidget(run_side);
+
+    vertical->setStretchFactor(0, 3);
+    vertical->setStretchFactor(1, 2);
+    layout->addWidget(vertical, 1);
+
+    connect(reset_button, &QPushButton::clicked, this,
+            [this] { editor_->setPlainText(starter_template()); });
+    connect(select_all_button, &QPushButton::clicked, this, [this] {
+        for (int row = 0; row < host_list_->count(); ++row) {
+            host_list_->item(row)->setCheckState(Qt::Checked);
+        }
+    });
+    connect(clear_button, &QPushButton::clicked, this, [this] {
+        for (int row = 0; row < host_list_->count(); ++row) {
+            host_list_->item(row)->setCheckState(Qt::Unchecked);
+        }
+    });
+    connect(host_list_, &QListWidget::itemChanged, this, [this](QListWidgetItem*) {
+        if (!rebuilding_) {
+            update_target_count();
+        }
+    });
+    connect(run_button_, &QPushButton::clicked, this, &ScriptsTab::on_run_clicked);
+    connect(accept_changed_button_, &QPushButton::clicked, this, [this] {
+        // previewed_body_ and the preview pane already hold the new content --
+        // on_run_clicked() repainted both before refusing, because the whole
+        // point is that the operator reads what it became. All this does is
+        // record that they have, and give Run back.
+        clear_changed_script_block();
+        update_target_count();
+    });
+    connect(run_targets_, &QTableWidget::itemSelectionChanged, this,
+            &ScriptsTab::update_run_output);
+    connect(controller_, &ServerController::fleet_changed, this, &ScriptsTab::rebuild_host_list);
+    connect(controller_, &ServerController::script_run_changed, this,
+            &ScriptsTab::on_script_run_changed);
+    // The set of runs changed shape -- one was created, one was loaded at
+    // startup (see the ordering note on rebuild_run_history()), or one (or
+    // more) was deleted. Deliberately not also wired to script_run_changed,
+    // which fires again for every later result of a run already in the list
+    // -- see rebuild_run_history()'s own doc comment for why that would be
+    // wrong. on_script_run_changed() above updates that one row in place
+    // instead, so a tally never goes stale without tearing the whole panel
+    // down to do it.
+    connect(controller_, &ServerController::script_runs_changed, this,
+            &ScriptsTab::rebuild_run_history);
+
+    connect(run_history_, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem* current, QListWidgetItem*) {
+                delete_run_button_->setEnabled(current != nullptr);
+                if (current == nullptr) {
+                    return;
+                }
+                // Selecting a row is the whole mechanism: set which run is on
+                // screen and repaint the (already-built) run view from it --
+                // never rebuild_run_history() itself from here, which would
+                // tear the list down while this handler is still on the stack
+                // reacting to one of its own signals.
+                displayed_run_id_ =
+                    current->data(ScriptsTab::kRunIdRole).toString().toStdString();
+                refresh_run_view();
+            });
+    connect(delete_run_button_, &QPushButton::clicked, this, [this] {
+        QListWidgetItem* current = run_history_->currentItem();
+        if (current == nullptr) {
+            return;  // the button is disabled; belt and braces
+        }
+        const std::string run_id =
+            current->data(ScriptsTab::kRunIdRole).toString().toStdString();
+        // Safe to rebuild from here: the button, not a RunHistoryList signal,
+        // is what is on the call stack. delete_script_run() erases the run
+        // and emits script_runs_changed(), which the connection above turns
+        // into exactly that rebuild.
+        controller_->delete_script_run(run_id);
+        if (displayed_run_id_ == run_id) {
+            // The run just deleted was the one on screen -- show "No run yet"
+            // rather than leave stale rows up for a run that no longer
+            // exists.
+            displayed_run_id_.clear();
+            refresh_run_view();
+        }
+    });
+    connect(delete_older_button_, &QPushButton::clicked, this, [this] {
+        // Local midnight of the chosen day: an operator picking a date means
+        // "from the beginning of that day", not "this time on that day".
+        const QDateTime cutoff_local(delete_older_date_->date(), QTime(0, 0),
+                                      QTimeZone::LocalTime);
+        const auto cutoff = std::chrono::system_clock::from_time_t(
+            static_cast<std::time_t>(cutoff_local.toSecsSinceEpoch()));
+        const std::size_t removed = controller_->delete_script_runs_before(cutoff);
+        // rebuild_run_history() runs on its own through script_runs_changed(),
+        // emitted by delete_script_runs_before() -- calling it here too would
+        // rebuild the list twice for one click.
+        cleanup_message_->setText(QStringLiteral("Deleted %1 run(s).").arg(removed));
+        if (!displayed_run_id_.empty() && displayed_run() == nullptr) {
+            // The sweep took the run that was on screen. Checked by
+            // membership -- was it swept, not which ids the caller happened
+            // to be watching -- for the same reason DeleteRunButton's own
+            // handler clears it above: a stale tally and target rows for a
+            // run that no longer exists is an audit trail lying about being
+            // current.
+            displayed_run_id_.clear();
+            refresh_run_view();
+        }
+    });
+
+    // Both halves matter: this line is correct when the operator sets the root
+    // later in the same session, but at construction time the controller has
+    // not loaded its persisted config yet (see main.cpp), so it is the signal
+    // connected above that actually delivers a root set in a previous session.
+    //
+    // Must run after every widget its handlers can reach is built -- not just
+    // share_root_edit_ and script_tree_, but run_button_ and
+    // target_count_label_ too: reload_library() clears script_tree_, and
+    // clearing it can drive on_script_selection_changed() straight through to
+    // update_target_count(). Placed here, at the very end of the constructor,
+    // rather than up beside share_root_edit_'s construction, so that chain
+    // never touches an as-yet-unconstructed pointer. Do not move it back
+    // up -- see the null default member initialisers in the header for the
+    // failure mode this guards against.
+    share_root_edit_->setText(controller_->script_share_root());
+    reload_library();
+
+    rebuild_host_list();
+    refresh_run_view();
+    // Built once here, and kept current by the script_runs_changed connection
+    // above -- construction happens before ServerController::start() loads
+    // persisted runs (see main.cpp), so a build here alone would show nothing
+    // on every launch that actually has history on disk.
+    rebuild_run_history();
+}
+
+void ScriptsTab::rebuild_host_list() {
+    // Ticks survive a rebuild: fleet_changed() fires whenever any host changes
+    // state, and losing a hand-made selection to an unrelated machine going
+    // offline mid-edit would be its own kind of blast radius.
+    QSet<QString> previously_checked;
+    for (int row = 0; row < host_list_->count(); ++row) {
+        const QListWidgetItem* item = host_list_->item(row);
+        if (item->checkState() == Qt::Checked) {
+            previously_checked.insert(item->data(ScriptsTab::kHostIdRole).toString());
+        }
+    }
+
+    rebuilding_ = true;
+    host_list_->clear();
+    for (const lm::core::FleetEntry& entry : controller_->fleet().entries) {
+        const QString host_id = QString::fromStdString(entry.host_id);
+        const QString note = note_for(entry);
+
+        // Listed, explained and -- when it cannot comply -- unchecked, never
+        // hidden. An operator should see that a machine is excluded and why,
+        // not wonder where it went; and they may still tick it deliberately,
+        // which is why the row stays checkable rather than being disabled.
+        auto* item = new QListWidgetItem(
+            note.isEmpty() ? host_id : host_id + QStringLiteral(" — ") + note,
+            host_list_);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setData(ScriptsTab::kHostIdRole, host_id);
+        // A tick survives even on a row that has since become ineligible: it
+        // was a deliberate act, and silently undoing it would be worse than
+        // letting the run record the refusal.
+        item->setCheckState(previously_checked.contains(host_id) ? Qt::Checked : Qt::Unchecked);
+    }
+    rebuilding_ = false;
+
+    update_target_count();
+}
+
+std::vector<std::string> ScriptsTab::checked_hosts() const {
+    std::vector<std::string> hosts;
+    for (int row = 0; row < host_list_->count(); ++row) {
+        const QListWidgetItem* item = host_list_->item(row);
+        if (item->checkState() == Qt::Checked) {
+            hosts.push_back(item->data(ScriptsTab::kHostIdRole).toString().toStdString());
+        }
+    }
+    return hosts;
+}
+
+void ScriptsTab::clear_changed_script_block() {
+    changed_script_pending_ = false;
+    accept_changed_button_->setVisible(false);
+    run_blocked_message_->clear();
+}
+
+void ScriptsTab::update_target_count() {
+    const auto count = checked_hosts().size();
+    // Run with nothing targeted, or nothing to run, is a no-op that reads as a
+    // failure. The button says so by being unavailable rather than by doing
+    // nothing. The editor page always has a body (the starter template, or
+    // whatever replaced it); the library page has one only once a script row
+    // is selected.
+    const bool has_body = mode_stack_->currentIndex() == 1 || selected_script_.has_value();
+    // changed_script_pending_ outranks both: a body somebody else rewrote
+    // between the preview and the click must not become runnable again just
+    // because a host was ticked. Only AcceptChangedScriptButton -- or a new
+    // selection, or a reload, either of which throws the comparison away --
+    // clears it.
+    run_button_->setEnabled(count > 0 && has_body && !changed_script_pending_);
+    if (count == 0) {
+        target_count_label_->setText(QStringLiteral("No hosts selected"));
+    } else if (count == 1) {
+        target_count_label_->setText(QStringLiteral("Run on 1 host"));
+    } else {
+        target_count_label_->setText(
+            QStringLiteral("Run on %1 hosts").arg(static_cast<int>(count)));
+    }
+}
+
+void ScriptsTab::on_run_clicked() {
+    if (changed_script_pending_) {
+        // Run is disabled while a changed script is waiting to be
+        // acknowledged; belt and braces for a programmatic click, which must
+        // not be a way around the one control that exists to make accepting
+        // somebody else's edit deliberate.
+        return;
+    }
+    run_blocked_message_->clear();
+
+    const std::vector<std::string> hosts = checked_hosts();
+    if (hosts.empty()) {
+        return;  // the button is disabled; belt and braces for a programmatic click
+    }
+
+    std::string script_name;
+    std::string script_body;
+
+    if (mode_stack_->currentIndex() == 1) {
+        script_name = kCustomScriptName.toStdString();
+        script_body = editor_->toPlainText().toStdString();
+    } else {
+        if (!selected_script_.has_value()) {
+            return;  // Run is disabled in this state; belt and braces
+        }
+        // Re-read at Run. The preview promised the operator this is what would
+        // execute, and a share is writable by other people while they read it.
+        const auto current = read_script_body(selected_script_->absolute_path);
+        if (!current.has_value()) {
+            run_blocked_message_->setText(
+                QStringLiteral("%1 could not be read from the share. Nothing was run.")
+                    .arg(selected_script_->relative_path));
+            return;
+        }
+        if (*current != previewed_body_) {
+            // Shown, not just reported: the operator has to see what it became
+            // before deciding. What they must *not* be able to do is decide by
+            // repeating the gesture that was just refused -- one edit on the
+            // share plus a reflexive second click on a button that never
+            // moved is the whole of the attack this re-read exists to stop.
+            // So Run goes away and a control that was not there a moment ago
+            // appears at the other end of the panel: continuing costs a
+            // deliberate press somewhere else, not a repeat of the last one.
+            previewed_body_ = *current;
+            preview_->setPlainText(previewed_body_);
+            changed_script_pending_ = true;
+            accept_changed_button_->setVisible(true);
+            run_blocked_message_->setText(
+                QStringLiteral("%1 changed on the share since you previewed it. Nothing was "
+                               "run — the new content is shown above. Read it, then choose "
+                               "“Use the new version” to run that instead.")
+                    .arg(selected_script_->relative_path));
+            update_target_count();  // takes Run away while the block stands
+            return;
+        }
+        script_name = selected_script_->relative_path.toStdString();
+        script_body = current->toStdString();
+    }
+
+    const QString run_id = controller_->start_script_run(script_name, script_body, hosts,
+                                                          kDefaultTimeoutSeconds);
+
+    displayed_run_id_ = run_id.toStdString();
+    {
+        // start_script_run() has already emitted script_runs_changed(), so
+        // rebuild_run_history() has run -- with displayed_run_id_ still
+        // naming the *previous* run, since the id only exists once that call
+        // returns. The new row is therefore in the list with the old run (or
+        // nothing) highlighted, and stays that way: no later rebuild ever
+        // re-syncs it. Not cosmetic -- DeleteRunButton acts on the
+        // highlighted row, so an operator reading this run would be
+        // destroying a different audit record.
+        //
+        // Blocked for the same reason rebuild_run_history() blocks: this is
+        // not an operator picking a row, and the handler would only set
+        // displayed_run_id_ back to what it already is and repaint the run
+        // view a second time.
+        const QSignalBlocker blocker(run_history_);
+        for (int row = 0; row < run_history_->count(); ++row) {
+            if (run_history_->item(row)->data(ScriptsTab::kRunIdRole).toString() == run_id) {
+                run_history_->setCurrentRow(row);
+                break;
+            }
+        }
+        // rebuild_run_history() left this disabled when nothing was selected;
+        // a row is selected now, and a Delete that does nothing reads as
+        // broken.
+        delete_run_button_->setEnabled(run_history_->currentItem() != nullptr);
+    }
+    // A different run is a different set of hosts, so its rows are built from
+    // nothing rather than written over the previous run's -- a row updated in
+    // place would keep the old run's selection while standing for another
+    // machine.
+    run_targets_->setRowCount(0);
+    refresh_run_view();
+    if (run_targets_->rowCount() > 0) {
+        // Something in the output pane from the outset. On a one-host run that
+        // is the whole answer, and on a large one it at least says what the
+        // pane is for.
+        run_targets_->selectRow(0);
+    }
+}
+
+void ScriptsTab::on_script_run_changed(QString run_id) {
+    if (run_id.toStdString() == displayed_run_id_) {
+        refresh_run_view();
+    }
+    // Updates that one row in place rather than rebuilding: every result of
+    // an in-flight run reaches here, up to once per host, and a rebuild on
+    // each would clear() and reconstruct the whole panel through exactly the
+    // run an operator is watching it during.
+    const std::vector<ScriptRun>& runs = controller_->script_runs();
+    const auto found = std::ranges::find(runs, run_id.toStdString(), &ScriptRun::run_id);
+    if (found != runs.end()) {
+        update_run_history_row(*found);
+    }
+}
+
+void ScriptsTab::update_run_history_row(const ScriptRun& run) {
+    const QString run_id = QString::fromStdString(run.run_id);
+    for (int row = 0; row < run_history_->count(); ++row) {
+        QListWidgetItem* item = run_history_->item(row);
+        if (item->data(ScriptsTab::kRunIdRole).toString() == run_id) {
+            item->setText(history_row_text(run));
+            return;
+        }
+    }
+    // No row for this run yet. start_script_run() emits script_run_changed()
+    // *first* and script_runs_changed() immediately after, and both are
+    // ordinary direct, same-thread connections -- so on a brand new run this
+    // slot runs before rebuild_run_history() has built the row for it.
+    // Nothing to do: the rebuild that follows one statement later builds the
+    // row from the same history_row_text(), which is exactly what this
+    // function would have written. Rebuilding around the gap from here would
+    // only do that work twice.
+}
+
+void ScriptsTab::rebuild_run_history() {
+    // Preserved across the rebuild so a run created or reporting elsewhere
+    // does not knock the operator off whatever they are looking at.
+    const std::string previously_selected = displayed_run_id_;
+
+    // Signals blocked for the rebuild: currentItemChanged firing mid-rebuild
+    // would re-enter through the handler connected below, which is harmless
+    // here (it only ever sets displayed_run_id_ back to what it already is
+    // and repaints the run view) but is needless work on every single row
+    // insertion.
+    const QSignalBlocker blocker(run_history_);
+    run_history_->clear();
+
+    const std::vector<ScriptRun>& runs = controller_->script_runs();
+    // Newest first: script_runs() is oldest-first (load_config() sorts it,
+    // and every new run is appended), and the run somebody just made is the
+    // one they are looking for.
+    for (auto it = runs.rbegin(); it != runs.rend(); ++it) {
+        const ScriptRun& run = *it;
+        auto* item = new QListWidgetItem(history_row_text(run), run_history_);
+        item->setData(ScriptsTab::kRunIdRole, QString::fromStdString(run.run_id));
+        if (run.run_id == previously_selected) {
+            run_history_->setCurrentItem(item);
+        }
+    }
+
+    delete_run_button_->setEnabled(run_history_->currentItem() != nullptr);
+}
+
+const ScriptRun* ScriptsTab::displayed_run() const {
+    if (displayed_run_id_.empty()) {
+        return nullptr;
+    }
+    const std::vector<ScriptRun>& runs = controller_->script_runs();
+    const auto found = std::ranges::find(runs, displayed_run_id_, &ScriptRun::run_id);
+    return found == runs.end() ? nullptr : &*found;
+}
+
+void ScriptsTab::refresh_run_view() {
+    const ScriptRun* run = displayed_run();
+    if (run == nullptr) {
+        run_summary_->setText(QStringLiteral("No run yet"));
+        run_targets_->setRowCount(0);
+        update_run_output();
+        return;
+    }
+
+    const int rows = static_cast<int>(run->targets.size());
+    if (run_targets_->rowCount() != rows) {
+        run_targets_->setRowCount(rows);
+    }
+    const QColor text_colour(lm::ui::Theme::kText);
+    const QColor muted(lm::ui::Theme::kTextMuted);
+    for (int row = 0; row < rows; ++row) {
+        const RunTarget& target = run->targets[static_cast<std::size_t>(row)];
+        set_cell(run_targets_, row, 0, QString::fromStdString(target.host_id), text_colour);
+        set_cell(run_targets_, row, 1, display_name(target.state), colour_for(target.state));
+        set_cell(run_targets_, row, 2, detail_for(target), muted);
+    }
+    run_targets_->resizeColumnToContents(0);
+    run_targets_->resizeColumnToContents(1);
+
+    run_summary_->setText(summarise(run->tally()));
+    update_run_output();
+}
+
+const RunTarget* ScriptsTab::selected_target() const {
+    const ScriptRun* run = displayed_run();
+    if (run == nullptr) {
+        return nullptr;
+    }
+    const QModelIndexList selected = run_targets_->selectionModel()->selectedRows();
+    if (selected.isEmpty()) {
+        return nullptr;
+    }
+    const int row = selected.front().row();
+    if (row < 0 || row >= static_cast<int>(run->targets.size())) {
+        return nullptr;
+    }
+    // Rows are built in target order and never sorted, which is what lets a
+    // row index stand for a target.
+    return &run->targets[static_cast<std::size_t>(row)];
+}
+
+void ScriptsTab::update_run_output() {
+    const RunTarget* target = selected_target();
+    const QString text =
+        target != nullptr
+            ? output_for(*target)
+            : (displayed_run() == nullptr
+                   ? QStringLiteral("Press Run to send the script.")
+                   : QStringLiteral("Select a host to see what it reported."));
+
+    // Only when it actually changed. setPlainText() replaces the whole
+    // document -- scrollbar to the top, cursor to the start, any selected text
+    // gone -- and this runs on every script_run_changed. On the ninety-host run
+    // this view exists for, somebody reading PC-007's transcript would be
+    // yanked back to the top each time an unrelated host reported.
+    if (run_output_->toPlainText() != text) {
+        run_output_->setPlainText(text);
+    }
+}
+
+void ScriptsTab::on_script_selection_changed() {
+    // A block is about one file's body against one earlier read of it. Picking
+    // a different row throws both away, so the banner and the accept button
+    // would be offering to accept a comparison that no longer exists.
+    clear_changed_script_block();
+
+    selected_script_.reset();
+    previewed_body_.clear();
+    preview_->clear();
+
+    QTreeWidgetItem* row = script_tree_->currentItem();
+    // A folder row carries no index: it is a category, and has nothing to
+    // show or run.
+    if (row != nullptr && row->data(0, kScriptIndexRole).isValid()) {
+        const int index = row->data(0, kScriptIndexRole).toInt();
+        if (index >= 0 && index < static_cast<int>(scripts_.size())) {
+            selected_script_ = scripts_[static_cast<std::size_t>(index)];
+            const auto body = read_script_body(selected_script_->absolute_path);
+            if (body.has_value()) {
+                previewed_body_ = *body;
+                preview_->setPlainText(previewed_body_);
+            } else {
+                // Named, not silent: a script that cannot be read is a thing
+                // to fix on the share, and an empty pane would look like an
+                // empty script that would happily "run".
+                selected_script_.reset();
+                preview_->setPlainText(
+                    QStringLiteral("This script could not be read from the share."));
+            }
+        }
+    }
+    update_target_count();  // Run's enabled state depends on having a script too
+}
+
+void ScriptsTab::reload_library() {
+    // Same reasoning as on_script_selection_changed(): Refresh, or a change of
+    // root, re-reads the share and invalidates whatever a standing
+    // changed-script block was about.
+    clear_changed_script_block();
+
+    // Explicit, rather than relying on script_tree_->clear() below to null
+    // the current item and fire currentItemChanged into
+    // on_script_selection_changed() for us. It does today -- but that is an
+    // undocumented Qt side effect nothing here pins, and an incremental
+    // rewrite of this function (updating existing rows in place instead of
+    // clearing) would silently stop clearing the tree and just as silently
+    // stop resetting the selection with it. Whatever was selected cannot
+    // survive a fresh read of the share regardless: its index into scripts_
+    // is about to be invalidated, so the preview and Run's enabled state must
+    // not go on depending on it.
+    selected_script_.reset();
+    previewed_body_.clear();
+    preview_->clear();
+
+    const ScriptLibrary library = read_script_library(controller_->script_share_root());
+
+    script_tree_->clear();
+    scripts_.clear();
+
+    if (!library.reachable) {
+        // The message is the whole point: an empty tree would claim the share
+        // is empty, which is a different fact and a different action.
+        share_message_->setText(library.error);
+        share_message_->setVisible(true);
+        update_target_count();
+        return;
+    }
+    if (library.truncated) {
+        // Ahead of the empty case, and it has to be: a walk that ran out of
+        // time before it reached a single script has not established that
+        // there are none, and "No .ps1 scripts under X" would be a claim the
+        // read never made. Said out loud rather than presenting a short tree
+        // as the whole share, which is the failure that matters here -- an
+        // operator would read a missing script as a script that is not there.
+        share_message_->setText(
+            QStringLiteral("Only part of %1 could be listed — reading it took too long and "
+                           "stopped. Point the share at a narrower folder.")
+                .arg(controller_->script_share_root()));
+        share_message_->setVisible(true);
+    } else if (library.empty()) {
+        share_message_->setText(QStringLiteral("No .ps1 scripts under %1")
+                                    .arg(controller_->script_share_root()));
+        share_message_->setVisible(true);
+    } else {
+        share_message_->clear();
+        share_message_->setVisible(false);
+    }
+
+    // Folders first, then scripts, each alphabetical -- read_script_library()
+    // already returns them in QDir::Name order within each kind.
+    const std::function<void(const LibraryFolder&, QTreeWidgetItem*)> add =
+        [&](const LibraryFolder& folder, QTreeWidgetItem* parent) {
+            for (const LibraryFolder& child : folder.folders) {
+                auto* row = parent == nullptr ? new QTreeWidgetItem(script_tree_)
+                                              : new QTreeWidgetItem(parent);
+                row->setText(0, child.name);
+                add(child, row);
+            }
+            for (const LibraryScript& script : folder.scripts) {
+                auto* row = parent == nullptr ? new QTreeWidgetItem(script_tree_)
+                                              : new QTreeWidgetItem(parent);
+                // The row shows the file name; the relative path is what a run
+                // records, and it is reachable through kScriptIndexRole.
+                row->setText(0, QFileInfo(script.relative_path).fileName());
+                row->setData(0, kScriptIndexRole, static_cast<int>(scripts_.size()));
+                scripts_.push_back(script);
+            }
+        };
+    add(library.root, nullptr);
+    script_tree_->expandAll();
+    update_target_count();
+}

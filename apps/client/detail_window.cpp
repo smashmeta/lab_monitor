@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "lm/core/fleet.hpp"
+#include "lm/platform/probes.hpp"
 #include "lm/transport/messages.hpp"
 #include "lm/ui/theme.hpp"
 #include "lm/ui/keep_foreground_delegate.hpp"
@@ -35,11 +36,12 @@ QWidget* make_gauge_row(QWidget* parent, const QString& label_text, QWidget* gau
 
 }  // namespace
 
-DetailWindow::DetailWindow(QString host_id, QWidget* parent)
+DetailWindow::DetailWindow(QString host_id, QWidget* parent, std::optional<bool> elevated)
     : QWidget(parent),
       hostname_label_(new QLabel(host_id, this)),
       connection_pill_(new lm::ui::StatusPill(this)),
       template_label_(new QLabel(this)),
+      elevation_banner_(new QLabel(this)),
       cpu_sparkline_(new lm::ui::Sparkline(this)),
       memory_bar_(new lm::ui::MeterBar(this)),
       disk_layout_(new QVBoxLayout()),
@@ -82,6 +84,18 @@ DetailWindow::DetailWindow(QString host_id, QWidget* parent)
     header->addStretch();
     header->addWidget(template_label_);
     details_layout->addLayout(header);
+
+    // Said on screen as well as in the log, because the person who will hit
+    // this is the one looking at the machine after a script failed on it.
+    elevation_banner_->setObjectName(QStringLiteral("ElevationBanner"));
+    elevation_banner_->setText(
+        QStringLiteral("Not running elevated — scripts that install or uninstall "
+                       "will fail. Run --install-autostart from an administrator "
+                       "prompt to fix this."));
+    elevation_banner_->setWordWrap(true);
+    elevation_banner_->setStyleSheet(QStringLiteral("color: %1;").arg(lm::ui::Theme::kOffline));
+    elevation_banner_->setVisible(!elevated.value_or(lm::platform::is_elevated()));
+    details_layout->addWidget(elevation_banner_);
 
     // Resource strip: CPU sparkline, memory bar, one bar per disk volume.
     auto* resources = new QVBoxLayout();

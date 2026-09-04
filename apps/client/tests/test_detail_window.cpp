@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalSpy>
@@ -142,4 +143,24 @@ TEST(DetailWindow, AltF4OnlyHidesWhileThereIsATray) {
 
     EXPECT_FALSE(window.isVisible());
     EXPECT_EQ(spy.count(), 0);
+}
+
+TEST(DetailWindowElevation, ShowsTheBannerOnlyWhenNotElevated) {
+    // Both states are asserted, against an injected reading rather than this
+    // process's own token. Asking the real OS made the test say nothing when
+    // the suite was launched from an administrator shell: `visible ==
+    // !is_elevated()` is then `visible == false`, which a window that never
+    // shows the banner at all satisfies. How the runner happens to be started
+    // must not decide what a test checks.
+    DetailWindow not_elevated(QStringLiteral("PC-001"), nullptr, false);
+    auto* banner = not_elevated.findChild<QLabel*>(QStringLiteral("ElevationBanner"));
+    ASSERT_NE(banner, nullptr) << "no elevation banner";
+    EXPECT_TRUE(banner->isVisibleTo(&not_elevated))
+        << "an un-elevated agent has to say so: scripts that install will fail on it";
+
+    DetailWindow elevated(QStringLiteral("PC-001"), nullptr, true);
+    banner = elevated.findChild<QLabel*>(QStringLiteral("ElevationBanner"));
+    ASSERT_NE(banner, nullptr) << "no elevation banner";
+    EXPECT_FALSE(banner->isVisibleTo(&elevated))
+        << "a warning about a problem this machine does not have is noise";
 }

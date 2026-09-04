@@ -150,6 +150,23 @@ QTableView::item:selected, QTreeView::item:selected, QListView::item:selected {
     background-color: #35363a;
 }
 
+/* Lists, and only lists, also get an explicit selected-text colour. The table
+   and tree deliberately do not -- a `color` there reaches
+   QRenderRule::configurePalette() as HighlightedText *after* initStyleOption()
+   and silently undoes KeepForegroundDelegate, which is the trap documented
+   above. No QListView here drives its foreground from a model (every
+   setForeground() in this project is on a tree or on the run-targets table),
+   so there is no delegate to undo and the rule is safe.
+
+   Without it the palette decides, and the palette's HighlightedText is
+   kBackground -- chosen to sit on the light accent used as Highlight, not on
+   the dark selection background set above. That mismatch painted a selected
+   row's text dark on dark: unreadable in the Scripts tab's host list and in
+   the Templates tab's template list. */
+QListView::item:selected {
+    color: #e8eaed;
+}
+
 /* Qt draws no branch arrows under Fusion + stylesheet unless told to; without
    this the Applications/Services groups look unexpandable. */
 QTreeView::branch:has-children:!has-siblings:closed,

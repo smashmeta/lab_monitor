@@ -4,12 +4,16 @@
 #include <QHash>
 
 #include <map>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QIODevice>
 #include <QMetaObject>
+#include <QRandomGenerator>
 
 #include <algorithm>
+#include <chrono>
+#include <cstddef>
 #include <exception>
 #include <expected>
 #include <utility>
@@ -19,6 +23,7 @@
 
 #include "lm/core/json.hpp"
 #include "lm/ui/rule_detail.hpp"
+#include "run_store.hpp"
 
 namespace {
 
@@ -56,11 +61,31 @@ void log_state_transitions(const std::vector<lm::core::FleetEntry>& before,
     }
 }
 
+/// A sortable UTC timestamp plus 32 random bits.
+///
+/// The timestamp is what makes a run id readable in a log next to the lines it
+/// explains; the suffix is what makes it unique. A counter would repeat across
+/// a server restart, where these ids meet results from clients that outlived
+/// it. Two runs would have to be issued in the same millisecond *and* draw the
+/// same 32-bit value to collide -- which start_script_run() nonetheless checks
+/// for, since find_run() resolves an id to its first match and a duplicate
+/// would misroute every result of the second run into the first.
+std::string make_run_id() {
+    const QString stamp = QDateTime::currentDateTimeUtc().toString("yyyyMMdd-HHmmss-zzz");
+    const QString suffix =
+        QString::number(QRandomGenerator::global()->generate(), 16).rightJustified(8, '0');
+    return (stamp + '-' + suffix).toStdString();
+}
+
 }  // namespace
 
 ServerController::ServerController(std::unique_ptr<lm::transport::IServerTransport> transport,
-                                    QString config_dir, QObject* parent)
-    : QObject(parent), transport_(std::move(transport)), config_dir_(std::move(config_dir)) {}
+                                    QString config_dir, QObject* parent,
+                                    std::chrono::milliseconds deadline_margin)
+    : QObject(parent),
+      transport_(std::move(transport)),
+      config_dir_(std::move(config_dir)),
+      deadline_margin_(deadline_margin) {}
 
 bool ServerController::can_publish() const {
     return lm::core::content_hash(draft_) != lm::core::content_hash(published_);
@@ -107,6 +132,12 @@ void ServerController::start() {
     transport_->on_report([this](const lm::transport::ComplianceReportMessage& report) {
         QMetaObject::invokeMethod(
             this, [this, report] { on_report(report); }, Qt::QueuedConnection);
+    });
+    transport_->on_script_result([this](const lm::transport::ScriptResultMessage& result) {
+        // script_runs_ is a plain vector read by the GUI while it is written
+        // here; the hop is what keeps that single-threaded.
+        QMetaObject::invokeMethod(
+            this, [this, result] { on_script_result(result); }, Qt::QueuedConnection);
     });
     transport_->on_client_lost([this](const lm::core::HostId& host_id) {
         QMetaObject::invokeMethod(
@@ -317,6 +348,275 @@ void ServerController::on_client_lost(const lm::core::HostId& host_id) {
     reconcile_now();
 }
 
+ScriptRun* ServerController::find_run(const std::string& run_id) {
+    const auto found = std::ranges::find(script_runs_, run_id, &ScriptRun::run_id);
+    return found == script_runs_.end() ? nullptr : &*found;
+}
+
+void ServerController::persist_run_if_finished(ScriptRun& run) {
+    if (!run.is_finished()) {
+        // A run still waiting is not an audit record yet, and writing on
+        // every result would turn a hundred-host run into a hundred writes
+        // of the same growing file. This guard is the entire protection
+        // against that -- not a "have we saved this before?" check, which
+        // would leave a corrected record unwritten. See below.
+        return;
+    }
+
+    // "Written once and never mutated" (spec, see run_store.hpp) describes
+    // the file *format* -- one file per run, so a corrupt one costs a single
+    // run rather than the whole history -- not a promise that this run's own
+    // record can never change. on_script_result() still accepts a result for
+    // a target already at NoResponse, because a late answer is exactly what
+    // an operator wants to see; if that target's run had already finished
+    // and been saved (its deadline fired first), the file on disk would go
+    // on saying NoResponse forever unless this call rewrites it. A record
+    // that claims a machine never answered when it did is worse than a
+    // second write, and QSaveFile makes that second write atomic -- a
+    // rewrite here can never corrupt what was already on disk.
+    const bool already_saved = saved_runs_.contains(run.run_id);
+    QString error;
+    if (save_run(runs_dir(), run, &error)) {
+        saved_runs_.insert(run.run_id);
+        if (already_saved) {
+            spdlog::info("script run {} corrected on disk after a later event changed it",
+                         run.run_id);
+        }
+    } else {
+        spdlog::error(error.toStdString());
+        emit config_error(error);
+    }
+}
+
+QString ServerController::start_script_run(const std::string& script_name,
+                                            const std::string& script_body,
+                                            const std::vector<std::string>& hosts,
+                                            std::uint32_t timeout_seconds) {
+    ScriptRun draft;
+    draft.run_id = make_run_id();
+    // find_run() resolves an id to its *first* match, so a duplicate would
+    // route every result of this run into the older one and strand this one at
+    // Dispatched until its deadline. Astronomically unlikely; two lines to
+    // make impossible within a process.
+    while (find_run(draft.run_id) != nullptr) {
+        draft.run_id = make_run_id();
+    }
+    draft.script_name = script_name;
+    draft.script_body = script_body;
+    draft.issued_at = lm::core::Clock::now();
+    draft.timeout_seconds = timeout_seconds;
+
+    for (const lm::core::HostId& host_id : hosts) {
+        const bool already_targeted =
+            std::ranges::any_of(draft.targets, [&](const RunTarget& target) {
+                return target.host_id == host_id;
+            });
+        if (!already_targeted) {
+            draft.targets.push_back(RunTarget{host_id, TargetState::Pending, {}, {}});
+        }
+    }
+
+    // Stored before a single command goes out, so a result can never arrive
+    // for a run this controller cannot yet find. Today the queued hop from the
+    // transport thread would prevent that anyway -- but that is an invariant
+    // living in another function, and this ordering needs no such argument.
+    // Nothing below adds a run, so the reference stays valid: publishing is
+    // one-way, and every path back into this object goes through the event
+    // loop.
+    script_runs_.push_back(std::move(draft));
+    ScriptRun& run = script_runs_.back();
+
+    for (RunTarget& target : run.targets) {
+        const lm::core::HostId& host_id = target.host_id;
+        const auto entry =
+            std::ranges::find(fleet_.entries, host_id, &lm::core::FleetEntry::host_id);
+
+        if (entry == fleet_.entries.end() || entry->state != lm::core::HostState::Online) {
+            // Nothing is sent. The command topic is Volatile, so there is no
+            // queue to hold this until the machine comes back -- publishing it
+            // would promise a delivery that cannot happen, and leave the run
+            // waiting out its deadline for a host we already know is not there.
+            //
+            // The state is named rather than summarised as "not online",
+            // because a Paused host *is* online and reachable and has merely
+            // stopped reporting -- and Offline, Missing and Unexpected each
+            // send the reader somewhere different.
+            run.refuse_at_dispatch(host_id,
+                                   entry == fleet_.entries.end()
+                                       ? std::string{"host is not in the fleet"}
+                                       : "host is " + lm::core::to_string(entry->state) +
+                                             ", not Online");
+            continue;
+        }
+        if (!entry->caps.has(lm::core::Capability::Scripts)) {
+            // The enrolment opt-in is the whole bound on this feature, so the
+            // server enforces it as well rather than sending and letting the
+            // client decline: an un-enrolled machine never receives a script
+            // body at all.
+            run.refuse_at_dispatch(host_id, "not enrolled for script execution");
+            continue;
+        }
+
+        lm::transport::ScriptCommand command;
+        command.host_id = host_id;
+        command.run_id = run.run_id;
+        command.script_name = run.script_name;
+        command.script_body = run.script_body;
+        command.timeout_seconds = run.timeout_seconds;
+        transport_->publish_script_command(command);
+        run.mark_dispatched(host_id);
+    }
+
+    const RunTally tally = run.tally();
+    // Remote execution is audited, not sampled: this is somebody running code
+    // on other people's machines, and none of it is periodic, so the "nothing
+    // periodic is logged" rule does not reach it.
+    spdlog::info("script run {} started: \"{}\" to {} host(s) ({} dispatched, {} refused)",
+                 run.run_id, run.script_name, run.targets.size(), tally.dispatched, tally.refused);
+
+    const QString run_id = QString::fromStdString(run.run_id);
+
+    if (tally.dispatched > 0) {
+        // `this` as the context object, so the timer dies with the controller
+        // and can never fire into a destroyed run. It carries the id rather
+        // than a pointer for the same reason: script_runs_ reallocates as runs
+        // are added, and find_run() simply returns null if the run is gone.
+        //
+        // Not armed at all when nothing was dispatched: every target is
+        // already terminal, so there is nothing a deadline could move.
+        const std::string deadline_run_id = run.run_id;
+        QTimer::singleShot(std::chrono::seconds{timeout_seconds} + deadline_margin_, this,
+                           [this, deadline_run_id] { on_run_deadline(deadline_run_id); });
+    }
+
+    // A run every one of whose targets was Refused at dispatch -- no host
+    // Online, none enrolled -- is is_finished() from birth, and no deadline
+    // was armed for it above, so on_script_result() and on_run_deadline() will
+    // never run for it. Without this call it would live in the History list
+    // for the session and be gone at the next launch: "fifteen machines and
+    // every one refused it" is exactly the run worth auditing. The
+    // is_finished() guard inside makes this a no-op for a run with live
+    // targets, so the hundred-writes protection is untouched.
+    persist_run_if_finished(run);
+
+    emit script_run_changed(run_id);
+    // A new run is a new entry in the set script_runs() enumerates, exactly
+    // the fact this signal already carries for a load at startup or a
+    // deletion -- so a view of the *set* of runs (the Scripts tab's history
+    // list) needs this as much as those two, and not only script_run_changed,
+    // which fires again for every result this run goes on to receive.
+    emit script_runs_changed();
+    return run_id;
+}
+
+void ServerController::on_script_result(const lm::transport::ScriptResultMessage& result) {
+    ScriptRun* run = find_run(result.run_id);
+    if (run == nullptr) {
+        // A run this server never issued: a result from before a restart, or
+        // one meant for another server on the same domain. Not ours to record.
+        return;
+    }
+    const auto target = std::ranges::find(run->targets, result.host_id, &RunTarget::host_id);
+    if (target == run->targets.end()) {
+        return;  // a host this run never targeted; nothing moved
+    }
+    // Only a host we actually sent to may be moved by a result. A target
+    // Refused at dispatch was never sent the script, so a result carrying this
+    // run's id from that host cannot be an answer to it -- and letting it
+    // through would overwrite "not enrolled for script execution" with
+    // Completed, leaving an audit record saying an un-enrolled machine ran the
+    // script. NoResponse stays acceptable: that host *was* sent the script,
+    // and a late answer is exactly what the operator wants to see.
+    switch (target->state) {
+        case TargetState::Dispatched:
+        case TargetState::NoResponse:
+            break;
+        case TargetState::Pending:
+        case TargetState::Completed:
+        case TargetState::Failed:
+        case TargetState::Refused:
+            return;
+    }
+
+    run->apply_result(result);
+    spdlog::info("script run {}: {} reported {} (exit {}, {} ms)", result.run_id, result.host_id,
+                 lm::core::to_string(result.status), result.exit_code, result.duration_ms);
+
+    persist_run_if_finished(*run);
+
+    emit script_run_changed(QString::fromStdString(result.run_id));
+}
+
+void ServerController::on_run_deadline(const std::string& run_id) {
+    ScriptRun* run = find_run(run_id);
+    if (run == nullptr) {
+        return;
+    }
+    const std::size_t waiting = run->tally().dispatched;
+    if (waiting == 0) {
+        return;  // every host answered in time; the deadline has nothing to say
+    }
+
+    run->apply_deadline();
+    spdlog::info("script run {}: {} host(s) did not respond within {} s", run_id, waiting,
+                 run->timeout_seconds);
+
+    persist_run_if_finished(*run);
+
+    emit script_run_changed(QString::fromStdString(run_id));
+}
+
+bool ServerController::delete_script_run(const std::string& run_id) {
+    // Whether there is a file to miss. A run's History row exists from the
+    // moment it is created, so an operator can select and delete one that has
+    // not finished and so has never been written -- and delete_run() reporting
+    // "No such run" for that would reach config_error() and raise a modal
+    // titled "Configuration error" over an action that did exactly what was
+    // asked. saved_runs_ is the state that knows; a run never written is not
+    // an error to delete.
+    const bool was_saved = saved_runs_.contains(run_id);
+    QString error;
+    const bool removed = delete_run(runs_dir(), run_id, &error);
+    if (!removed && was_saved) {
+        spdlog::error(error.toStdString());
+        emit config_error(error);
+    }
+    // The in-memory entry goes either way: an operator who asked for it gone
+    // and still sees it will simply ask again, and the file is already
+    // absent in the case that matters.
+    std::erase_if(script_runs_, [&](const ScriptRun& run) { return run.run_id == run_id; });
+    saved_runs_.erase(run_id);
+    spdlog::info("script run {} deleted", run_id);
+    emit script_runs_changed();
+    return removed;
+}
+
+std::size_t ServerController::delete_script_runs_before(
+    std::chrono::system_clock::time_point cutoff) {
+    std::vector<std::string> doomed;
+    for (const ScriptRun& run : script_runs_) {
+        if (run.issued_at < cutoff) {
+            doomed.push_back(run.run_id);
+        }
+    }
+    for (const std::string& run_id : doomed) {
+        // Same guard, and for the same reason, as delete_script_run() above: a
+        // run still in flight has never been written, and "No such run" for
+        // one is a modal reporting a failure that did not happen.
+        const bool was_saved = saved_runs_.contains(run_id);
+        QString error;
+        if (!delete_run(runs_dir(), run_id, &error) && was_saved) {
+            spdlog::error(error.toStdString());
+            emit config_error(error);
+        }
+        saved_runs_.erase(run_id);
+    }
+    std::erase_if(script_runs_, [&](const ScriptRun& run) { return run.issued_at < cutoff; });
+    spdlog::info("deleted {} script run(s) older than the chosen date", doomed.size());
+    emit script_runs_changed();
+    return doomed.size();
+}
+
 void ServerController::apply_coalesced(QVector<lm::transport::ResourceSampleMessage> batch) {
     const lm::core::TimePoint now = lm::core::Clock::now();
     for (const lm::transport::ResourceSampleMessage& sample : batch) {
@@ -335,13 +635,26 @@ void ServerController::reconcile_now() {
         effective_expected_hosts(), registry_.snapshot(), lm::core::Clock::now(), options_);
     model_.apply(view);
 
-    // Only the host -> state mapping, not the whole view: last_seen moves on
-    // every sample, so comparing entries outright would report a change on
-    // every tick of the 1 s timer. reconcile() returns them in a deterministic
-    // order, so equal states really do mean an unchanged fleet.
+    // The host -> state mapping and the capabilities, not the whole view:
+    // last_seen moves on every sample, so comparing entries outright would
+    // report a change on every tick of the 1 s timer. reconcile() returns them
+    // in a deterministic order, so equal entries really do mean an unchanged
+    // fleet.
+    //
+    // Capabilities are in the comparison because they can move while the state
+    // does not, and a view that missed that would show the wrong thing
+    // indefinitely rather than briefly. mark_lost() erases a client outright on
+    // a liveliness drop, and the resource samples still arriving recreate it
+    // through touch(), which knows nothing about capabilities -- so the host
+    // reads Online with none. The next announce restores them at the same
+    // Online state, and without this term nothing is emitted: the Scripts tab
+    // would go on saying "not enrolled", and the fleet's adapter column "-",
+    // until some unrelated machine happened to change state. Capabilities do
+    // not churn, so this cannot reintroduce per-tick signalling.
     const bool states_changed = !std::ranges::equal(
         fleet_.entries, view.entries, [](const lm::core::FleetEntry& lhs, const lm::core::FleetEntry& rhs) {
-            return lhs.host_id == rhs.host_id && lhs.state == rhs.state;
+            return lhs.host_id == rhs.host_id && lhs.state == rhs.state &&
+                   lhs.caps.raw() == rhs.caps.raw();
         });
 
     if (states_changed) {
@@ -360,6 +673,48 @@ QString ServerController::expected_hosts_path() const {
 }
 
 QString ServerController::bundle_path() const { return config_dir_ + QStringLiteral("/bundle.json"); }
+
+QString ServerController::script_settings_path() const {
+    return config_dir_ + QStringLiteral("/scripts.json");
+}
+
+QString ServerController::runs_dir() const { return config_dir_ + QStringLiteral("/runs"); }
+
+void ServerController::set_script_share_root(QString path) {
+    if (path == script_share_root_) {
+        return;  // not a change, and re-reading a share for nothing costs a stall
+    }
+    script_share_root_ = std::move(path);
+    save_script_settings();
+    spdlog::info("script share root set to {}", script_share_root_.isEmpty()
+                                                    ? std::string("(none)")
+                                                    : script_share_root_.toStdString());
+    emit script_share_root_changed(script_share_root_);
+}
+
+void ServerController::save_script_settings() {
+    QDir().mkpath(config_dir_);
+    nlohmann::json document;
+    document["share_root"] = script_share_root_.toStdString();
+
+    const QString path = script_settings_path();
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        const QString message =
+            QStringLiteral("Failed to save script settings to %1: %2").arg(path, file.errorString());
+        spdlog::error(message.toStdString());
+        emit config_error(message);
+        return;
+    }
+    const std::string text = document.dump(2);
+    const qint64 written = file.write(text.data(), static_cast<qint64>(text.size()));
+    if (written != static_cast<qint64>(text.size())) {
+        const QString message =
+            QStringLiteral("Failed to write script settings to %1: %2").arg(path, file.errorString());
+        spdlog::error(message.toStdString());
+        emit config_error(message);
+    }
+}
 
 void ServerController::load_config() {
     QDir().mkpath(config_dir_);
@@ -422,6 +777,64 @@ void ServerController::load_config() {
             // Keep the last good bundle in memory -- default-constructed
             // (empty) on a first run, or whatever was already loaded.
         }
+    }
+
+    // Absent on a fresh config directory, and a missing file is not an error:
+    // an unconfigured share is the starting state, not a failure.
+    QFile settings_file(script_settings_path());
+    if (settings_file.open(QIODevice::ReadOnly)) {
+        const QByteArray text = settings_file.readAll();
+        const nlohmann::json document =
+            nlohmann::json::parse(text.constData(), nullptr, /*allow_exceptions=*/false);
+        if (document.is_object() && document.contains("share_root") &&
+            document["share_root"].is_string()) {
+            script_share_root_ = QString::fromStdString(document["share_root"].get<std::string>());
+            // load_config() runs inside start(), which the caller invokes AFTER
+            // connecting its signals -- see expected_hosts_changed() and
+            // published_changed() above for the same pattern. Without this, the
+            // Scripts tab (built before this ran, against an empty controller)
+            // reads an empty share_root and is never told otherwise: a share
+            // configured yesterday would look unconfigured on every launch.
+            // Only when a root was actually loaded -- a fresh config directory
+            // with no scripts.json is the normal starting state, not a change,
+            // and announcing it would show "no share configured" for no reason.
+            if (!script_share_root_.isEmpty()) {
+                emit script_share_root_changed(script_share_root_);
+            }
+        } else {
+            const QString message = QStringLiteral("The script settings in %1 could not be read; the "
+                                                     "share is unset until one is chosen again")
+                                         .arg(script_settings_path());
+            spdlog::error(message.toStdString());
+            emit config_error(message);
+        }
+    }
+
+    std::vector<QString> run_errors;
+    script_runs_ = load_runs(runs_dir(), &run_errors);
+    // Loaded runs are finished by construction, so none of them gets a
+    // deadline timer -- a loaded run has no live targets waiting. Marking
+    // them here in saved_runs_ only means "already exists on disk"; it does
+    // not exempt one from persist_run_if_finished()'s later-correction path
+    // if a late result for a still-NoResponse target arrives after this
+    // restart -- that is the same record-correction case as any other run,
+    // loaded or not.
+    for (const ScriptRun& run : script_runs_) {
+        saved_runs_.insert(run.run_id);
+    }
+    std::ranges::sort(script_runs_, {}, &ScriptRun::issued_at);
+    for (const QString& message : run_errors) {
+        spdlog::error(message.toStdString());
+        emit config_error(message);
+    }
+    // Same reason as expected_hosts_changed() and published_changed() above:
+    // load_config() runs inside start(), which the caller invokes AFTER
+    // connecting its signals -- so a history view built before this ran holds
+    // an empty list and is never told otherwise. Only when a run was actually
+    // loaded: a fresh config directory with no runs/ is the normal starting
+    // state, not a change.
+    if (!script_runs_.empty()) {
+        emit script_runs_changed();
     }
 }
 

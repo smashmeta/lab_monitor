@@ -187,3 +187,57 @@ TEST(InMemoryTransport, SubscribingFromInsideAHandlerIsSafe) {
     // published after it subscribed.
     EXPECT_EQ(second_seen, (std::vector<HostId>{"PC-002"}));
 }
+
+TEST(InMemoryTransport, DeliversAScriptCommandFromServerToClient) {
+    MessageBus bus;
+    const auto server = make_in_memory_server(bus);
+    const auto client = make_in_memory_client(bus);
+
+    std::vector<ScriptCommand> seen;
+    client->on_script_command([&](const ScriptCommand& command) { seen.push_back(command); });
+
+    ScriptCommand command;
+    command.host_id = "PC-001";
+    command.run_id = "run-1";
+    command.script_body = "exit 0";
+    server->publish_script_command(command);
+
+    ASSERT_EQ(seen.size(), 1u);
+    EXPECT_EQ(seen.front().run_id, "run-1");
+}
+
+TEST(InMemoryTransport, DeliversAScriptResultFromClientToServer) {
+    MessageBus bus;
+    const auto server = make_in_memory_server(bus);
+    const auto client = make_in_memory_client(bus);
+
+    std::vector<ScriptResultMessage> seen;
+    server->on_script_result([&](const ScriptResultMessage& result) { seen.push_back(result); });
+
+    ScriptResultMessage result;
+    result.host_id = "PC-001";
+    result.run_id = "run-1";
+    result.status = lm::core::ScriptStatus::Completed;
+    client->publish_script_result(result);
+
+    ASSERT_EQ(seen.size(), 1u);
+    EXPECT_EQ(seen.front().status, lm::core::ScriptStatus::Completed);
+}
+
+TEST(InMemoryTransport, DoesNotReplayACommandToALateSubscriber) {
+    // The in-memory bus must model the topic's Volatile durability, or every
+    // test built on it would prove the opposite of what production does.
+    MessageBus bus;
+    const auto server = make_in_memory_server(bus);
+    const auto client = make_in_memory_client(bus);
+
+    ScriptCommand command;
+    command.host_id = "PC-001";
+    command.run_id = "run-1";
+    server->publish_script_command(command);
+
+    std::vector<ScriptCommand> seen;
+    client->on_script_command([&](const ScriptCommand& c) { seen.push_back(c); });
+
+    EXPECT_TRUE(seen.empty()) << "a command must not be replayed to a client that joined later";
+}

@@ -31,6 +31,18 @@ core::Capabilities intersect(core::Capabilities declared, const ProbeSet& probes
     if (probes.dds && declared.has(core::Capability::Dds)) {
         result.add(core::Capability::Dds);
     }
+    // Scripts and Elevated pass straight through. This function exists so a
+    // null probe can never advertise a capability it cannot serve, and neither
+    // of these is served by a probe: the script runner is owned by the client's
+    // worker, and elevation is a property of the process token. Dropping them
+    // for want of a ProbeSet member would silently strip them from the
+    // announce, which is the only carrier a client has for them.
+    if (declared.has(core::Capability::Scripts)) {
+        result.add(core::Capability::Scripts);
+    }
+    if (declared.has(core::Capability::Elevated)) {
+        result.add(core::Capability::Elevated);
+    }
     return result;
 }
 

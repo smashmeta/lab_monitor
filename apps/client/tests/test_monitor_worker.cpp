@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QMetaObject>
+#include <QSignalSpy>
 #include <QThread>
 
 #include <atomic>
@@ -314,4 +315,40 @@ TEST(MonitorWorker, RejectsAMalformedBundleWithoutCrashing) {
 
     EXPECT_NO_THROW(publish_and_apply(*server, broken));
     EXPECT_EQ(fixture.worker->applied_revision(), 0u);  // last good state retained
+}
+
+TEST(MonitorWorkerDiscovery, SaysSoWhenItHasNeverHeardFromAServer) {
+    // A client that cannot discover the server is indistinguishable from a
+    // healthy one from the outside: it starts, it announces on its timer, and
+    // nothing anywhere says the announcements are reaching nobody. That is
+    // exactly the shape of a machine silently missing from the fleet, and this
+    // signal is the only thing that separates the two.
+    Fixture fixture;
+    QSignalSpy spy(fixture.worker.get(), &MonitorWorker::server_unheard);
+    ASSERT_TRUE(spy.isValid());
+
+    fixture.worker->start();
+    for (int i = 0; i < 12; ++i) {
+        fixture.worker->announce();
+    }
+
+    EXPECT_EQ(spy.count(), 1) << "said once, not once per announce from then on";
+}
+
+TEST(MonitorWorkerDiscovery, StaysQuietOnceTheServersBundleHasArrived) {
+    // The bundle is the proof: it can only have come from a server, so a
+    // client holding one has demonstrably been discovered in both directions.
+    Fixture fixture;
+    QSignalSpy spy(fixture.worker.get(), &MonitorWorker::server_unheard);
+    ASSERT_TRUE(spy.isValid());
+
+    const auto server = make_in_memory_server(fixture.bus);
+    fixture.worker->start();
+    publish_and_apply(*server, bundle_message(1, {}));
+
+    for (int i = 0; i < 12; ++i) {
+        fixture.worker->announce();
+    }
+
+    EXPECT_EQ(spy.count(), 0);
 }

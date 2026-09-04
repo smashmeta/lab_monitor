@@ -31,9 +31,16 @@ public:
     void publish_report(const ComplianceReportMessage& message) override {
         bus_.publish_report(message);
     }
+    void publish_script_result(const ScriptResultMessage& message) override {
+        bus_.publish_script_result(message);
+    }
 
     void on_bundle(std::function<void(const TemplateBundleMessage&)> handler) override {
         bus_.subscribe_bundle(std::move(handler));
+    }
+
+    void on_script_command(std::function<void(const ScriptCommand&)> handler) override {
+        bus_.subscribe_script_command(std::move(handler));
     }
 
     void on_connection_changed(std::function<void(ConnectionState)> handler) override {
@@ -55,6 +62,9 @@ public:
     void publish_bundle(const TemplateBundleMessage& message) override {
         bus_.publish_bundle(message);
     }
+    void publish_script_command(const ScriptCommand& message) override {
+        bus_.publish_script_command(message);
+    }
 
     void on_announce(std::function<void(const ClientAnnounce&)> handler) override {
         bus_.subscribe_announce(std::move(handler));
@@ -64,6 +74,9 @@ public:
     }
     void on_report(std::function<void(const ComplianceReportMessage&)> handler) override {
         bus_.subscribe_report(std::move(handler));
+    }
+    void on_script_result(std::function<void(const ScriptResultMessage&)> handler) override {
+        bus_.subscribe_script_result(std::move(handler));
     }
     void on_client_lost(std::function<void(const core::HostId&)>) override {
         // The in-memory bus has no liveliness concept; clients never disappear.
@@ -94,6 +107,16 @@ void MessageBus::publish_bundle(const TemplateBundleMessage& message) {
     deliver(bundle_handlers_, message);
 }
 
+void MessageBus::publish_script_command(const ScriptCommand& message) {
+    // No retained value, unlike publish_bundle above: this topic is Volatile,
+    // so a client that joins (or reconnects) after this call must not see it.
+    deliver(script_command_handlers_, message);
+}
+
+void MessageBus::publish_script_result(const ScriptResultMessage& message) {
+    deliver(script_result_handlers_, message);
+}
+
 void MessageBus::subscribe_announce(std::function<void(const ClientAnnounce&)> handler) {
     announce_handlers_.push_back(std::move(handler));
 }
@@ -111,6 +134,14 @@ void MessageBus::subscribe_bundle(std::function<void(const TemplateBundleMessage
         handler(*retained_bundle_);
     }
     bundle_handlers_.push_back(std::move(handler));
+}
+
+void MessageBus::subscribe_script_command(std::function<void(const ScriptCommand&)> handler) {
+    script_command_handlers_.push_back(std::move(handler));
+}
+
+void MessageBus::subscribe_script_result(std::function<void(const ScriptResultMessage&)> handler) {
+    script_result_handlers_.push_back(std::move(handler));
 }
 
 std::unique_ptr<IClientTransport> make_in_memory_client(MessageBus& bus) {

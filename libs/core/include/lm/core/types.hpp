@@ -64,6 +64,15 @@ enum class Capability : std::uint32_t {
     /// unless the client was built with a DDS probe and given one, which is
     /// what keeps a --offline client from claiming it can inspect a bus.
     Dds       = 1u << 5,
+    /// The machine is enrolled for remote script execution. Off unless the
+    /// client was started with --allow-scripts: an agent upgrade must never
+    /// silently turn a monitoring box into one that runs remote code.
+    Scripts   = 1u << 6,
+    /// The agent holds an elevated token, so a script it runs can install or
+    /// uninstall. Reported separately from Scripts because they fail
+    /// differently: not enrolled is a policy decision, not elevated is a
+    /// machine that will try and be denied.
+    Elevated  = 1u << 7,
 };
 
 /// A set of capabilities a client advertises. Rules whose required capability

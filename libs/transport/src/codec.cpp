@@ -246,10 +246,69 @@ bool decode(std::span<const std::uint8_t> bytes, ComplianceReportMessage& out) {
     return false;
 }
 
+// --- ScriptCommand ----------------------------------------------------------
+
+std::vector<std::uint8_t> encode(const ScriptCommand& message) {
+    return serialise([&](Cdr& writer) {
+        writer << message.host_id << message.run_id << message.script_name
+               << message.script_body << message.timeout_seconds;
+    });
+}
+
+bool decode(std::span<const std::uint8_t> bytes, ScriptCommand& out) {
+    ScriptCommand parsed;
+    const bool ok = deserialise(bytes, [&](Cdr& reader) {
+        reader >> parsed.host_id >> parsed.run_id >> parsed.script_name >>
+            parsed.script_body >> parsed.timeout_seconds;
+    });
+    if (ok) {
+        out = std::move(parsed);
+    }
+    return ok;
+}
+
+// --- ScriptResultMessage ----------------------------------------------------
+
+std::vector<std::uint8_t> encode(const ScriptResultMessage& message) {
+    return serialise([&](Cdr& writer) {
+        writer << message.host_id << message.run_id
+               << static_cast<std::uint32_t>(message.status) << message.refusal_reason
+               << message.exit_code << message.has_reported << message.reported_ok
+               << message.reported_message << message.stdout_text << message.stderr_text
+               << message.duration_ms;
+    });
+}
+
+bool decode(std::span<const std::uint8_t> bytes, ScriptResultMessage& out) {
+    ScriptResultMessage parsed;
+    std::uint32_t status = 0;
+    const bool ok = deserialise(bytes, [&](Cdr& reader) {
+        reader >> parsed.host_id >> parsed.run_id >> status >> parsed.refusal_reason >>
+            parsed.exit_code >> parsed.has_reported >> parsed.reported_ok >>
+            parsed.reported_message >> parsed.stdout_text >> parsed.stderr_text >>
+            parsed.duration_ms;
+    });
+    if (!ok) {
+        return false;
+    }
+    // Anything outside the enum becomes Error rather than a value no switch
+    // handles: the wire is not trusted to stay in range.
+    switch (status) {
+        case 0: parsed.status = core::ScriptStatus::Completed; break;
+        case 1: parsed.status = core::ScriptStatus::Failed; break;
+        case 2: parsed.status = core::ScriptStatus::Refused; break;
+        default: parsed.status = core::ScriptStatus::Error; break;
+    }
+    out = std::move(parsed);
+    return true;
+}
+
 // --- keys ------------------------------------------------------------------
 
 std::string key_of(const ClientAnnounce& message) { return message.host_id; }
 std::string key_of(const ResourceSampleMessage& message) { return message.host_id; }
 std::string key_of(const ComplianceReportMessage& message) { return message.report.host_id; }
+std::string key_of(const ScriptCommand& message) { return message.host_id; }
+std::string key_of(const ScriptResultMessage& message) { return message.host_id; }
 
 }  // namespace lm::transport

@@ -821,6 +821,79 @@ fixture: what it did is worth watching while it runs and worth nothing an hour
 later, and a log file beside a tool nobody supports is one more thing to
 explain.
 
+### Scripts: a share read on demand, a body re-read at Run, and cleanup nobody automated
+The Scripts tab (`apps/server/scripts_tab.{hpp,cpp}`) dispatches PowerShell to
+many machines at once, so every read in it is deliberate about when it happens
+and what it promises the operator it is showing them.
+
+**The share is read on demand, and never watched.** `reload_library()` walks
+`read_script_library()` at construction, on Refresh, and when the root
+changes — nowhere else. A UNC path can be slow or briefly unreachable, and
+polling it on a timer would let a flaky share stall the console every few
+seconds for a tree nobody is looking at. Refresh is the whole mechanism for
+"is this current now".
+
+**The share root is a persisted setting, deliberately with no CLI
+equivalent.** `ServerController::set_script_share_root()` writes it to config
+and emits `script_share_root_changed()` immediately; nothing under `main.cpp`
+takes it from `program_options`. A launch flag would have to be re-typed by
+whoever starts the server next, on whichever machine that is, where a setting
+just follows the config directory.
+
+**The body is re-read when Run is pressed, and a change since the preview
+blocks the run.** `on_run_clicked()` calls `read_script_body()` again rather
+than trusting `previewed_body_`, because the share is writable by other people
+while an operator is reading it, and the preview is a promise about what will
+execute. A mismatch does not silently run the new content — it repaints the
+preview with what the file now says and refuses to dispatch, so the operator
+sees the same text they would be trusting a hundred machines with.
+
+**Accepting that change is a different control, not a second press of Run.**
+Run is disabled and `AcceptChangedScriptButton` ("Use the new version")
+appears on the row below, at the opposite end of the panel from where Run
+sits; only that button clears
+`changed_script_pending_`, and `update_target_count()` — the single place
+Run's enabled state is decided — consults the flag so ticking a host cannot
+hand the button back. It was Run itself, still enabled and still in the same
+place, and that was wrong: the operator's reflex on "nothing happened" is to
+press again, so one edit on the share plus one reflex landed a share writer's
+content having read none of it. The share writer did not even have to win a
+race. The block is dropped on a new tree selection and on a reload of the
+share, since both throw away the comparison it was about — otherwise Run
+stays dead for the session with nothing on screen saying why.
+
+**Both reads of the share are bounded, because both run on the GUI thread.**
+`read_script_library()` gives up after 2 s and returns what it has with
+`ScriptLibrary::truncated` set, which the tab reports as "Only part of … could
+be listed" — ahead of the empty-share message, because a walk that ran out of
+time never established that there are no scripts. `read_script_body()` refuses
+a file over 1 MB with the same `nullopt` a missing file produces, so the tab's
+existing "could not be read" path covers it: without that, clicking a tree row
+on somebody else's share was enough to read an arbitrary file whole into a
+`QPlainTextEdit`, no Run required. See the *Known gaps* note on why that read
+still runs on the GUI thread rather than a worker.
+
+**Runs are one file each under `<config>/runs/`, written when the run
+finishes and rewritten if a late result corrects it.** `persist_run_if_finished()`
+guards the write on `run.is_finished()` so a ninety-host run is not a hundred
+writes of the same growing file, but "written once" describes the *format* —
+one file per run, so a corrupt one costs a single record rather than the whole
+history — not a promise the file can never change again. A target that
+answers after its deadline has already been saved as `NoResponse` still moves
+through `apply_result()`, and `persist_run_if_finished()` rewrites that run's
+file through `QSaveFile` (atomic, so the rewrite can never corrupt what was
+already on disk) rather than leaving the audit trail saying forever that a
+machine never answered when it did.
+
+**Cleanup is explicit and operator-driven, never automatic.** `DeleteRunButton`
+removes one run at a time; `DeleteOlderButton` sweeps everything before an
+operator-chosen date through `ServerController::delete_script_runs_before()`,
+with no confirmation dialog — an explicit action on a date somebody typed does
+not need a modal, and `CleanupMessage` reporting `Deleted N run(s).` (0 included)
+is the feedback instead. Nothing in this feature runs on a timer to prune old
+runs by itself: silently discarding an audit trail is worse than a large
+`runs/` directory, so a run persists until somebody asks for it to go.
+
 ### nlohmann-json, not boost-json
 Team choice. Boost is consequently confined to `program_options` in the two apps.
 
@@ -918,6 +991,58 @@ Team choice. Boost is consequently confined to `program_options` in the two apps
 
 ## Known gaps
 
+- **A long-running participant stops discovering after a Windows power
+  transition.** Observed, not theorised: a server up since 09:58 went through a
+  `Kernel-Power` 566 session transition at 11:40, and every client started
+  after that was invisible to it — while the client already connected kept
+  reporting normally until it was quit. That asymmetry is the signature. RTPS
+  talks to peers it has already discovered over the unicast locators it holds,
+  so established traffic survives; discovery is multicast, and the multicast
+  group membership does not survive the interface state change. Fast DDS binds
+  and joins once, at participant creation, and never re-scans:
+  `update_network_interfaces()` exists on `TransportInterface` but is **not**
+  exposed on `DomainParticipant`, so a running participant cannot be made to
+  recover. Restarting the affected process is the only cure.
+
+  Two things exist because of this. `--peer <ipv4>` (repeatable, both apps)
+  fills `DdsConfig::initial_peers`, which adds unicast announcements alongside
+  multicast — `--peer 127.0.0.1` makes a server and client on one machine
+  immune, since loopback has no interface state to lose. And the client emits
+  `server_unheard()` after a minute of announcing with no bundle ever
+  received, logged as a warning: before it, this failure was completely silent
+  at both ends, and the only symptom was a machine quietly absent from the
+  fleet.
+
+  Diagnosing it: the client's log is decisive. A client that joined its domain
+  and never logged `applied template bundle` was never discovered, because the
+  bundle is `TRANSIENT_LOCAL` and reaches a client the moment it is seen.
+
+
+- **The script share is walked synchronously on the GUI thread.**
+  `read_script_library()` is called straight from `ScriptsTab`'s constructor,
+  from Refresh, and from `script_share_root_changed` — which fires inside
+  `controller->start()`, i.e. before `window->show()`. Nothing hands it to a
+  worker, so for as long as it runs the console does not paint and does not
+  answer.
+
+  Read-on-demand is what keeps that affordable: the share is never watched and
+  never polled, so the cost lands on a Refresh or a change of root and not
+  every few seconds on a timer for a tree nobody is looking at. And a time
+  budget now bounds the freeze — the walk stops after 2 s and says the listing
+  is partial (see *Scripts* above) — which is the difference between a stutter
+  and a lock-out: a root of `C:\` or a dead UNC path used to hang every launch
+  with no cancel and no way to reach the field that would fix the setting,
+  because that field is inside the frozen window.
+
+  A budget is not the fix; moving the walk to a worker is. That is deliberately
+  easy: `read_script_library()` takes a path and returns a value, with no
+  widget and no controller anywhere in its signature, so it can be run through
+  `QtConcurrent` or a `QThread` and its `ScriptLibrary` delivered back to
+  `reload_library()` without touching the walk itself. The residue is that
+  `QDir::exists()` on an unreachable UNC path blocks in SMB/DNS resolution
+  before the budget's clock even starts, and no in-process timeout shortens
+  that — only getting off the GUI thread does.
+
 - **The Linux code paths have never been compiled.** Everything has been built with
   MSVC. CI is authored but has never run; expect the first Linux job to fail on GCC
   warnings under `-Wall -Wextra -Wpedantic -Wshadow` with warnings-as-errors.
@@ -998,7 +1123,8 @@ Every binary lands in `build\windows\bin\<config>\` — both apps, all eight tes
 executables, and the four `lm_*.dll` they load. That single directory is
 deliberate; see *The libraries are shared* below.
 
-Both accept `--domain-id`, `--config`, `--offline` (in-process transport, no DDS)
+Both accept `--domain-id`, `--config`, `--peer` (repeatable; see Known gaps),
+`--offline` (in-process transport, no DDS)
 and `--log-level`. The client **starts hidden** — look for the tray icon.
 
 `.vscode/launch.json` has configurations for both apps, the shopping cart,

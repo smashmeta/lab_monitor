@@ -6,7 +6,11 @@
 #include <QTimer>
 #include <QVector>
 
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -19,6 +23,7 @@
 #include "lm/transport/transport.hpp"
 #include "lm/ui/fleet_model.hpp"
 #include "lm/ui/sample_coalescer.hpp"
+#include "script_run.hpp"
 
 /// Owns the IServerTransport, the ClientRegistry, the expected-host list, and
 /// both the published and draft template bundles.
@@ -38,8 +43,22 @@ class ServerController : public QObject {
     Q_OBJECT
 
 public:
+    /// How long past a script's own timeout a run waits before calling a
+    /// silent host non-responsive.
+    ///
+    /// The client kills its script at timeout_seconds and only then
+    /// serialises, publishes and lets the sample cross the wire. Deadlining at
+    /// exactly timeout_seconds would race that result and report NoResponse
+    /// for a machine that answered -- the one reading an operator must be able
+    /// to trust, since it is what sends somebody to a desk.
+    static constexpr std::chrono::milliseconds kDefaultDeadlineMargin{std::chrono::seconds{15}};
+
+    /// `deadline_margin` is a seam for tests, which cannot spend fifteen
+    /// seconds proving that a deadline fires. Nothing in the application
+    /// passes it.
     ServerController(std::unique_ptr<lm::transport::IServerTransport> transport, QString config_dir,
-                      QObject* parent = nullptr);
+                      QObject* parent = nullptr,
+                      std::chrono::milliseconds deadline_margin = kDefaultDeadlineMargin);
 
     /// Loads persisted config, wires transport callbacks and starts the 1 s
     /// reconcile timer. Call once, on the GUI thread, after construction.
@@ -89,6 +108,32 @@ public:
     /// host is silent rather than leave it out — wants the entries themselves.
     [[nodiscard]] const lm::core::FleetView& fleet() const { return fleet_; }
 
+    /// Sends `script_body` to each of `hosts` and returns the id of the run
+    /// created for it. Never fails: a host that cannot be asked is recorded as
+    /// Refused on the run rather than dropped, so the operator sees every
+    /// machine they chose and why each one did or did not get the script.
+    ///
+    /// Duplicates in `hosts` are collapsed. ScriptRun::find_target resolves a
+    /// host id to its *first* target, so a second target for the same host
+    /// could never be dispatched to, answered, or timed out -- it would sit at
+    /// Pending forever and keep the run from ever reading as finished. The
+    /// model leaves that to the caller, and this is the caller.
+    QString start_script_run(const std::string& script_name, const std::string& script_body,
+                             const std::vector<std::string>& hosts,
+                             std::uint32_t timeout_seconds);
+
+    /// Every run this server has issued, oldest first.
+    [[nodiscard]] const std::vector<ScriptRun>& script_runs() const { return script_runs_; }
+
+    /// Where the script picker reads from. Empty until an operator sets one.
+    [[nodiscard]] QString script_share_root() const { return script_share_root_; }
+    /// Persists immediately and emits script_share_root_changed(), so the tab
+    /// re-reads the share without anyone having to remember to ask it to.
+    void set_script_share_root(QString path);
+
+    /// `<config_dir>/runs` -- one file per finished run, see run_store.hpp.
+    [[nodiscard]] QString runs_dir() const;
+
 public slots:
     /// Recomputes can_publish() and emits draft_publishable_changed(). Call
     /// after mutating draft() from the outside.
@@ -104,6 +149,20 @@ public slots:
     /// transport_->publish_bundle(). No-op when can_publish() is false.
     void publish();
 
+    /// Deletes one run's saved file and its in-memory entry. The in-memory
+    /// entry is removed either way -- an operator who asked for it gone and
+    /// still sees it will simply ask again, and the file is already absent in
+    /// the case that matters. A failed file delete is reported through
+    /// config_error() rather than the return value alone, matching every
+    /// other failure path here. Returns whether the file delete succeeded.
+    bool delete_script_run(const std::string& run_id);
+
+    /// Deletes every run issued before `cutoff`. There is no automatic
+    /// pruning anywhere in this codebase (see CLAUDE.md); this exists only
+    /// for an operator to invoke deliberately, and removes exactly the runs
+    /// asked for and no others. Returns how many were removed.
+    std::size_t delete_script_runs_before(std::chrono::system_clock::time_point cutoff);
+
 signals:
     void counts_changed(lm::core::FleetCounts counts);
     /// A host appeared, departed, or changed state. Deliberately not emitted on
@@ -116,15 +175,42 @@ signals:
     void compliance_report_received(QString host_id, lm::core::ComplianceReport report);
     void draft_publishable_changed(bool can_publish);
     void published_changed();
+    /// A run was created, or one of its targets moved. Carries only the id:
+    /// the run itself is reachable through script_runs(), and passing the
+    /// whole ScriptRun would copy every host's captured output on each result.
+    void script_run_changed(QString run_id);
+    /// The set of runs changed shape: one was created, one was loaded from
+    /// disk at startup, or one (or more) was deleted. Carries nothing --
+    /// script_runs() is the source of truth -- and is deliberately separate
+    /// from script_run_changed(), which fires again for every later result of
+    /// a run already in that set and is not what a list of runs needs to hear
+    /// about repeatedly.
+    void script_runs_changed();
     /// A config file existed but failed to parse. The message is meant for
     /// direct display (e.g. a status bar or message box); the last good
     /// in-memory bundle/expected-host list is left untouched.
     void config_error(QString message);
+    void script_share_root_changed(QString path);
 
 private:
     void on_announce(const lm::transport::ClientAnnounce& announce);
     void on_report(const lm::transport::ComplianceReportMessage& report);
     void on_client_lost(const lm::core::HostId& host_id);
+    void on_script_result(const lm::transport::ScriptResultMessage& result);
+    /// Turns every target still waiting into NoResponse. Reached only from the
+    /// per-run single-shot timer armed by start_script_run().
+    void on_run_deadline(const std::string& run_id);
+    /// Null for a run this server never issued -- a stray result, or one for a
+    /// run from a previous process.
+    [[nodiscard]] ScriptRun* find_run(const std::string& run_id);
+    /// Writes `run` to disk once it has just reached is_finished(), and again
+    /// whenever a later event still changes an already-saved run -- a late
+    /// result for a target that already timed out to NoResponse is exactly
+    /// that case. A no-op while the run is still live: that is the entire
+    /// guard against a hundred-host run becoming a hundred writes. Called
+    /// from on_script_result() and on_run_deadline() after they have already
+    /// mutated the target in question.
+    void persist_run_if_finished(ScriptRun& run);
     void apply_coalesced(QVector<lm::transport::ResourceSampleMessage> batch);
     void reconcile_now();
 
@@ -151,11 +237,14 @@ private:
     /// since a failure path now emits a signal.
     void save_expected_hosts();
     void save_published_bundle();
+    void save_script_settings();
     [[nodiscard]] QString expected_hosts_path() const;
     [[nodiscard]] QString bundle_path() const;
+    [[nodiscard]] QString script_settings_path() const;
 
     std::unique_ptr<lm::transport::IServerTransport> transport_;
     QString config_dir_;
+    std::chrono::milliseconds deadline_margin_;
 
     lm::core::ClientRegistry registry_;
     lm::ui::FleetModel model_;
@@ -168,6 +257,20 @@ private:
     lm::core::TemplateBundle published_;
     lm::core::ReconcileOptions options_;
 
+    /// Written only on this object's thread: start_script_run() is called from
+    /// the GUI, and both the result callback and the deadline timer land here
+    /// through the event loop.
+    std::vector<ScriptRun> script_runs_;
+    /// Ids already written to disk. Not a "never write again" guard -- see
+    /// persist_run_if_finished() -- but what tells it whether the next write
+    /// for a given id is the run's first save or a correction of one already
+    /// on disk. A run loaded from load_runs() is inserted here too, since its
+    /// file already exists; it can still be rewritten later by that same
+    /// correction path.
+    std::set<std::string> saved_runs_;
+
     QMap<QString, lm::core::ResourceSample> resource_cache_;
     QMap<QString, lm::core::ComplianceReport> report_cache_;
+
+    QString script_share_root_;
 };

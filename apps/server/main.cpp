@@ -36,7 +36,27 @@ struct Options {
     std::string config;
     bool offline = false;
     std::string log_level = "info";
+    /// Explicit discovery peers. Empty means rely on multicast alone, which is
+    /// the default and is what fails after a power transition -- see the known
+    /// gap in CLAUDE.md.
+    std::vector<std::string> peers;
 };
+
+/// The peer list as one line for the startup banner. Written out rather than
+/// reached for through fmt::join so this file needs no extra fmt header.
+std::string peers_line(const std::vector<std::string>& peers) {
+    if (peers.empty()) {
+        return "multicast discovery only";
+    }
+    std::string line;
+    for (const std::string& peer : peers) {
+        if (!line.empty()) {
+            line += ", ";
+        }
+        line += peer;
+    }
+    return line;
+}
 
 /// Binds description's option values to `options` without parsing anything,
 /// so both parse_options() and main()'s boost::program_options::error
@@ -53,7 +73,13 @@ boost::program_options::options_description describe_options(Options& options) {
         "offline", po::bool_switch(&options.offline),
         "use an in-process transport instead of a real DDS domain")(
         "log-level", po::value(&options.log_level)->default_value("info"),
-        "trace|debug|info|warn|err|critical|off");
+        "trace|debug|info|warn|err|critical|off")(
+        "peer", po::value(&options.peers)->multitoken(),
+        "IPv4 address of a discovery peer, repeatable. Announcements are sent "
+        "to these directly as well as over multicast, which is what makes "
+        "discovery work where multicast does not: a blocked network, or a "
+        "participant that has outlived a change of network interface. Pass "
+        "127.0.0.1 when a client runs on this machine");
     return description;
 }
 
@@ -227,8 +253,10 @@ int main(int argc, char** argv) {
         } else {
             lm::transport::DdsConfig config;
             config.domain_id = options.domain_id;
+            config.initial_peers = options.peers;
             transport = lm::transport::make_dds_server(config);
         }
+        spdlog::info("  peers       : {}", peers_line(options.peers));
         spdlog::info("  joined      : {}",
                      options.offline ? "in-process bus"
                                      : "DDS domain " + std::to_string(options.domain_id));

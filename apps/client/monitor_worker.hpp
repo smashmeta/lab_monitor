@@ -4,8 +4,13 @@
 #include <QTimer>
 #include <QVector>
 
+#include <atomic>
 #include <memory>
+#include <set>
+#include <string>
+#include <thread>
 
+#include "lm/core/script.hpp"
 #include "lm/platform/probes.hpp"
 #include "lm/transport/transport.hpp"
 #include "lm/ui/rule_detail.hpp"
@@ -16,9 +21,21 @@ class MonitorWorker : public QObject {
     Q_OBJECT
 
 public:
+    /// A null `runner`, or `allow_scripts == false`, both mean the same thing
+    /// to a command: refuse it, visibly. The two are kept apart because they
+    /// answer different questions -- "this platform cannot" and "this machine
+    /// was not enrolled" -- and only the second is something an operator can
+    /// change.
     MonitorWorker(std::unique_ptr<lm::platform::HostProbes> probes,
                   std::unique_ptr<lm::transport::IClientTransport> transport,
-                  QObject* parent = nullptr);
+                  std::unique_ptr<lm::platform::IScriptRunner> runner = nullptr,
+                  bool allow_scripts = false, QObject* parent = nullptr);
+
+    /// Joins a script still running. Nothing else can make the detached work
+    /// safe: the run thread posts its result back to this object, so letting
+    /// it outlive the destructor is a use-after-free that only shows up under
+    /// a shutdown timed badly. Bounded by the script's own timeout.
+    ~MonitorWorker() override;
 
     [[nodiscard]] std::uint64_t applied_revision() const { return bundle_.revision; }
 
@@ -48,12 +65,54 @@ signals:
     void report_ready(lm::core::ComplianceReport report, QVector<lm::ui::RuleDetail> details);
     void template_applied(quint64 revision);
     void connection_changed(int state);
+    /// Emitted once when this client has announced for a full minute without
+    /// ever receiving a template bundle -- so nothing on the domain has
+    /// answered it.
+    ///
+    /// Discovery failing is otherwise completely silent at this end: the
+    /// client starts, joins its domain, announces on its timer and looks
+    /// entirely healthy, while the server never sees it. That happens for real
+    /// when a long-running participant loses its multicast group membership
+    /// across a Windows power transition -- see the known gap in CLAUDE.md --
+    /// and the only symptom is a machine quietly absent from the fleet, with
+    /// no line in either log to say why.
+    void server_unheard();
+
+private slots:
+    void on_script_command(const lm::transport::ScriptCommand& command);
 
 private:
     void on_bundle(const lm::transport::TemplateBundleMessage& message);
+    /// Fills and publishes the result for one finished run. The verdict is
+    /// ScriptOutcome::status()'s alone -- deciding it a second time here from
+    /// the exit code would be two sources of truth for one answer.
+    void publish_script_outcome(const std::string& run_id, const std::string& script_name,
+                                const lm::core::ScriptOutcome& outcome);
+    /// Publishes a Refused result. Never silent: an operator whose script did
+    /// nothing needs to be told why, and silence is the one response that
+    /// cannot be acted on.
+    void refuse_script(const lm::transport::ScriptCommand& command, const std::string& reason);
 
     std::unique_ptr<lm::platform::HostProbes> probes_;
     std::unique_ptr<lm::transport::IClientTransport> transport_;
+    std::unique_ptr<lm::platform::IScriptRunner> runner_;
     lm::core::TemplateBundle bundle_;
+    /// A bundle can only have come from a server, so holding one proves this
+    /// client has been discovered in both directions.
+    bool heard_server_ = false;
+    /// Counted rather than timed so the check costs no clock and is testable
+    /// by calling announce() rather than by waiting a minute.
+    int announces_unheard_ = 0;
+    bool said_unheard_ = false;
     bool paused_ = false;
+    bool allow_scripts_ = false;
+    /// run_ids already executed. Volatile durability prevents replay across a
+    /// restart; this prevents a redelivered sample running twice within one.
+    std::set<std::string> executed_;
+    /// One at a time. A queue would be a promise about ordering and completion
+    /// that a machine which may be rebooted cannot keep.
+    std::atomic<bool> running_{false};
+    /// The current (or last) run. Joined before the next one starts and again
+    /// in the destructor, so the thread can never outlive what it posts to.
+    std::thread script_thread_;
 };

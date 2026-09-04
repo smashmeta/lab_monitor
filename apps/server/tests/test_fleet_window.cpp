@@ -71,19 +71,19 @@ struct Harness {
         return nullptr;
     }
 
-    /// The Templates tab's template list — the only QListWidget in the window.
+    /// The Templates tab's template list. Found by name rather than by being
+    /// the only QListWidget in the window, which it stopped being when the
+    /// Scripts tab arrived with a host list of its own.
     [[nodiscard]] QListWidget* template_list() const {
-        const QList<QListWidget*> lists = window->findChildren<QListWidget*>();
-        return lists.isEmpty() ? nullptr : lists.first();
+        return window->findChild<QListWidget*>(QStringLiteral("TemplateList"));
     }
 
-    [[nodiscard]] QPushButton* button(const QString& text) const {
-        for (QPushButton* candidate : window->findChildren<QPushButton*>()) {
-            if (candidate->text() == text) {
-                return candidate;
-            }
-        }
-        return nullptr;
+    /// By object name, not by label. Matching on text swept every button in
+    /// the window, and the window now spans four tabs -- "Clear" against
+    /// "Clear filter" is all the headroom that was left, and the failure mode
+    /// is a silently wrong widget.
+    [[nodiscard]] QPushButton* button(const QString& name) const {
+        return window->findChild<QPushButton*>(name);
     }
 
     [[nodiscard]] std::size_t template_count() const {
@@ -453,7 +453,7 @@ TEST(FleetWindowBaseline, MarksTheBaselineRowAndDisablesRemovingIt) {
         << "the row has to say why it cannot be removed";
     EXPECT_TRUE(list->item(0)->font().italic());
 
-    QPushButton* remove = harness.button(QStringLiteral("Remove Template"));
+    QPushButton* remove = harness.button(QStringLiteral("RemoveTemplateButton"));
     ASSERT_NE(remove, nullptr);
     EXPECT_FALSE(remove->isEnabled()) << "greyed out beats silently doing nothing";
 }
@@ -464,7 +464,7 @@ TEST(FleetWindowBaseline, EnablesRemovingAnOrdinaryTemplate) {
     list->setCurrentRow(1);  // "Lab Workstation"
     QApplication::processEvents();
 
-    EXPECT_TRUE(harness.button(QStringLiteral("Remove Template"))->isEnabled());
+    EXPECT_TRUE(harness.button(QStringLiteral("RemoveTemplateButton"))->isEnabled());
 }
 
 TEST(FleetWindowBaseline, LetsAStrayTemplateNamedBaselineBeRemoved) {
@@ -477,7 +477,6 @@ TEST(FleetWindowBaseline, LetsAStrayTemplateNamedBaselineBeRemoved) {
     harness.controller->draft().templates.push_back(stray);
 
     QListWidget* list = harness.template_list();
-    harness.window->findChild<QListWidget*>();
     // Rebuild the way any edit does, then select the stray row (last).
     harness.controller->draft().assignments["PC-002"] = {};
     list->setCurrentRow(0);
@@ -499,7 +498,7 @@ TEST(FleetWindowBaseline, LetsAStrayTemplateNamedBaselineBeRemoved) {
 
     list->setCurrentRow(stray_row);
     QApplication::processEvents();
-    QPushButton* remove = harness.button(QStringLiteral("Remove Template"));
+    QPushButton* remove = harness.button(QStringLiteral("RemoveTemplateButton"));
     ASSERT_TRUE(remove->isEnabled()) << "the stray one is an ordinary template and must be removable";
     remove->click();
     QApplication::processEvents();

@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "autostart.hpp"
 #include "detail_window.hpp"
 #include "lm/core/types.hpp"
 #include "lm/platform/probes.hpp"
@@ -40,8 +41,35 @@ struct Options {
     int domain_id = 0;
     std::string config;
     bool offline = false;
+    bool allow_scripts = false;
     std::string log_level = "info";
+    /// Explicit discovery peers. Empty means rely on multicast alone, which is
+    /// the default and is what fails after a power transition -- see the known
+    /// gap in CLAUDE.md.
+    std::vector<std::string> peers;
+    bool install_autostart = false;
+    bool uninstall_autostart = false;
+    /// What --install-autostart's logon task should pass this executable.
+    /// Derived from everything above rather than hard-coded -- see
+    /// arguments_for_autostart_task().
+    std::vector<std::string> autostart_arguments;
 };
+
+/// The peer list as one line for the startup banner. Written out rather than
+/// reached for through fmt::join so this file needs no extra fmt header.
+std::string peers_line(const std::vector<std::string>& peers) {
+    if (peers.empty()) {
+        return "multicast discovery only";
+    }
+    std::string line;
+    for (const std::string& peer : peers) {
+        if (!line.empty()) {
+            line += ", ";
+        }
+        line += peer;
+    }
+    return line;
+}
 
 /// Binds description's option values to `options` without parsing anything,
 /// so both parse_options() and main()'s boost::program_options::error
@@ -57,9 +85,102 @@ boost::program_options::options_description describe_options(Options& options) {
         "path to a client config file (reserved for future use)")(
         "offline", po::bool_switch(&options.offline),
         "use an in-process transport instead of a real DDS domain")(
+        "allow-scripts", po::bool_switch(&options.allow_scripts),
+        "enrol this machine for remote script execution (off unless asked for)")(
         "log-level", po::value(&options.log_level)->default_value("info"),
-        "trace|debug|info|warn|err|critical|off");
+        "trace|debug|info|warn|err|critical|off")(
+        "peer", po::value(&options.peers)->multitoken(),
+        "IPv4 address of a discovery peer, repeatable. Announcements are sent "
+        "to these directly as well as over multicast, which is what makes "
+        "discovery work where multicast does not: a blocked network, or a "
+        "participant that has outlived a change of network interface. Pass "
+        "127.0.0.1 when the server runs on this machine")(
+        "install-autostart", po::bool_switch(&options.install_autostart),
+        "register a logon task that starts this executable elevated, with no UAC "
+        "prompt. The task runs this executable with the options given here -- "
+        "--domain-id, and --config/--log-level/--offline/--allow-scripts when "
+        "asked for -- so it enrols this machine for remote script execution "
+        "only if --allow-scripts is given on this command line too. Run from an "
+        "administrator prompt; see autostart.hpp")(
+        "uninstall-autostart", po::bool_switch(&options.uninstall_autostart),
+        "remove the logon task registered by --install-autostart");
     return description;
+}
+
+/// The arguments --install-autostart's logon task should pass this
+/// executable: everything from this invocation that decides how the installed
+/// agent behaves, and nothing else.
+///
+/// The task line used to be hard-coded to the exe path plus --allow-scripts,
+/// which was wrong twice over. It dropped --domain-id, so an operator setting
+/// up a fleet on domain 42 registered a task that joins domain 0 -- and since
+/// the client starts hidden, the only symptom is a machine that never appears
+/// in the fleet, behind a dialog saying it worked. And it enrolled the machine
+/// for remote script execution as a side effect of asking for elevation, which
+/// the design spec keeps deliberately apart (§2: enrolling a machine is a
+/// deliberate, per-machine act; §7: the task is the elevation mechanism).
+///
+/// What is carried, and why:
+///
+///  - `--domain-id` always, and explicitly even at its default. It decides
+///    which bus the agent joins; stating it means a later change of default
+///    cannot silently move a task that is already registered.
+///  - `--config` and `--log-level` when actually given. Both describe the
+///    machine being set up rather than one launch of it, and --config has the
+///    same property as --domain-id: it decides where the agent reads from.
+///  - `--offline` when given. It makes the installed agent report to nobody,
+///    which is almost never what someone installing a logon task wants -- but
+///    the rule here is that the task runs what the command line asked for, and
+///    the success dialog names the registered line so a mistake is visible
+///    rather than silent.
+///  - `--allow-scripts` when given, and only then.
+///
+/// Not carried: --install-autostart and --uninstall-autostart themselves, one
+/// shot administrative actions rather than a way to run the agent.
+std::vector<std::string> arguments_for_autostart_task(
+    const Options& options, const boost::program_options::variables_map& vm) {
+    std::vector<std::string> arguments;
+    arguments.emplace_back("--domain-id");
+    arguments.push_back(std::to_string(options.domain_id));
+    if (!vm["config"].defaulted() && !options.config.empty()) {
+        arguments.emplace_back("--config");
+        arguments.push_back(options.config);
+    }
+    if (!vm["log-level"].defaulted()) {
+        arguments.emplace_back("--log-level");
+        arguments.push_back(options.log_level);
+    }
+    for (const std::string& peer : options.peers) {
+        // Carried for the same reason as --domain-id: a peer list decides
+        // whether the installed agent can be found at all, and dropping it
+        // would register a task that silently never reaches the server.
+        arguments.emplace_back("--peer");
+        arguments.push_back(peer);
+    }
+    if (options.offline) {
+        arguments.emplace_back("--offline");
+    }
+    if (options.allow_scripts) {
+        arguments.emplace_back("--allow-scripts");
+    }
+    return arguments;
+}
+
+/// The same line, rendered for a human: what the registered task will run.
+/// Shown in the success dialog, because the two things this command silently
+/// got wrong before -- the domain and the enrolment -- are both invisible
+/// otherwise until somebody notices a machine missing from the fleet.
+QString autostart_task_display_line(const std::vector<std::string>& arguments) {
+    QString line = QCoreApplication::applicationFilePath();
+    if (line.contains(QLatin1Char(' '))) {
+        line = QStringLiteral("\"%1\"").arg(line);
+    }
+    for (const std::string& argument : arguments) {
+        const QString wide = QString::fromStdString(argument);
+        line += QLatin1Char(' ');
+        line += wide.contains(QLatin1Char(' ')) ? QStringLiteral("\"%1\"").arg(wide) : wide;
+    }
+    return line;
 }
 
 /// Returns nullopt only for --help, which has already shown its own message
@@ -76,6 +197,8 @@ std::optional<Options> parse_options(int argc, char** argv) {
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, description), vm);
     po::notify(vm);
+
+    options.autostart_arguments = arguments_for_autostart_task(options, vm);
 
     if (vm.count("help") != 0u) {
         std::ostringstream usage;
@@ -197,15 +320,69 @@ int main(int argc, char** argv) {
 
     // Everything from here on can throw: make_dds_client (four
     // std::runtime_error sites, reachable with e.g. a bad --domain-id or no
-    // usable network interface) most notably. Uncaught, that would abort
-    // this WIN32-subsystem process with a bare crash dialog and nothing
-    // else, despite spdlog being fully configured by the time any of this
-    // runs -- log the failure there instead, so it is at least diagnosable
-    // from lab_monitor_client.log.
+    // usable network interface) most notably, and now also
+    // install_autostart_task()/uninstall_autostart_task() below, which build
+    // std::wstrings and start a std::thread of their own. Uncaught, that
+    // would abort this WIN32-subsystem process with a bare crash dialog and
+    // nothing else, despite spdlog being fully configured by the time any of
+    // this runs -- log the failure there instead, so it is at least
+    // diagnosable from lab_monitor_client.log.
     try {
         const LogTarget log_target = configure_logging("lab_monitor_client", options.log_level);
         log_startup_banner("lab_monitor_client", log_target, options.offline, options.domain_id,
                            options.log_level);
+
+        // Handled here, right after logging is up and before anything else
+        // (probes, transport, window) is built: both are one-shot
+        // administrative actions -- see autostart.hpp -- run once from a
+        // prompt rather than part of a normal launch. Deliberately *after*
+        // configure_logging(): registering a task that runs this binary
+        // elevated at every logon is exactly the kind of operator action
+        // CLAUDE.md's logging policy already calls out for pause/resume and
+        // template edits, and a modal dialog that gets dismissed is not a
+        // record. install_autostart_task()/uninstall_autostart_task() log
+        // their own attempt and outcome, including the resolved exe path
+        // being registered.
+        if (options.install_autostart && options.uninstall_autostart) {
+            spdlog::error(
+                "--install-autostart and --uninstall-autostart given together; doing neither");
+            QMessageBox::critical(nullptr, QStringLiteral("lab_monitor_client"),
+                                  QStringLiteral("--install-autostart and "
+                                                 "--uninstall-autostart cannot both be given."));
+            return EXIT_FAILURE;
+        }
+        if (options.install_autostart || options.uninstall_autostart) {
+            const std::string message =
+                options.install_autostart
+                    ? install_autostart_task(options.autostart_arguments)
+                    : uninstall_autostart_task();
+            if (!message.empty()) {
+                QMessageBox::critical(nullptr, QStringLiteral("lab_monitor_client"),
+                                      QString::fromStdString(message));
+                return EXIT_FAILURE;
+            }
+            // The registered command line is named here, not just logged.
+            // Elevation and enrolment are separate decisions (see
+            // arguments_for_autostart_task), and which one this invocation
+            // just made is the thing an operator most needs to be able to
+            // read back off the screen.
+            QMessageBox::information(
+                nullptr, QStringLiteral("lab_monitor_client"),
+                options.install_autostart
+                    ? QStringLiteral("Logon task registered. Sign out and back in for it to "
+                                     "take effect.\n\nIt will run:\n%1\n\n%2")
+                          .arg(autostart_task_display_line(options.autostart_arguments),
+                               options.allow_scripts
+                                   ? QStringLiteral(
+                                         "This machine IS enrolled for remote script "
+                                         "execution (--allow-scripts).")
+                                   : QStringLiteral(
+                                         "This machine is NOT enrolled for remote script "
+                                         "execution. Re-run with --allow-scripts as well to "
+                                         "enrol it."))
+                    : QStringLiteral("Logon task removed."));
+            return EXIT_SUCCESS;
+        }
 
         lm::ui::Theme::apply(app);
 
@@ -232,6 +409,30 @@ int main(int argc, char** argv) {
         } else {
             spdlog::info("  dds probe   : skipped (--offline); DDS rules report NotApplicable");
         }
+        // Built before the capabilities are settled, because a platform with no
+        // runner (Linux, today) must not advertise Scripts and then refuse
+        // every command one host at a time -- see make_script_runner().
+        std::unique_ptr<lm::platform::IScriptRunner> script_runner =
+            lm::platform::make_script_runner();
+        const bool scripts_enabled = options.allow_scripts && script_runner != nullptr;
+        if (scripts_enabled) {
+            capabilities.add(lm::core::Capability::Scripts);
+        }
+        // Reported whether or not scripts are enabled: it describes this
+        // process's token, and the server needs it to say in advance which
+        // machines an install would fail on.
+        if (lm::platform::is_elevated()) {
+            capabilities.add(lm::core::Capability::Elevated);
+        }
+        spdlog::info("  scripts     : {}",
+                     !options.allow_scripts
+                         ? "disabled (start with --allow-scripts to enrol)"
+                         : (script_runner == nullptr
+                                ? "requested, but this platform has no script runner"
+                                : (lm::platform::is_elevated()
+                                       ? "enabled, elevated"
+                                       : "enabled, NOT elevated -- installs "
+                                         "and uninstalls will fail")));
         spdlog::info("  capabilities: 0x{:04x}", capabilities.raw());
 
         auto probes = std::make_unique<lm::platform::HostProbes>(host_id, std::move(probe_set),
@@ -243,16 +444,19 @@ int main(int argc, char** argv) {
         } else {
             lm::transport::DdsConfig config;
             config.domain_id = options.domain_id;
+            config.initial_peers = options.peers;
             transport = lm::transport::make_dds_client(config);
         }
         spdlog::info("  joined      : {}",
                      options.offline ? "in-process bus"
                                      : "DDS domain " + std::to_string(options.domain_id));
+        spdlog::info("  peers       : {}", peers_line(options.peers));
 
         // MonitorWorker owns all probing and messaging and lives entirely on
         // this worker thread; the GUI thread never touches probes_ or
         // transport_ directly, only through the queued connections below.
-        auto* worker = new MonitorWorker(std::move(probes), std::move(transport));
+        auto* worker = new MonitorWorker(std::move(probes), std::move(transport),
+                                         std::move(script_runner), scripts_enabled);
         auto* worker_thread = new QThread();
         worker->moveToThread(worker_thread);
 
@@ -293,6 +497,15 @@ int main(int argc, char** argv) {
         QObject::connect(worker, &MonitorWorker::template_applied, tray, &TrayController::set_applied_revision);
         QObject::connect(worker, &MonitorWorker::connection_changed, window, &DetailWindow::set_connected);
         QObject::connect(worker, &MonitorWorker::connection_changed, tray, &TrayController::set_connected);
+        // Logged rather than shown: the client is normally headless, so the
+        // log is where somebody investigating a machine missing from the
+        // fleet actually looks.
+        QObject::connect(worker, &MonitorWorker::server_unheard, worker, [] {
+            spdlog::warn("no server has answered in the first minute -- this machine is "
+                         "probably missing from the fleet. If the server is up, its "
+                         "discovery may have outlived a network or power state change; "
+                         "restart it, or give both ends --peer.");
+        });
 
         QObject::connect(tray, &TrayController::reporting_paused_changed, worker,
                           &MonitorWorker::set_reporting_paused);

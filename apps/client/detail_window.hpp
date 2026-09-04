@@ -10,6 +10,8 @@
 #include <QVector>
 #include <QWidget>
 
+#include <optional>
+
 #include "lm/core/compliance.hpp"
 #include "lm/core/host_facts.hpp"
 #include "lm/ui/adapter_list.hpp"
@@ -35,7 +37,15 @@ class DetailWindow : public QWidget {
     Q_OBJECT
 
 public:
-    explicit DetailWindow(QString host_id, QWidget* parent = nullptr);
+    /// `elevated` overrides what this process's own token says, and exists
+    /// only so the elevation banner can be tested both ways. Left unset --
+    /// which is every production call -- it reads
+    /// lm::platform::is_elevated(). Without the seam the banner's test
+    /// asserts `visible == !is_elevated()`, which is satisfied by a window
+    /// that never shows the banner at all whenever the suite is launched from
+    /// an elevated shell.
+    explicit DetailWindow(QString host_id, QWidget* parent = nullptr,
+                          std::optional<bool> elevated = std::nullopt);
 
     /// Whether a system tray exists (main.cpp asks
     /// QSystemTrayIcon::isSystemTrayAvailable()). With one, Minimize hides to
@@ -76,6 +86,11 @@ private:
     QLabel* hostname_label_;
     lm::ui::StatusPill* connection_pill_;
     QLabel* template_label_;
+    /// Shown only while lm::platform::is_elevated() is false -- see
+    /// apps/client/autostart.hpp. Constant for the process lifetime, same as
+    /// the token it reads, so this is set once in the constructor rather than
+    /// re-checked anywhere.
+    QLabel* elevation_banner_;
 
     lm::ui::Sparkline* cpu_sparkline_;
     lm::ui::MeterBar* memory_bar_;

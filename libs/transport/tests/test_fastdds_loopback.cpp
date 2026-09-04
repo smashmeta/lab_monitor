@@ -3,10 +3,14 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include <fastdds/dds/core/status/PublicationMatchedStatus.hpp>
 #include <fastdds/dds/domain/DomainParticipant.hpp>
@@ -307,4 +311,144 @@ TEST(FastDdsLoopback, MalformedSampleDoesNotWedgeLaterValidSamples) {
     EXPECT_TRUE(wait_for([&] { return received.load() > 0; }))
         << "valid sample never arrived after a malformed one on the same topic -- "
            "the reader appears to wedge on an undecodable payload";
+}
+
+TEST(FastDdsLoopback, AScriptCommandReachesTheClientAndItsResultComesBack) {
+    // Declared before server/client (and so, by reverse-declaration-order
+    // destruction, outlive them): both are captured by reference in handlers
+    // that run on the transports' own poll threads. Either publish loop below
+    // stops at the *first* arrival while duplicates already in flight can
+    // still be delivered afterwards -- including during server/client's own
+    // destruction -- so the vectors (and the mutex guarding them, alongside
+    // every other test in this file's use of std::atomic for the same
+    // cross-thread-read reason) must not be destroyed first.
+    std::mutex mutex;
+    std::vector<ScriptCommand> commands;
+    std::vector<ScriptResultMessage> results;
+
+    DdsConfig config;
+    config.domain_id = 71;  // a domain of its own, away from the other tests
+    const auto server = make_dds_server(config);
+    const auto client = make_dds_client(config);
+
+    client->on_script_command([&](const ScriptCommand& c) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        commands.push_back(c);
+    });
+    server->on_script_result([&](const ScriptResultMessage& r) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        results.push_back(r);
+    });
+
+    ScriptCommand command;
+    command.host_id = "PC-001";
+    command.run_id = "run-1";
+    command.script_body = "exit 0";
+
+    // Published in a loop: these topics are Reliable but discovery still races
+    // a single publish, which is how FastDdsLoopback.ResourceSamplesReachThe
+    // Server was de-flaked.
+    for (int i = 0; i < 20; ++i) {
+        server->publish_script_command(command);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!commands.empty()) {
+            break;
+        }
+    }
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        ASSERT_FALSE(commands.empty()) << "no command arrived";
+    }
+
+    ScriptResultMessage result;
+    result.host_id = "PC-001";
+    result.run_id = "run-1";
+    result.status = lm::core::ScriptStatus::Completed;
+    for (int i = 0; i < 20; ++i) {
+        client->publish_script_result(result);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!results.empty()) {
+            break;
+        }
+    }
+    const std::lock_guard<std::mutex> lock(mutex);
+    ASSERT_FALSE(results.empty()) << "no result came back";
+    EXPECT_EQ(results.front().run_id, "run-1");
+}
+
+TEST(FastDdsLoopback, ABurstOfResultsFromOneHostAllArrive) {
+    // ScriptResult is keyed by host_id, not run_id, so every result about one
+    // machine is the same DDS instance and KEEP_LAST(n) bounds how many of
+    // them can be in flight at once. At depth 1 the second result written
+    // inside one poll window evicts the first, and the run it belonged to
+    // sits at Dispatched until its deadline and reports "No response" about a
+    // machine that answered instantly.
+    //
+    // That is reachable without contriving anything: a client refuses each
+    // further command immediately while one is running, so two operator
+    // clicks during a long run produce two results microseconds apart.
+    //
+    // Only Fast DDS can be asked this question -- history depth is a QoS on
+    // the real writer and reader, and MessageBus has no history at all -- so
+    // it lives here, behind LM_BUILD_INTEGRATION_TESTS, rather than as a
+    // weaker in-memory test that would pass either way.
+    std::mutex mutex;
+    std::vector<ScriptResultMessage> results;
+
+    DdsConfig config;
+    config.domain_id = 72;  // a domain of its own, away from the other tests
+    const auto server = make_dds_server(config);
+    const auto client = make_dds_client(config);
+
+    server->on_script_result([&](const ScriptResultMessage& r) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        results.push_back(r);
+    });
+
+    // Warm-up, so the burst below is not also racing discovery: publish one
+    // result until it lands, then clear what arrived. Any duplicate warm-up
+    // samples still in flight are filtered out of the burst count by run id.
+    ScriptResultMessage warmup;
+    warmup.host_id = "PC-001";
+    warmup.run_id = "warmup";
+    warmup.status = lm::core::ScriptStatus::Completed;
+    for (int i = 0; i < 40; ++i) {
+        client->publish_script_result(warmup);
+        std::this_thread::sleep_for(100ms);
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!results.empty()) {
+            break;
+        }
+    }
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        ASSERT_FALSE(results.empty()) << "the link never came up";
+    }
+
+    // Back to back, with no pause: this is what two refusals microseconds
+    // apart look like on the wire.
+    constexpr int kBurst = 8;
+    for (int i = 0; i < kBurst; ++i) {
+        ScriptResultMessage result;
+        result.host_id = "PC-001";  // one host, and so one instance
+        result.run_id = "run-" + std::to_string(i);
+        result.status = lm::core::ScriptStatus::Refused;
+        client->publish_script_result(result);
+    }
+
+    const auto burst_arrivals = [&] {
+        const std::lock_guard<std::mutex> lock(mutex);
+        std::size_t count = 0;
+        for (const ScriptResultMessage& r : results) {
+            if (r.run_id != "warmup") {
+                ++count;
+            }
+        }
+        return count;
+    };
+    EXPECT_TRUE(wait_for([&] { return burst_arrivals() >= kBurst; }))
+        << "only " << burst_arrivals() << " of " << kBurst
+        << " results survived; ScriptResult's history depth is back at 1";
 }

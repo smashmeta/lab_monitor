@@ -27,6 +27,7 @@ class QTabWidget;
 class QTreeWidget;
 class QVBoxLayout;
 
+class ScriptsTab;
 class ServerController;
 class StatusRibbon;
 /// Defined in fleet_window.cpp: a QSortFilterProxyModel over FleetModel that
@@ -96,6 +97,7 @@ private slots:
 
 private:
     void build_fleet_tab();
+    void build_scripts_tab();
     void build_log_tab();
     /// "12 of 15 rules passed", per host, worst first.
     void build_templates_tab();
@@ -157,6 +159,8 @@ private:
     QTreeWidget* detail_compliance_tree_;
 
     QTabWidget* tabs_;
+
+    ScriptsTab* scripts_tab_;
 
     lm::ui::LogView* log_view_;
 

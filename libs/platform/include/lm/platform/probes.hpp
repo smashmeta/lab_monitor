@@ -1,11 +1,13 @@
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "lm/core/compliance.hpp"
 #include "lm/core/host_facts.hpp"
+#include "lm/core/script.hpp"
 #include "lm/core/template_bundle.hpp"
 
 namespace lm::platform {
@@ -59,6 +61,20 @@ public:
     /// not be read — are what let a rule tell a real finding from a check that
     /// could not be answered.
     virtual core::DdsTopicSample look(std::uint32_t domain_id, const std::string& topic_name) = 0;
+};
+
+/// Runs a script body and returns what happened.
+///
+/// Blocking: the caller is responsible for not calling this on a thread that
+/// must stay responsive. The client runs it on a thread of its own, because the
+/// monitoring worker carries the 10 s announce and a 60 s script blocking it
+/// would push the host past its liveliness lease -- the fleet would watch it go
+/// Offline mid-run and then come back.
+class IScriptRunner {
+public:
+    virtual ~IScriptRunner() = default;
+    virtual core::ScriptOutcome run(const std::string& body,
+                                    std::chrono::seconds timeout) = 0;
 };
 
 /// Null members mean the capability is unavailable on this platform.
@@ -121,5 +137,19 @@ private:
 /// only a genuine read failure (access denied, and so on) sets
 /// core::RegistryValue::error.
 [[nodiscard]] std::unique_ptr<IRegistryProbe> make_registry_probe();
+
+/// Whether this process holds an elevated token.
+///
+/// Constant for the life of the process: a token does not change underneath a
+/// running program, which is why the announce can carry it as a capability
+/// rather than re-checking per script.
+[[nodiscard]] bool is_elevated();
+
+/// The runner for this platform, or nullptr where none is implemented.
+///
+/// A null runner is how a platform says it cannot execute scripts at all: the
+/// client drops core::Capability::Scripts rather than accepting a command it
+/// would have to refuse one host at a time.
+[[nodiscard]] std::unique_ptr<IScriptRunner> make_script_runner();
 
 }  // namespace lm::platform
