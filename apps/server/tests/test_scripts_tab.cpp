@@ -1322,4 +1322,46 @@ TEST(ScriptsTab, KeepsRunsNewerThanTheChosenDate) {
     QApplication::processEvents();
 
     EXPECT_EQ(harness.controller->script_runs().size(), 1u) << "a run from today was taken";
+    // Asserting the count alone would pass identically whether the cutoff
+    // logic correctly kept the run, or the button was never wired up and
+    // nothing ran at all -- CleanupMessage is the one signal that
+    // distinguishes "matched nothing" from "never ran".
+    auto* message = harness.window->findChild<QLabel*>(QStringLiteral("CleanupMessage"));
+    ASSERT_NE(message, nullptr);
+    EXPECT_EQ(message->text(), QStringLiteral("Deleted 0 run(s)."));
+}
+
+TEST(ScriptsTab, ClearsTheRunViewWhenABulkSweepTakesTheDisplayedRun) {
+    // The single-run DeleteRunButton path clears displayed_run_id_ and
+    // repaints when the run on screen is the one just removed; a sweep by
+    // date has to do the same or the pane keeps showing a tally and target
+    // rows for a run that no longer exists on disk.
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    const QString run_id =
+        harness.controller->start_script_run("a.ps1", "exit 0", {"PC-001"}, 60);
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+    QApplication::processEvents();
+
+    auto* history = harness.window->findChild<QListWidget*>(QStringLiteral("RunHistoryList"));
+    ASSERT_NE(history, nullptr);
+    ASSERT_EQ(history->count(), 1);
+    history->setCurrentRow(0);
+    QApplication::processEvents();
+
+    auto* summary = harness.window->findChild<QLabel*>(QStringLiteral("RunSummary"));
+    ASSERT_NE(summary, nullptr);
+    EXPECT_NE(summary->text(), QStringLiteral("No run yet"))
+        << "the run must actually be on screen before the sweep, or this proves nothing";
+
+    auto* date = harness.window->findChild<QDateEdit*>(QStringLiteral("DeleteOlderDate"));
+    ASSERT_NE(date, nullptr);
+    date->setDate(QDate::currentDate().addDays(1));  // everything is older than tomorrow
+
+    button(harness, QStringLiteral("DeleteOlderButton"))->click();
+    QApplication::processEvents();
+
+    EXPECT_EQ(summary->text(), QStringLiteral("No run yet"))
+        << "a deleted run must not still be presented as current";
+    EXPECT_EQ(run_targets(harness)->rowCount(), 0);
 }

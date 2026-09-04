@@ -686,6 +686,16 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
         // emitted by delete_script_runs_before() -- calling it here too would
         // rebuild the list twice for one click.
         cleanup_message_->setText(QStringLiteral("Deleted %1 run(s).").arg(removed));
+        if (!displayed_run_id_.empty() && displayed_run() == nullptr) {
+            // The sweep took the run that was on screen. Checked by
+            // membership -- was it swept, not which ids the caller happened
+            // to be watching -- for the same reason DeleteRunButton's own
+            // handler clears it above: a stale tally and target rows for a
+            // run that no longer exists is an audit trail lying about being
+            // current.
+            displayed_run_id_.clear();
+            refresh_run_view();
+        }
     });
 
     // Both halves matter: this line is correct when the operator sets the root
