@@ -515,7 +515,20 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
     run_blocked_message_ = new QLabel(compose_side);
     run_blocked_message_->setObjectName(QStringLiteral("RunBlockedMessage"));
     run_blocked_message_->setWordWrap(true);
-    compose_layout->addWidget(run_blocked_message_);
+
+    // Left of the banner, not under Run. Run sits at the far right of the row
+    // above; putting the acknowledgement anywhere near it would make
+    // "press again" the same gesture in the same place, which is exactly the
+    // reflex the block exists to interrupt.
+    accept_changed_button_ =
+        new QPushButton(QStringLiteral("Use the new version"), compose_side);
+    accept_changed_button_->setObjectName(QStringLiteral("AcceptChangedScriptButton"));
+    accept_changed_button_->setVisible(false);  // nothing to accept yet
+
+    auto* blocked_row = new QHBoxLayout();
+    blocked_row->addWidget(accept_changed_button_);
+    blocked_row->addWidget(run_blocked_message_, 1);
+    compose_layout->addLayout(blocked_row);
     vertical->addWidget(compose_side);
 
     auto* run_side = new QWidget(vertical);
@@ -623,6 +636,14 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
         }
     });
     connect(run_button_, &QPushButton::clicked, this, &ScriptsTab::on_run_clicked);
+    connect(accept_changed_button_, &QPushButton::clicked, this, [this] {
+        // previewed_body_ and the preview pane already hold the new content --
+        // on_run_clicked() repainted both before refusing, because the whole
+        // point is that the operator reads what it became. All this does is
+        // record that they have, and give Run back.
+        clear_changed_script_block();
+        update_target_count();
+    });
     connect(run_targets_, &QTableWidget::itemSelectionChanged, this,
             &ScriptsTab::update_run_output);
     connect(controller_, &ServerController::fleet_changed, this, &ScriptsTab::rebuild_host_list);
@@ -772,6 +793,12 @@ std::vector<std::string> ScriptsTab::checked_hosts() const {
     return hosts;
 }
 
+void ScriptsTab::clear_changed_script_block() {
+    changed_script_pending_ = false;
+    accept_changed_button_->setVisible(false);
+    run_blocked_message_->clear();
+}
+
 void ScriptsTab::update_target_count() {
     const auto count = checked_hosts().size();
     // Run with nothing targeted, or nothing to run, is a no-op that reads as a
@@ -780,7 +807,12 @@ void ScriptsTab::update_target_count() {
     // whatever replaced it); the library page has one only once a script row
     // is selected.
     const bool has_body = mode_stack_->currentIndex() == 1 || selected_script_.has_value();
-    run_button_->setEnabled(count > 0 && has_body);
+    // changed_script_pending_ outranks both: a body somebody else rewrote
+    // between the preview and the click must not become runnable again just
+    // because a host was ticked. Only AcceptChangedScriptButton -- or a new
+    // selection, or a reload, either of which throws the comparison away --
+    // clears it.
+    run_button_->setEnabled(count > 0 && has_body && !changed_script_pending_);
     if (count == 0) {
         target_count_label_->setText(QStringLiteral("No hosts selected"));
     } else if (count == 1) {
@@ -792,6 +824,13 @@ void ScriptsTab::update_target_count() {
 }
 
 void ScriptsTab::on_run_clicked() {
+    if (changed_script_pending_) {
+        // Run is disabled while a changed script is waiting to be
+        // acknowledged; belt and braces for a programmatic click, which must
+        // not be a way around the one control that exists to make accepting
+        // somebody else's edit deliberate.
+        return;
+    }
     run_blocked_message_->clear();
 
     const std::vector<std::string> hosts = checked_hosts();
@@ -820,13 +859,23 @@ void ScriptsTab::on_run_clicked() {
         }
         if (*current != previewed_body_) {
             // Shown, not just reported: the operator has to see what it became
-            // before deciding. Pressing Run again dispatches what is now shown.
+            // before deciding. What they must *not* be able to do is decide by
+            // repeating the gesture that was just refused -- one edit on the
+            // share plus a reflexive second click on a button that never
+            // moved is the whole of the attack this re-read exists to stop.
+            // So Run goes away and a control that was not there a moment ago
+            // appears at the other end of the panel: continuing costs a
+            // deliberate press somewhere else, not a repeat of the last one.
             previewed_body_ = *current;
             preview_->setPlainText(previewed_body_);
+            changed_script_pending_ = true;
+            accept_changed_button_->setVisible(true);
             run_blocked_message_->setText(
                 QStringLiteral("%1 changed on the share since you previewed it. Nothing was "
-                               "run — the new content is shown; press Run again to use it.")
+                               "run — the new content is shown above. Read it, then choose "
+                               "“Use the new version” to run that instead.")
                     .arg(selected_script_->relative_path));
+            update_target_count();  // takes Run away while the block stands
             return;
         }
         script_name = selected_script_->relative_path.toStdString();
@@ -837,6 +886,32 @@ void ScriptsTab::on_run_clicked() {
                                                           kDefaultTimeoutSeconds);
 
     displayed_run_id_ = run_id.toStdString();
+    {
+        // start_script_run() has already emitted script_runs_changed(), so
+        // rebuild_run_history() has run -- with displayed_run_id_ still
+        // naming the *previous* run, since the id only exists once that call
+        // returns. The new row is therefore in the list with the old run (or
+        // nothing) highlighted, and stays that way: no later rebuild ever
+        // re-syncs it. Not cosmetic -- DeleteRunButton acts on the
+        // highlighted row, so an operator reading this run would be
+        // destroying a different audit record.
+        //
+        // Blocked for the same reason rebuild_run_history() blocks: this is
+        // not an operator picking a row, and the handler would only set
+        // displayed_run_id_ back to what it already is and repaint the run
+        // view a second time.
+        const QSignalBlocker blocker(run_history_);
+        for (int row = 0; row < run_history_->count(); ++row) {
+            if (run_history_->item(row)->data(ScriptsTab::kRunIdRole).toString() == run_id) {
+                run_history_->setCurrentRow(row);
+                break;
+            }
+        }
+        // rebuild_run_history() left this disabled when nothing was selected;
+        // a row is selected now, and a Delete that does nothing reads as
+        // broken.
+        delete_run_button_->setEnabled(run_history_->currentItem() != nullptr);
+    }
     // A different run is a different set of hosts, so its rows are built from
     // nothing rather than written over the previous run's -- a row updated in
     // place would keep the old run's selection while standing for another
@@ -875,12 +950,14 @@ void ScriptsTab::update_run_history_row(const ScriptRun& run) {
             return;
         }
     }
-    // No row for this run yet: script_runs_changed() -- emitted alongside
-    // script_run_changed() by start_script_run(), and always ahead of it on
-    // an ordinary direct, same-thread connection -- has not been processed
-    // by rebuild_run_history() yet. That row is guaranteed to exist by the
-    // time this signal fires again, so there is nothing to do here but wait
-    // for it rather than rebuild around the gap.
+    // No row for this run yet. start_script_run() emits script_run_changed()
+    // *first* and script_runs_changed() immediately after, and both are
+    // ordinary direct, same-thread connections -- so on a brand new run this
+    // slot runs before rebuild_run_history() has built the row for it.
+    // Nothing to do: the rebuild that follows one statement later builds the
+    // row from the same history_row_text(), which is exactly what this
+    // function would have written. Rebuilding around the gap from here would
+    // only do that work twice.
 }
 
 void ScriptsTab::rebuild_run_history() {
@@ -987,6 +1064,11 @@ void ScriptsTab::update_run_output() {
 }
 
 void ScriptsTab::on_script_selection_changed() {
+    // A block is about one file's body against one earlier read of it. Picking
+    // a different row throws both away, so the banner and the accept button
+    // would be offering to accept a comparison that no longer exists.
+    clear_changed_script_block();
+
     selected_script_.reset();
     previewed_body_.clear();
     preview_->clear();
@@ -1016,6 +1098,11 @@ void ScriptsTab::on_script_selection_changed() {
 }
 
 void ScriptsTab::reload_library() {
+    // Same reasoning as on_script_selection_changed(): Refresh, or a change of
+    // root, re-reads the share and invalidates whatever a standing
+    // changed-script block was about.
+    clear_changed_script_block();
+
     // Explicit, rather than relying on script_tree_->clear() below to null
     // the current item and fire currentItemChanged into
     // on_script_selection_changed() for us. It does today -- but that is an
@@ -1043,7 +1130,19 @@ void ScriptsTab::reload_library() {
         update_target_count();
         return;
     }
-    if (library.empty()) {
+    if (library.truncated) {
+        // Ahead of the empty case, and it has to be: a walk that ran out of
+        // time before it reached a single script has not established that
+        // there are none, and "No .ps1 scripts under X" would be a claim the
+        // read never made. Said out loud rather than presenting a short tree
+        // as the whole share, which is the failure that matters here -- an
+        // operator would read a missing script as a script that is not there.
+        share_message_->setText(
+            QStringLiteral("Only part of %1 could be listed — reading it took too long and "
+                           "stopped. Point the share at a narrower folder.")
+                .arg(controller_->script_share_root()));
+        share_message_->setVisible(true);
+    } else if (library.empty()) {
         share_message_->setText(QStringLiteral("No .ps1 scripts under %1")
                                     .arg(controller_->script_share_root()));
         share_message_->setVisible(true);

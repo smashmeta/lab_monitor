@@ -831,8 +831,7 @@ and what it promises the operator it is showing them.
 changes — nowhere else. A UNC path can be slow or briefly unreachable, and
 polling it on a timer would let a flaky share stall the console every few
 seconds for a tree nobody is looking at. Refresh is the whole mechanism for
-"is this current now" — see the *Known gaps* note on why that read still runs
-on the GUI thread rather than a worker.
+"is this current now".
 
 **The share root is a persisted setting, deliberately with no CLI
 equivalent.** `ServerController::set_script_share_root()` writes it to config
@@ -847,8 +846,32 @@ than trusting `previewed_body_`, because the share is writable by other people
 while an operator is reading it, and the preview is a promise about what will
 execute. A mismatch does not silently run the new content — it repaints the
 preview with what the file now says and refuses to dispatch, so the operator
-sees the same text they would be trusting a hundred machines with before
-pressing Run again to accept it.
+sees the same text they would be trusting a hundred machines with.
+
+**Accepting that change is a different control, not a second press of Run.**
+Run is disabled and `AcceptChangedScriptButton` ("Use the new version")
+appears on the row below, at the opposite end of the panel from where Run
+sits; only that button clears
+`changed_script_pending_`, and `update_target_count()` — the single place
+Run's enabled state is decided — consults the flag so ticking a host cannot
+hand the button back. It was Run itself, still enabled and still in the same
+place, and that was wrong: the operator's reflex on "nothing happened" is to
+press again, so one edit on the share plus one reflex landed a share writer's
+content having read none of it. The share writer did not even have to win a
+race. The block is dropped on a new tree selection and on a reload of the
+share, since both throw away the comparison it was about — otherwise Run
+stays dead for the session with nothing on screen saying why.
+
+**Both reads of the share are bounded, because both run on the GUI thread.**
+`read_script_library()` gives up after 2 s and returns what it has with
+`ScriptLibrary::truncated` set, which the tab reports as "Only part of … could
+be listed" — ahead of the empty-share message, because a walk that ran out of
+time never established that there are no scripts. `read_script_body()` refuses
+a file over 1 MB with the same `nullopt` a missing file produces, so the tab's
+existing "could not be read" path covers it: without that, clicking a tree row
+on somebody else's share was enough to read an arbitrary file whole into a
+`QPlainTextEdit`, no Run required. See the *Known gaps* note on why that read
+still runs on the GUI thread rather than a worker.
 
 **Runs are one file each under `<config>/runs/`, written when the run
 finishes and rewritten if a late result corrects it.** `persist_run_if_finished()`
@@ -994,6 +1017,31 @@ Team choice. Boost is consequently confined to `program_options` in the two apps
   and never logged `applied template bundle` was never discovered, because the
   bundle is `TRANSIENT_LOCAL` and reaches a client the moment it is seen.
 
+
+- **The script share is walked synchronously on the GUI thread.**
+  `read_script_library()` is called straight from `ScriptsTab`'s constructor,
+  from Refresh, and from `script_share_root_changed` — which fires inside
+  `controller->start()`, i.e. before `window->show()`. Nothing hands it to a
+  worker, so for as long as it runs the console does not paint and does not
+  answer.
+
+  Read-on-demand is what keeps that affordable: the share is never watched and
+  never polled, so the cost lands on a Refresh or a change of root and not
+  every few seconds on a timer for a tree nobody is looking at. And a time
+  budget now bounds the freeze — the walk stops after 2 s and says the listing
+  is partial (see *Scripts* above) — which is the difference between a stutter
+  and a lock-out: a root of `C:\` or a dead UNC path used to hang every launch
+  with no cancel and no way to reach the field that would fix the setting,
+  because that field is inside the frozen window.
+
+  A budget is not the fix; moving the walk to a worker is. That is deliberately
+  easy: `read_script_library()` takes a path and returns a value, with no
+  widget and no controller anywhere in its signature, so it can be run through
+  `QtConcurrent` or a `QThread` and its `ScriptLibrary` delivered back to
+  `reload_library()` without touching the walk itself. The residue is that
+  `QDir::exists()` on an unreachable UNC path blocks in SMB/DNS resolution
+  before the budget's clock even starts, and no in-process timeout shortens
+  that — only getting off the GUI thread does.
 
 - **The Linux code paths have never been compiled.** Everything has been built with
   MSVC. CI is authored but has never run; expect the first Linux job to fail on GCC

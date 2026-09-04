@@ -79,12 +79,13 @@ private slots:
     /// update_run_history_row(), never rebuild_run_history() -- so a tally
     /// stays current on a run nobody has (re)selected without tearing the
     /// whole list down on every one of up to ninety results a run produces.
-    /// A run this signal names that the list does not yet have a row for
-    /// (the gap between start_script_run() appending it and the
-    /// script_runs_changed() it also emits reaching rebuild_run_history())
-    /// is left alone rather than rebuilt around -- that row is guaranteed to
-    /// exist by the time either signal's slot has run, since both are
-    /// ordinary direct connections on the same thread.
+    /// A run this signal names that the list does not yet have a row for is
+    /// left alone rather than rebuilt around. start_script_run() emits
+    /// script_run_changed() first and script_runs_changed() immediately
+    /// after -- both ordinary direct, same-thread connections -- so on a
+    /// brand new run this slot runs while the list is still one statement
+    /// short of having the row. The rebuild that follows builds it from the
+    /// same text, so there is nothing here to make up for.
     void on_script_run_changed(QString run_id);
 
     /// Rebuilds RunHistoryList, newest run first, from
@@ -126,6 +127,14 @@ private:
     /// delivers a persisted root: at construction time the controller has not
     /// loaded its config yet.
     void reload_library();
+
+    /// Drops a pending changed-script block: hides
+    /// accept_changed_button_, clears changed_script_pending_ and clears the
+    /// banner. Does *not* call update_target_count() -- every caller either
+    /// does so itself or is on its way to. Called when the block is accepted
+    /// and whenever the comparison behind it stops meaning anything (a new
+    /// selection, a reload of the share).
+    void clear_changed_script_block();
 
     /// Refreshes "Run on N hosts" and Run's enabled state from the checkboxes.
     void update_target_count();
@@ -190,6 +199,24 @@ private:
     /// of every on_run_clicked(), so it never shows a stale reason for a run
     /// that just went out.
     QLabel* run_blocked_message_ = nullptr;
+    /// Accepts a body the re-read at Run found changed since the preview.
+    /// Hidden until that happens, and hidden again on any new selection, on a
+    /// reload of the share, and once pressed.
+    ///
+    /// A *different* control, deliberately, and not in Run's position. The
+    /// block exists because somebody else's edit landed between the preview
+    /// and the click; leaving Run enabled and in place makes the reflex
+    /// response to "nothing happened" -- press it again -- the whole of the
+    /// attack. Continuing has to be a separate, deliberate act on a button
+    /// that was not there a moment ago.
+    QPushButton* accept_changed_button_ = nullptr;
+    /// Set when the re-read at Run found the file changed, cleared only by
+    /// accept_changed_button_ or by a selection/reload that throws the
+    /// comparison away. Run stays disabled while it holds -- which is why
+    /// update_target_count(), the one place Run's enabled state is decided,
+    /// has to consult it: ticking a host or switching pages would otherwise
+    /// hand the button straight back.
+    bool changed_script_pending_ = false;
 
     QLabel* run_summary_ = nullptr;
     QTableWidget* run_targets_ = nullptr;

@@ -1096,8 +1096,12 @@ TEST(ScriptsTab, RefusesToRunAScriptThatChangedSinceThePreview) {
 }
 
 TEST(ScriptsTab, RunsAfterTheChangedScriptHasBeenSeenAndAccepted) {
-    // The block is one-shot: having been shown the new content, pressing Run
-    // again runs what is now on screen. Otherwise the script could never run.
+    // The block can be accepted -- otherwise a script somebody edited could
+    // never be run again -- but never by repeating the gesture that was just
+    // refused. Run is taken away and a control that was not there a moment ago
+    // appears somewhere else; one edit on the share plus a reflexive "nothing
+    // happened, press it again" would otherwise be the whole of the attack the
+    // re-read exists to stop.
     QTemporaryDir share;
     ASSERT_TRUE(share.isValid());
     write_script(share, QStringLiteral("a.ps1"), QStringLiteral("exit 0\n"));
@@ -1111,21 +1115,78 @@ TEST(ScriptsTab, RunsAfterTheChangedScriptHasBeenSeenAndAccepted) {
     QApplication::processEvents();
 
     write_script(share, QStringLiteral("a.ps1"), QStringLiteral("exit 1\n"));
-    button(harness, QStringLiteral("RunButton"))->click();
+    QPushButton* run = button(harness, QStringLiteral("RunButton"));
+    run->click();
     QApplication::processEvents();
     ASSERT_TRUE(harness.controller->script_runs().empty());
 
     auto* blocked = harness.window->findChild<QLabel*>(QStringLiteral("RunBlockedMessage"));
     ASSERT_NE(blocked, nullptr);
-    ASSERT_FALSE(blocked->text().isEmpty()) << "premise: the first press left the banner up";
+    ASSERT_FALSE(blocked->text().isEmpty()) << "premise: the press left the banner up";
 
-    button(harness, QStringLiteral("RunButton"))->click();
+    QPushButton* accept = button(harness, QStringLiteral("AcceptChangedScriptButton"));
+    EXPECT_FALSE(run->isEnabled())
+        << "pressing the same button again must not be how somebody else's edit is accepted";
+    // isHidden() rather than isVisible(): the Scripts tab is not the current
+    // page of the window's QTabWidget here, so everything on it reports
+    // isVisible() == false whatever this code asked for.
+    ASSERT_FALSE(accept->isHidden()) << "and something else has to be offered instead";
+
+    accept->click();
+    QApplication::processEvents();
+
+    EXPECT_TRUE(accept->isHidden()) << "accepted once; it is not a second Run button";
+    ASSERT_TRUE(run->isEnabled());
+
+    run->click();
     QApplication::processEvents();
 
     ASSERT_EQ(harness.controller->script_runs().size(), 1u);
-    EXPECT_EQ(harness.controller->script_runs().back().script_body, "exit 1\n");
+    EXPECT_EQ(harness.controller->script_runs().back().script_body, "exit 1\n")
+        << "what was accepted is what goes out -- the new body, not the one previewed";
     EXPECT_TRUE(blocked->text().isEmpty())
         << "a stale banner over a run that just succeeded would misreport what happened";
+}
+
+TEST(ScriptsTab, ChoosingAnotherScriptDropsTheChangedScriptBlock) {
+    // The block holds Run disabled until it is answered, so anything that
+    // throws away the comparison behind it has to release it too -- otherwise
+    // an operator who reads the new content, decides against it and picks a
+    // different script finds Run dead for the rest of the session with nothing
+    // on screen saying why.
+    QTemporaryDir share;
+    ASSERT_TRUE(share.isValid());
+    write_script(share, QStringLiteral("a.ps1"), QStringLiteral("exit 0\n"));
+    write_script(share, QStringLiteral("b.ps1"), QStringLiteral("exit 0\n"));
+
+    Harness harness;
+    harness.controller->set_script_share_root(share.path());
+    harness.announce("PC-001", enrolled());
+    QApplication::processEvents();
+    script_tree(harness)->setCurrentItem(tree_row(script_tree(harness), QStringLiteral("a.ps1")));
+    check_hosts(harness, {"PC-001"});
+    QApplication::processEvents();
+
+    write_script(share, QStringLiteral("a.ps1"), QStringLiteral("exit 1\n"));
+    button(harness, QStringLiteral("RunButton"))->click();
+    QApplication::processEvents();
+    ASSERT_FALSE(button(harness, QStringLiteral("RunButton"))->isEnabled())
+        << "premise: the block is standing";
+
+    script_tree(harness)->setCurrentItem(tree_row(script_tree(harness), QStringLiteral("b.ps1")));
+    QApplication::processEvents();
+
+    EXPECT_TRUE(button(harness, QStringLiteral("AcceptChangedScriptButton"))->isHidden())
+        << "there is nothing left to accept";
+    EXPECT_TRUE(button(harness, QStringLiteral("RunButton"))->isEnabled());
+    auto* blocked = harness.window->findChild<QLabel*>(QStringLiteral("RunBlockedMessage"));
+    ASSERT_NE(blocked, nullptr);
+    EXPECT_TRUE(blocked->text().isEmpty()) << "a banner about a script nobody is looking at";
+
+    button(harness, QStringLiteral("RunButton"))->click();
+    QApplication::processEvents();
+    ASSERT_EQ(harness.controller->script_runs().size(), 1u);
+    EXPECT_EQ(harness.controller->script_runs().back().script_name, "b.ps1");
 }
 
 TEST(ScriptsTab, RefusesToRunAScriptThatHasVanishedFromTheShare) {
@@ -1218,6 +1279,41 @@ TEST(ScriptsTab, SelectingAPastRunShowsItInTheRunView) {
     ASSERT_NE(output, nullptr);
     EXPECT_NE(output->toPlainText().indexOf(QStringLiteral("output of the first run")), -1)
         << output->toPlainText().toStdString();
+}
+
+TEST(ScriptsTab, HighlightsTheRunItJustStartedRatherThanThePreviousOne) {
+    // Goes through the Run *button*. Every other history case here calls
+    // controller->start_script_run() directly, which is exactly why this went
+    // unnoticed: the defect lived in on_run_clicked(). start_script_run()
+    // emits script_runs_changed() before it returns, so rebuild_run_history()
+    // ran while displayed_run_id_ still named the previous run -- the run view
+    // below showed run B while the list highlighted run A, permanently.
+    //
+    // Not cosmetic: DeleteRunButton acts on the highlighted row, so "delete
+    // the run I am reading" destroyed a different audit record.
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    check_hosts(harness, {"PC-001"});
+    QApplication::processEvents();
+
+    auto* history = harness.window->findChild<QListWidget*>(QStringLiteral("RunHistoryList"));
+    ASSERT_NE(history, nullptr);
+
+    const QString first = press_run(harness);
+    QApplication::processEvents();
+    ASSERT_NE(history->currentItem(), nullptr)
+        << "the run just started is not highlighted at all";
+    EXPECT_EQ(history->currentItem()->data(ScriptsTab::kRunIdRole).toString(), first);
+    EXPECT_TRUE(button(harness, QStringLiteral("DeleteRunButton"))->isEnabled())
+        << "a row is selected, so Delete must not sit there reading as broken";
+
+    // The second run is where the old behaviour was visibly wrong rather than
+    // merely absent: the list settled on the *first* run and stayed there.
+    const QString second = press_run(harness);
+    QApplication::processEvents();
+    ASSERT_NE(history->currentItem(), nullptr);
+    EXPECT_EQ(history->currentItem()->data(ScriptsTab::kRunIdRole).toString(), second)
+        << "the list must follow the run view, not trail it by one";
 }
 
 TEST(ScriptsTab, DeleteRemovesTheSelectedRunFromTheHistory) {
