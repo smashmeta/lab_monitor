@@ -1267,8 +1267,19 @@ TEST(ScriptsTab, UpdatesTheHistoryRowInPlaceRatherThanRebuildingTheList) {
     QApplication::processEvents();
 
     ASSERT_EQ(history->count(), 1);
-    EXPECT_EQ(history->item(0), row) << "same object: the list was not torn down";
-    EXPECT_NE(row->text(), text_before_result) << "the tally must actually have updated";
+    // Re-found by run id rather than by index. With one run the two are the same
+    // slot today, but an index lookup would keep passing if rows were ever
+    // reordered underneath it -- and this test exists to notice exactly that
+    // kind of silent churn.
+    QListWidgetItem* found = nullptr;
+    for (int i = 0; i < history->count(); ++i) {
+        if (history->item(i)->data(ScriptsTab::kRunIdRole).toString() == run_id) {
+            found = history->item(i);
+        }
+    }
+    ASSERT_NE(found, nullptr) << "the run's row vanished from the history";
+    EXPECT_EQ(found, row) << "same object: the list was not torn down";
+    EXPECT_NE(found->text(), text_before_result) << "the tally must actually have updated";
 }
 
 TEST(ScriptsTab, DeletesRunsOlderThanTheChosenDate) {
