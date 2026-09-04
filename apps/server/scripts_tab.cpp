@@ -1,5 +1,6 @@
 #include "scripts_tab.hpp"
 
+#include <QDateTime>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
@@ -12,10 +13,12 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSet>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStringList>
 #include <QTableWidget>
+#include <QTimeZone>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
@@ -217,6 +220,23 @@ QString summarise(const RunTally& tally) {
     add(tally.dispatched, "dispatched");
     add(tally.pending, "pending");
     return parts.join(QStringLiteral(" · "));
+}
+
+/// `<script name> — <local time> — <tally>`, one line of RunHistoryList.
+///
+/// issued_at is a system_clock::time_point -- UTC by construction -- so it is
+/// read into a QDateTime as UTC first and only then converted to local time;
+/// building a local QDateTime straight from the epoch seconds would silently
+/// reinterpret them in the wrong zone.
+QString history_row_text(const ScriptRun& run) {
+    const auto seconds =
+        std::chrono::duration_cast<std::chrono::seconds>(run.issued_at.time_since_epoch())
+            .count();
+    const QDateTime local =
+        QDateTime::fromSecsSinceEpoch(static_cast<qint64>(seconds), QTimeZone::UTC).toLocalTime();
+    return QStringLiteral("%1 — %2 — %3")
+        .arg(QString::fromStdString(run.script_name),
+             local.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")), summarise(run.tally()));
 }
 
 /// What to say for a target that has no result yet. Its own function so the
@@ -494,17 +514,39 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
     vertical->addWidget(compose_side);
 
     auto* run_side = new QWidget(vertical);
-    auto* run_layout = new QVBoxLayout(run_side);
+    auto* run_side_layout = new QHBoxLayout(run_side);
+    run_side_layout->setContentsMargins(0, 0, 0, 0);
+
+    // Past runs, to the left of the run view they open into -- selecting one
+    // here is a shortcut into the same panel a fresh run already lands on, so
+    // the two sit side by side rather than behind a tab.
+    auto* history_side = new QWidget(run_side);
+    auto* history_layout = new QVBoxLayout(history_side);
+    history_layout->setContentsMargins(0, 0, 0, 0);
+    history_layout->addWidget(new QLabel(QStringLiteral("History"), history_side));
+
+    run_history_ = new QListWidget(history_side);
+    run_history_->setObjectName(QStringLiteral("RunHistoryList"));
+    history_layout->addWidget(run_history_, 1);
+
+    delete_run_button_ = new QPushButton(QStringLiteral("Delete"), history_side);
+    delete_run_button_->setObjectName(QStringLiteral("DeleteRunButton"));
+    delete_run_button_->setEnabled(false);  // nothing selected yet
+    history_layout->addWidget(delete_run_button_);
+    run_side_layout->addWidget(history_side, 1);
+
+    auto* run_detail_side = new QWidget(run_side);
+    auto* run_layout = new QVBoxLayout(run_detail_side);
     run_layout->setContentsMargins(0, 0, 0, 0);
 
     // Above the rows, not below and not in a status bar: on a run of ninety
     // machines the counts are what is read, and the rows are what is drilled
     // into afterwards.
-    run_summary_ = new QLabel(run_side);
+    run_summary_ = new QLabel(run_detail_side);
     run_summary_->setObjectName(QStringLiteral("RunSummary"));
     run_layout->addWidget(run_summary_);
 
-    auto* result_splitter = new QSplitter(Qt::Horizontal, run_side);
+    auto* result_splitter = new QSplitter(Qt::Horizontal, run_detail_side);
     run_targets_ = new QTableWidget(0, 3, result_splitter);
     run_targets_->setObjectName(QStringLiteral("RunTargets"));
     run_targets_->setHorizontalHeaderLabels(
@@ -531,6 +573,7 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
     result_splitter->setStretchFactor(0, 2);
     result_splitter->setStretchFactor(1, 3);
     run_layout->addWidget(result_splitter, 1);
+    run_side_layout->addWidget(run_detail_side, 3);
     vertical->addWidget(run_side);
 
     vertical->setStretchFactor(0, 3);
@@ -560,6 +603,48 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
     connect(controller_, &ServerController::fleet_changed, this, &ScriptsTab::rebuild_host_list);
     connect(controller_, &ServerController::script_run_changed, this,
             &ScriptsTab::on_script_run_changed);
+    // The set of runs changed shape -- loaded at startup (see the ordering
+    // note on rebuild_run_history()), or a deletion. A run appearing or its
+    // targets moving is on_script_run_changed() above, which also rebuilds
+    // the history so a row's tally never goes stale.
+    connect(controller_, &ServerController::script_runs_changed, this,
+            &ScriptsTab::rebuild_run_history);
+
+    connect(run_history_, &QListWidget::currentItemChanged, this,
+            [this](QListWidgetItem* current, QListWidgetItem*) {
+                delete_run_button_->setEnabled(current != nullptr);
+                if (current == nullptr) {
+                    return;
+                }
+                // Selecting a row is the whole mechanism: set which run is on
+                // screen and repaint the (already-built) run view from it --
+                // never rebuild_run_history() itself from here, which would
+                // tear the list down while this handler is still on the stack
+                // reacting to one of its own signals.
+                displayed_run_id_ =
+                    current->data(ScriptsTab::kRunIdRole).toString().toStdString();
+                refresh_run_view();
+            });
+    connect(delete_run_button_, &QPushButton::clicked, this, [this] {
+        QListWidgetItem* current = run_history_->currentItem();
+        if (current == nullptr) {
+            return;  // the button is disabled; belt and braces
+        }
+        const std::string run_id =
+            current->data(ScriptsTab::kRunIdRole).toString().toStdString();
+        // Safe to rebuild from here: the button, not a RunHistoryList signal,
+        // is what is on the call stack. delete_script_run() erases the run
+        // and emits script_runs_changed(), which the connection above turns
+        // into exactly that rebuild.
+        controller_->delete_script_run(run_id);
+        if (displayed_run_id_ == run_id) {
+            // The run just deleted was the one on screen -- show "No run yet"
+            // rather than leave stale rows up for a run that no longer
+            // exists.
+            displayed_run_id_.clear();
+            refresh_run_view();
+        }
+    });
 
     // Both halves matter: this line is correct when the operator sets the root
     // later in the same session, but at construction time the controller has
@@ -580,6 +665,11 @@ ScriptsTab::ScriptsTab(ServerController* controller, QWidget* parent)
 
     rebuild_host_list();
     refresh_run_view();
+    // Built once here, and kept current by the script_runs_changed connection
+    // above -- construction happens before ServerController::start() loads
+    // persisted runs (see main.cpp), so a build here alone would show nothing
+    // on every launch that actually has history on disk.
+    rebuild_run_history();
 }
 
 void ScriptsTab::rebuild_host_list() {
@@ -713,6 +803,39 @@ void ScriptsTab::on_script_run_changed(QString run_id) {
     if (run_id.toStdString() == displayed_run_id_) {
         refresh_run_view();
     }
+    // Every emission -- a new run dispatched, or one more target of an
+    // existing run reporting back -- can change what a history row says, not
+    // only the row of whichever run happens to be on screen.
+    rebuild_run_history();
+}
+
+void ScriptsTab::rebuild_run_history() {
+    // Preserved across the rebuild so a run created or reporting elsewhere
+    // does not knock the operator off whatever they are looking at.
+    const std::string previously_selected = displayed_run_id_;
+
+    // Signals blocked for the rebuild: currentItemChanged firing mid-rebuild
+    // would re-enter through the handler connected below, which is harmless
+    // here (it only ever sets displayed_run_id_ back to what it already is
+    // and repaints the run view) but is needless work on every single row
+    // insertion.
+    const QSignalBlocker blocker(run_history_);
+    run_history_->clear();
+
+    const std::vector<ScriptRun>& runs = controller_->script_runs();
+    // Newest first: script_runs() is oldest-first (load_config() sorts it,
+    // and every new run is appended), and the run somebody just made is the
+    // one they are looking for.
+    for (auto it = runs.rbegin(); it != runs.rend(); ++it) {
+        const ScriptRun& run = *it;
+        auto* item = new QListWidgetItem(history_row_text(run), run_history_);
+        item->setData(ScriptsTab::kRunIdRole, QString::fromStdString(run.run_id));
+        if (run.run_id == previously_selected) {
+            run_history_->setCurrentItem(item);
+        }
+    }
+
+    delete_run_button_->setEnabled(run_history_->currentItem() != nullptr);
 }
 
 const ScriptRun* ScriptsTab::displayed_run() const {

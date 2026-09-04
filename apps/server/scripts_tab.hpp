@@ -56,6 +56,12 @@ public:
     /// has nothing to run.
     static constexpr int kScriptIndexRole = Qt::UserRole + 3;
 
+    /// The run id a RunHistoryList row stands for. Public for the same reason
+    /// kHostIdRole is: the row's text also carries the script name, a
+    /// timestamp and the tally, and anything reading the list back must take
+    /// the id from here rather than parse it back out of that text.
+    static constexpr int kRunIdRole = Qt::UserRole + 4;
+
 private slots:
     void on_run_clicked();
     /// Repopulates the host list from the controller's fleet, keeping whatever
@@ -67,7 +73,31 @@ private slots:
     /// Refreshes the run view, but only when the run that moved is the one on
     /// screen. script_run_changed fires for every result of every run this
     /// server has issued, and a run nobody is looking at must not repaint.
+    /// Also rebuilds the history list -- a run's tally in that row can be
+    /// stale the instant a target of it moves, whether or not that run is the
+    /// one currently on screen.
     void on_script_run_changed(QString run_id);
+
+    /// Rebuilds RunHistoryList, newest run first, from
+    /// controller_->script_runs(). Connected to
+    /// ServerController::script_runs_changed() (the set of runs changed shape
+    /// -- loaded at startup, or a deletion) and called once at the end of the
+    /// constructor, because construction happens before
+    /// ServerController::start() loads persisted runs -- see main.cpp. Also
+    /// reached from on_script_run_changed(), so a run's tally stays current
+    /// even while nobody has (re)selected it.
+    ///
+    /// Preserves the selection by displayed_run_id_ across a rebuild: a
+    /// rebuild driven by an unrelated run must not knock an operator off the
+    /// run they are looking at.
+    ///
+    /// Must never be invoked from a slot connected to RunHistoryList's own
+    /// signals (itemChanged, currentRowChanged, ...) -- rebuilding it out from
+    /// under itself while it is still on the call stack emitting is the
+    /// documented incident the Templates tab's assignment column also guards
+    /// against. Deleting through DeleteRunButton is safe because the button,
+    /// not a row, is the sender.
+    void rebuild_run_history();
 
     /// Repaints the preview from whatever the tree now has selected, or clears
     /// it -- a folder row and no row both mean "nothing to show". Also
@@ -144,6 +174,15 @@ private:
     QLabel* run_summary_ = nullptr;
     QTableWidget* run_targets_ = nullptr;
     QPlainTextEdit* run_output_ = nullptr;
+
+    /// Past (and in-flight) runs, newest first. Selecting a row sets
+    /// displayed_run_id_ and shows it in the run view above -- the same
+    /// mechanism a fresh run already used.
+    QListWidget* run_history_ = nullptr;
+    /// Deletes the selected history row's run. Disabled until a row is
+    /// selected, for the same reason RunButton is: a button that does nothing
+    /// when pressed reads as broken.
+    QPushButton* delete_run_button_ = nullptr;
 
     /// The run on screen. An id rather than a pointer or an index, because
     /// ServerController's vector of runs reallocates as runs are added and

@@ -1166,3 +1166,79 @@ TEST(ScriptsTab, StillRunsTheEditorsBodyInCustomMode) {
     EXPECT_EQ(run.script_name, "(custom script)");
     EXPECT_EQ(run.script_body, "Write-Output 'hi'\nexit 0\n");
 }
+
+TEST(ScriptsTab, ListsPastRunsNewestFirst) {
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    const QString first =
+        harness.controller->start_script_run("first.ps1", "exit 0", {"PC-001"}, 60);
+    harness.publish_result("PC-001", first.toStdString(), ScriptStatus::Completed);
+    const QString second =
+        harness.controller->start_script_run("second.ps1", "exit 0", {"PC-001"}, 60);
+    harness.publish_result("PC-001", second.toStdString(), ScriptStatus::Completed);
+    QApplication::processEvents();
+
+    auto* history = harness.window->findChild<QListWidget*>(QStringLiteral("RunHistoryList"));
+    ASSERT_NE(history, nullptr);
+    ASSERT_EQ(history->count(), 2);
+    EXPECT_EQ(history->item(0)->data(ScriptsTab::kRunIdRole).toString(), second)
+        << "the run somebody just made is the one they are looking for";
+    EXPECT_NE(history->item(0)->text().indexOf(QStringLiteral("second.ps1")), -1)
+        << history->item(0)->text().toStdString();
+}
+
+TEST(ScriptsTab, SelectingAPastRunShowsItInTheRunView) {
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    const QString first =
+        harness.controller->start_script_run("first.ps1", "exit 0", {"PC-001"}, 60);
+    ScriptResultMessage result;
+    result.host_id = "PC-001";
+    result.run_id = first.toStdString();
+    result.status = ScriptStatus::Completed;
+    result.stdout_text = "output of the first run";
+    harness.publish_result_message(result);
+    harness.controller->start_script_run("second.ps1", "exit 0", {"PC-001"}, 60);
+    QApplication::processEvents();
+
+    auto* history = harness.window->findChild<QListWidget*>(QStringLiteral("RunHistoryList"));
+    ASSERT_NE(history, nullptr);
+    for (int row = 0; row < history->count(); ++row) {
+        if (history->item(row)->data(ScriptsTab::kRunIdRole).toString() == first) {
+            history->setCurrentRow(row);
+        }
+    }
+    QApplication::processEvents();
+    run_targets(harness)->selectRow(0);
+    QApplication::processEvents();
+
+    auto* output = harness.window->findChild<QPlainTextEdit*>(QStringLiteral("RunOutput"));
+    ASSERT_NE(output, nullptr);
+    EXPECT_NE(output->toPlainText().indexOf(QStringLiteral("output of the first run")), -1)
+        << output->toPlainText().toStdString();
+}
+
+TEST(ScriptsTab, DeleteRemovesTheSelectedRunFromTheHistory) {
+    Harness harness;
+    harness.announce("PC-001", enrolled());
+    const QString run_id =
+        harness.controller->start_script_run("a.ps1", "exit 0", {"PC-001"}, 60);
+    harness.publish_result("PC-001", run_id.toStdString(), ScriptStatus::Completed);
+    QApplication::processEvents();
+
+    auto* history = harness.window->findChild<QListWidget*>(QStringLiteral("RunHistoryList"));
+    ASSERT_NE(history, nullptr);
+    ASSERT_EQ(history->count(), 1);
+    history->setCurrentRow(0);
+
+    button(harness, QStringLiteral("DeleteRunButton"))->click();
+    QApplication::processEvents();
+
+    EXPECT_EQ(history->count(), 0);
+    EXPECT_TRUE(harness.controller->script_runs().empty());
+}
+
+TEST(ScriptsTab, DisablesDeleteUntilARunIsSelected) {
+    Harness harness;
+    EXPECT_FALSE(button(harness, QStringLiteral("DeleteRunButton"))->isEnabled());
+}
