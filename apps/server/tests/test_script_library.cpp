@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <QByteArray>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QIODevice>
 #include <QProcess>
 #include <QTemporaryDir>
 #include <QTextStream>
@@ -172,6 +174,57 @@ TEST(ScriptLibrary, ReadsAScriptsBytesAndReportsOneItCannot) {
 }
 
 #ifdef _WIN32
+TEST(ScriptLibrary, RefusesToReadAFileFarLargerThanAnyScript) {
+    // Merely clicking a row in the tree reads the file whole into memory and
+    // into a QPlainTextEdit, and the share is a folder other people write --
+    // so without a cap, a selection alone is enough to exhaust the console, no
+    // Run required. The same unbounded string would then become
+    // ScriptCommand::script_body and go out to every target.
+    //
+    // nullopt, the same outcome a missing file already produces, so the tab's
+    // existing "could not be read" handling covers it -- and deliberately not
+    // a truncated body, since the preview's whole promise is that what is on
+    // screen is what would execute.
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+
+    const QString big = dir.filePath(QStringLiteral("huge.ps1"));
+    {
+        QFile file(big);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+        const QByteArray block(64 * 1024, 'x');
+        for (int written = 0; written < 24; ++written) {  // 1.5 MB, past the cap
+            ASSERT_EQ(file.write(block), static_cast<qint64>(block.size()));
+        }
+    }
+    EXPECT_FALSE(read_script_body(big).has_value());
+
+    // And an ordinary script still reads, so the cap is not simply refusing
+    // everything -- a version that returned nullopt unconditionally would pass
+    // the assertion above on its own.
+    write_file(dir, QStringLiteral("small.ps1"), QStringLiteral("exit 0\n"));
+    EXPECT_TRUE(read_script_body(dir.filePath(QStringLiteral("small.ps1"))).has_value());
+}
+
+TEST(ScriptLibrary, AnOrdinaryShareIsNotReportedAsPartial) {
+    // The walk's time budget must not fire on a share that read in
+    // microseconds. Worth its own case because the failure is silent and
+    // total: QElapsedTimer::hasExpired() answers true for any timeout on a
+    // timer nobody started, which would mark every listing partial -- and the
+    // partial message takes precedence over "No .ps1 scripts under X", so an
+    // empty share would stop being explainable too.
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    write_file(dir, QStringLiteral("Maintenance/clear-temp.ps1"), QStringLiteral("exit 0"));
+
+    const ScriptLibrary library = read_script_library(dir.path());
+
+    EXPECT_TRUE(library.reachable);
+    EXPECT_FALSE(library.empty());
+    EXPECT_FALSE(library.truncated)
+        << "a share that read instantly must be presented as the whole share";
+}
+
 TEST(ScriptLibrary, DoesNotDescendIntoAJunction) {
     // NoSymLinks does not exclude an NTFS junction: QFileInfo::isSymLink() is
     // false and isJunction() true for one, and entryInfoList(NoSymLinks)
